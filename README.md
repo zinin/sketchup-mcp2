@@ -180,19 +180,3 @@ Either:
 - The MCP plugin is installed but not started — open Plugins → MCP Server → Start.
 
 The server stays alive after this error; the next tool-call will retry the connect.
-
-### Plugin and Python package version mismatch
-
-Python 2.0.0+ uses 4-byte BE length-prefix framing. Ruby plugin <2.0.0 uses
-`\n`-delimited JSON. The two are wire-incompatible: tool calls will hang or
-fail with parse errors.
-
-| Python | Ruby plugin | Status |
-|---|---|---|
-| 0.1.x | 1.x | ✓ compatible (legacy `\n` transport) |
-| 2.0.0+ | 2.0.0+ | ✓ compatible (length-prefix transport) |
-| 2.0.0+ | 1.x | ✗ incompatible — install plugin 2.0.0+ |
-| 0.1.x | 2.0.0+ | ✗ incompatible — upgrade Python package |
-
-To upgrade the plugin: rebuild via `ruby su_mcp/package.rb` and install the
-resulting `.rbz` through Window → Extension Manager → Install Extension.
