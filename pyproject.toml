@@ -4,7 +4,8 @@ version = "0.0.1"
 description = "Sketchup integration through Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     {name = "Alexander V. Zinin", email = "mail@zinin.ru"}
 ]
@@ -14,7 +15,6 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -39,7 +39,7 @@ sketchup-mcp2 = "sketchup_mcp.server:main"
 sketchup = "sketchup_mcp.app:mcp"
 
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
