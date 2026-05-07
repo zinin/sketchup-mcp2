@@ -1,6 +1,6 @@
 [project]
 name = "sketchup-mcp2"
-version = "2.0.0"
+version = "0.0.1"
 description = "Sketchup integration through Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,6 +30,7 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/zinin/sketchup-mcp2"
 Issues = "https://github.com/zinin/sketchup-mcp2/issues"
+Upstream = "https://github.com/mhyrr/sketchup-mcp"
 
 [project.scripts]
 sketchup-mcp2 = "sketchup_mcp.server:main"

@@ -1,7 +1,7 @@
 # SketchupMCP - Sketchup Model Context Protocol Integration
 
 > Originally forked from [mhyrr/sketchup-mcp](https://github.com/mhyrr/sketchup-mcp).
-> Diverged at v2.0.0 with a new wire protocol (4-byte length-prefix framing),
+> Diverged at v0.0.1 with a new wire protocol (4-byte length-prefix framing),
 > modular handler architecture, expanded introspection / joinery / edge-op tools,
 > and full unit-test coverage on both Ruby and Python sides.
 > Published to PyPI as `sketchup-mcp2` (the original `sketchup-mcp` package is the upstream).
@@ -83,7 +83,7 @@ Booleans & edge ops:
 Joinery:
 * `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` — Woodworking joints (dimensions in mm)
 
-Introspection (new in v2):
+Introspection:
 * `get_model_info` — Path, title, units, bbox of the active model
 * `list_components` — Tree of groups/components with bboxes (recursive, max_depth)
 * `get_component_info` — Details about one entity by id

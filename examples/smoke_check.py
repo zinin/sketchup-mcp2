@@ -1,9 +1,9 @@
 # examples/smoke_check.py
-"""Live integration smoke-check Python ↔ Ruby v2.
+"""Live integration smoke-check Python ↔ Ruby.
 
 Pre-conditions:
   1. SketchUp 2024+ is running with an empty model.
-  2. Ruby plugin v2.0.0 is installed and started via Plugins → MCP Server → Start.
+  2. Ruby plugin v0.0.1 is installed and started via Plugins → MCP Server → Start.
   3. Run with the same Python venv used by the MCP server.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
 
@@ -13,7 +13,7 @@ Usage:
 Sequence covers ALL Ruby handlers + new introspection tools, with focus on
 the riskiest rewrites (chamfer/fillet/boolean). Fails fast on first error.
 
-All dimensions are in millimeters per the v2.0.0 unified mm contract.
+All dimensions are in millimeters per the v0.0.1 unified mm contract.
 """
 import asyncio
 import json

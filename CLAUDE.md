@@ -14,7 +14,7 @@ SketchupMCP bridges Claude AI and SketchUp via the Model Context Protocol (MCP).
 - **Units**: SketchUp's internal Ruby API uses **inches**; all MCP tools accept and return **mm**. Convert at the boundary via `MM = 25.4`.
 - **`Group#subtract` is reversed**: `A.subtract(B)` returns `B - A`. To get «target minus tool», call `tool.subtract(target)`. Verified empirically against SketchUp 2026.
 - **SketchUp is single-threaded**: the Ruby extension cannot use threads; all I/O runs in `UI.start_timer` callbacks.
-- **Wire protocol** (v2.0.0+): 4-byte big-endian length-prefix framing, 64 MiB cap. Wire-incompatible with Python ≤0.1.x and Ruby plugin ≤1.x.
+- **Wire protocol** (v0.0.1+): 4-byte big-endian length-prefix framing, 64 MiB cap.
 - **Persistent socket**: Python server holds one TCP connection; `asyncio.Lock` serializes tool-calls. Ruby reads non-blocking inside `UI.start_timer`, capped at 50 reads per tick (~3.2 MB) to keep SketchUp's UI responsive.
 - **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; cast incoming string IDs with `.to_i`.
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
@@ -40,7 +40,7 @@ ruby test/run_all.rb           # Ruby (80 runs / 168 assertions)
 uv run pytest tests/ -q        # Python (52 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 20-step end-to-end (covers all v2 handlers)
+python examples/smoke_check.py # 20-step end-to-end (covers all handlers)
 ```
 
 Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.

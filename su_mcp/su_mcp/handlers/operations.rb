@@ -316,7 +316,7 @@ module SU_MCP
       #   - the two side faces (in the perp1-face and perp2-face planes)
       #   - both end caps (in the target's faces perpendicular to the edge)
       # Subtract collapses these coincident faces and returns an empty group
-      # ("Difference" with bbox 0–0; observed live in v2.0.0 smoke_check).
+      # ("Difference" with bbox 0–0; observed live in v0.0.1 smoke_check).
       #
       # Offset both endpoints of the cutter path:
       #   - along the edge direction by CUTTER_OFFSET (end caps poke past
