@@ -808,8 +808,8 @@ wheels = [
 ]
 
 [[package]]
-name = "sketchup-mcp"
-version = "2.0.0"
+name = "sketchup-mcp2"
+version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "mcp", extra = ["cli"] },
