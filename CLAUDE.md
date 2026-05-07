@@ -119,5 +119,9 @@ test/                     # Ruby unit tests (minitest, stdlib only)
 tests/                    # Python unit tests (pytest)
 docs/sketchup-ruby-cookbook.md  # eval_ruby reference snippets
 pyproject.toml            # Python package config (version, deps)
-CHANGELOG.md              # Version history
+LICENSE / NOTICE          # MIT license + upstream attribution
 ```
+
+## Releasing
+
+For the step-by-step PyPI + GitHub release workflow (version bump → build → TestPyPI → PyPI → tag → release), see [`docs/release.md`](docs/release.md).
