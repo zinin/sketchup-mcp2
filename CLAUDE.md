@@ -1,0 +1,123 @@
+# CLAUDE.md
+
+Guidance for Claude Code (claude.ai/code) working in this repository.
+
+## What This Project Does
+
+SketchupMCP bridges Claude AI and SketchUp via the Model Context Protocol (MCP). Two components:
+
+1. **Python MCP server** (`src/sketchup_mcp/`) — receives Claude's tool calls, forwards them over TCP
+2. **Ruby SketchUp extension** (`su_mcp/su_mcp/`) — TCP server inside SketchUp, executes commands against the live model
+
+## Non-Obvious Constraints
+
+- **Units**: SketchUp's internal Ruby API uses **inches**; all MCP tools accept and return **mm**. Convert at the boundary via `MM = 25.4`.
+- **`Group#subtract` is reversed**: `A.subtract(B)` returns `B - A`. To get «target minus tool», call `tool.subtract(target)`. Verified empirically against SketchUp 2026.
+- **SketchUp is single-threaded**: the Ruby extension cannot use threads; all I/O runs in `UI.start_timer` callbacks.
+- **Wire protocol** (v2.0.0+): 4-byte big-endian length-prefix framing, 64 MiB cap. Wire-incompatible with Python ≤0.1.x and Ruby plugin ≤1.x.
+- **Persistent socket**: Python server holds one TCP connection; `asyncio.Lock` serializes tool-calls. Ruby reads non-blocking inside `UI.start_timer`, capped at 50 reads per tick (~3.2 MB) to keep SketchUp's UI responsive.
+- **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; cast incoming string IDs with `.to_i`.
+- **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
+- **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
+- **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
+- **Mutating handlers wrap edits in `model.start_operation`/`commit_operation`** so `undo` rolls back atomically.
+
+## Development Commands
+
+```bash
+# Install Python package (editable)
+uv pip install -e .
+
+# Run the MCP server
+python -m sketchup_mcp        # direct
+uvx sketchup-mcp2             # production-style (from PyPI)
+
+# Build the SketchUp .rbz extension package — run from inside su_mcp/
+cd su_mcp && ruby package.rb && cd ..
+
+# Unit tests
+ruby test/run_all.rb           # Ruby (80 runs / 168 assertions)
+uv run pytest tests/ -q        # Python (52 tests)
+
+# Live integration smoke-check (requires SketchUp running + plugin started)
+python examples/smoke_check.py # 20-step end-to-end (covers all v2 handlers)
+```
+
+Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.
+
+## Configuration via ENV
+
+- `SKETCHUP_MCP_HOST` (default `127.0.0.1`)
+- `SKETCHUP_MCP_PORT` (default `9876`)
+- `SKETCHUP_MCP_TIMEOUT` (Python only; default `60` seconds)
+- `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
+
+## Architecture
+
+```
+Claude → Python MCP (FastMCP) → TCP socket :9876 → Ruby extension → SketchUp model
+```
+
+JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSON-RPC payload and sends it over the persistent socket. Ruby dispatches by method name to a handler module.
+
+### Python side — `src/sketchup_mcp/`
+
+| File | Role |
+|---|---|
+| `app.py`, `__main__.py` | FastMCP server entry point |
+| `tools.py` | One MCP tool wrapper per Ruby handler (FastMCP definitions) |
+| `connection.py` | Persistent TCP socket, length-prefix framing, `asyncio.Lock` |
+| `config.py` | ENV-driven config |
+| `errors.py` | `SketchUpError` parsed from JSON-RPC error envelopes |
+| `server.py` | Legacy connection helpers (kept for compat) |
+
+`eval_ruby` is the escape hatch — passes arbitrary Ruby code straight through.
+
+### Ruby side — `su_mcp/su_mcp/`
+
+| Subtree | Role |
+|---|---|
+| `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
+| `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `logger.rb`, `errors.rb` |
+| `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb` |
+| `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb` |
+
+All created geometry lives inside SketchUp **Groups** so it can be selected/moved/deleted as a unit.
+
+### Tool categories
+
+| Category | Tools |
+|---|---|
+| Geometry | `create_component`, `delete_component`, `transform_component` |
+| Materials | `set_material` (named colors + hex `#rrggbb`) |
+| Booleans | `boolean_operation` (union / difference / intersection) |
+| Edge ops | `chamfer_edge`, `fillet_edge` (Ruby-side names are plural — `chamfer_edges`/`fillet_edges`) |
+| Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
+| Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
+| Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection` |
+| Lifecycle | `undo` |
+| Scripting | `eval_ruby` |
+
+All entity-returning handlers respond `{id, name, type, bbox_mm}` so Claude can re-locate entities by bounding box if their IDs become stale after destructive operations.
+
+## Working with eval_ruby
+
+For recipes that drive the SketchUp Ruby API directly — walls, roofs, framing, joist arrays, follow_me extrusions, transforms, world-space conversions, common pitfalls — see [`docs/sketchup-ruby-cookbook.md`](docs/sketchup-ruby-cookbook.md).
+
+## Project Layout
+
+```
+src/sketchup_mcp/         # Python MCP server (FastMCP, modular)
+su_mcp/su_mcp/            # Ruby SketchUp extension (modular)
+  ├── main.rb             # Module loader + menu registration
+  ├── core/               # TCP server, dispatch, framing, config, errors, logger
+  ├── handlers/           # One file per tool group
+  └── helpers/            # Shared utils (units, validation, entities, geometry)
+su_mcp/package.rb         # Builds the .rbz installer
+examples/                 # Integration / smoke scripts
+test/                     # Ruby unit tests (minitest, stdlib only)
+tests/                    # Python unit tests (pytest)
+docs/sketchup-ruby-cookbook.md  # eval_ruby reference snippets
+pyproject.toml            # Python package config (version, deps)
+CHANGELOG.md              # Version history
+```

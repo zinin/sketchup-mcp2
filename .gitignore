@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Ruby
+*.gem
+*.rbc
+/.config
+/coverage/
+/pkg/
+/tmp/
+.ruby-version
+.ruby-gemset
+.rvmrc
+
+# Sketchup specific
+*.rbz
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+*.tar.gz
+
+# Local tooling
+.mcp.json
+.claude/
+.idea/
+
