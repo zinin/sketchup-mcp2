@@ -33,6 +33,8 @@ module SU_MCP
     handlers/eval
     core/server
     core/application
+    ui/settings_validator
+    ui/settings_dialog
   ].freeze
 
   LOAD_ORDER.each { |path| Sketchup.require(File.join(PLUGIN_ROOT, path)) }
@@ -57,6 +59,7 @@ module SU_MCP
 
     menu.add_item("Restart Server") { SU_MCP::Core::Application.restart }
     menu.add_separator
+    menu.add_item("Settings...") { SU_MCP::UI::SettingsDialog.show }
     menu.add_item("Show Log") { SU_MCP::Core::Application.show_log }
     menu.add_item("Show Status") {
       state =
