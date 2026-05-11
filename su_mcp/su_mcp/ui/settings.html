@@ -12,10 +12,10 @@
     .row input, .row select { flex: 1; padding: 0.3em 0.5em; font-size: 1em; box-sizing: border-box; }
     .error { color: #c00; font-size: 0.85em; margin: 0 0 0.6em 8em; min-height: 1.1em; }
     .status { border-top: 1px solid #ccc; padding-top: 0.7em; margin-top: 1em; font-size: 0.95em; color: #444; }
-    .status.hidden { display: none; }
     .warning { color: #c80; margin-top: 0.3em; }
     .buttons { text-align: right; margin-top: 1.1em; }
     button { padding: 0.45em 1em; margin-left: 0.5em; font-size: 1em; }
+    button:disabled { color: #888; cursor: default; }
   </style>
 </head>
 <body>
@@ -42,17 +42,19 @@
   </div>
   <div class="error" id="log_level-error"></div>
 
-  <div id="status" class="status hidden">
+  <div id="status" class="status">
     <div id="status-line"></div>
     <div id="status-hint" class="warning"></div>
   </div>
 
   <div class="buttons">
     <button id="btn-cancel">Cancel</button>
-    <button id="btn-save">Save</button>
+    <button id="btn-save" disabled>Save</button>
   </div>
 
   <script>
+    var savedState = null;
+
     function clearErrors() {
       ['host', 'port', 'log_level'].forEach(function (k) {
         document.getElementById(k + '-error').textContent = '';
@@ -66,17 +68,28 @@
       });
     }
 
+    function isDirty() {
+      if (!savedState) return false;
+      return document.getElementById('host').value      !== savedState.host
+          || document.getElementById('port').value      !== String(savedState.port)
+          || document.getElementById('log_level').value !== savedState.log_level;
+    }
+
+    function refreshSaveButton() {
+      document.getElementById('btn-save').disabled = !isDirty();
+    }
+
     window.applyState = function (state) {
       document.getElementById('host').value      = state.host;
       document.getElementById('port').value      = state.port;
       document.getElementById('log_level').value = state.log_level;
+      savedState = { host: state.host, port: state.port, log_level: state.log_level };
+      refreshSaveButton();
 
-      var status = document.getElementById('status');
-      var line   = document.getElementById('status-line');
-      var hint   = document.getElementById('status-hint');
+      var line = document.getElementById('status-line');
+      var hint = document.getElementById('status-hint');
 
       if (state.running && state.current) {
-        status.classList.remove('hidden');
         line.textContent = 'Status: running on ' + state.current.host + ':' + state.current.port;
         // Log-level changes apply immediately (Logger reads Config.log_level
         // per call), so only host/port mismatches drive the restart banner.
@@ -87,7 +100,8 @@
           ? '(saved settings differ — restart needed to apply)'
           : '';
       } else {
-        status.classList.add('hidden');
+        line.textContent = 'Status: stopped';
+        hint.textContent = '';
       }
     };
 
@@ -102,8 +116,8 @@
             result.errors._general;
         }
       }
-      // ok === true → Ruby will call applyState again to refresh the UI and
-      // (optionally) prompt for restart via a native messagebox.
+      // ok === true → Ruby will close the dialog (deferred via UI.start_timer)
+      // and optionally prompt for restart via a native messagebox.
     };
 
     document.getElementById('btn-save').addEventListener('click', function () {
@@ -119,6 +133,11 @@
     document.getElementById('btn-cancel').addEventListener('click', function () {
       sketchup.cancel();
     });
+
+    ['host', 'port'].forEach(function (id) {
+      document.getElementById(id).addEventListener('input', refreshSaveButton);
+    });
+    document.getElementById('log_level').addEventListener('change', refreshSaveButton);
 
     // Pull initial state from Ruby once DOM is ready.
     sketchup.load_state();

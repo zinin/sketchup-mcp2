@@ -59,17 +59,6 @@ module SU_MCP
     menu.add_separator
     menu.add_item("Settings...") { SU_MCP::UI::SettingsDialog.show }
     menu.add_item("Show Log") { SU_MCP::Core::Application.show_log }
-    menu.add_item("Show Status") {
-      state =
-        if SU_MCP::Core::Application.running?
-          rc = SU_MCP::Core::Application.running_config
-          "running on #{rc[:host]}:#{rc[:port]}"
-        else
-          "stopped"
-        end
-      SU_MCP::Core::Logger.log_tool("application", "status", state)
-      Sketchup.status_text = "MCP Server: #{state}"
-    }
   end
 
   unless file_loaded?(__FILE__)

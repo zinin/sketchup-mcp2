@@ -32,8 +32,8 @@ module SU_MCP
           preferences_key: DIALOG_PREFS,
           scrollable:      false,
           resizable:       false,
-          width:           420,
-          height:          340,
+          width:           360,
+          height:          290,
           style:           ::UI::HtmlDialog::STYLE_DIALOG
         )
 
@@ -86,12 +86,14 @@ module SU_MCP
         )
 
         dialog.execute_script("window.onSaveResult(#{js_safe_json({ ok: true })})")
-        # Refresh the form + status banner with what was actually persisted.
-        on_load_state(dialog)
 
         need_restart = current_runtime &&
                        (normalized[:host] != current_runtime[:host] ||
                         normalized[:port] != current_runtime[:port])
+
+        # Defer dialog.close out of the JS action_callback frame for the same
+        # Windows-quirk reason we wrap UI.messagebox below — cheap insurance.
+        ::UI.start_timer(0, false) { dialog.close }
 
         if need_restart
           # Wrap UI.messagebox in UI.start_timer so it does not run inside the
@@ -100,10 +102,6 @@ module SU_MCP
           ::UI.start_timer(0, false) do
             answer = ::UI.messagebox("Restart server with new settings now?", ::MB_YESNO)
             SU_MCP::Core::Application.restart if answer == ::IDYES
-            # Refresh the *current* dialog (@dialog) — the closure-captured
-            # `dialog` could be stale if the user closed and reopened the
-            # window between Save and the timer firing.
-            on_load_state(@dialog) if @dialog && @dialog.visible?
           end
         end
       rescue StandardError => e
