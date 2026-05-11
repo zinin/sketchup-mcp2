@@ -45,11 +45,25 @@ python examples/smoke_check.py # 20-step end-to-end (covers all handlers)
 
 Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.
 
-## Configuration via ENV
+## Configuration
 
-- `SKETCHUP_MCP_HOST` (default `127.0.0.1`)
+**Ruby (SketchUp extension)** — settings are edited through `Plugins → MCP Server → Settings…` and persisted in SketchUp preferences under section `SU_MCP`. No ENV variables are read on the Ruby side.
+
+| Setting | Default | Notes |
+|---|---|---|
+| Host | `127.0.0.1` | bind address; use `0.0.0.0` to accept connections from other machines (e.g. host → VM) |
+| Port | `9876` | 1..65535 |
+| Log Level | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
+
+Log-level changes apply immediately. Host/port changes prompt the user to restart the server if it is running.
+
+> **Migration from 0.0.1:** ENV variables `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` / `SKETCHUP_MCP_LOG_LEVEL` are no longer read by the Ruby side. After updating the extension, open Settings… once and enter the values you previously set via ENV.
+
+**Python (MCP server invoked by Claude)** — configured through ENV in the Claude Desktop MCP config:
+
+- `SKETCHUP_MCP_HOST` (default `127.0.0.1`) — where to connect to the SketchUp extension
 - `SKETCHUP_MCP_PORT` (default `9876`)
-- `SKETCHUP_MCP_TIMEOUT` (Python only; default `60` seconds)
+- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds)
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
 
 ## Architecture
