@@ -47,7 +47,7 @@ Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `
 
 ## Configuration
 
-**Ruby (SketchUp extension)** — settings are edited through `Plugins → MCP Server → Settings…` and persisted in SketchUp preferences under section `SU_MCP`. No ENV variables are read on the Ruby side.
+**Ruby (SketchUp extension)** — settings are edited through `Plugins → MCP Server → Settings...` and persisted in SketchUp preferences under section `SU_MCP`. No ENV variables are read on the Ruby side.
 
 | Setting | Default | Notes |
 |---|---|---|
@@ -57,7 +57,7 @@ Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `
 
 Log-level changes apply immediately. Host/port changes prompt the user to restart the server if it is running.
 
-> **Migration from 0.0.1:** ENV variables `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` / `SKETCHUP_MCP_LOG_LEVEL` are no longer read by the Ruby side. After updating the extension, open Settings… once and enter the values you previously set via ENV.
+> **Migration from 0.0.1:** ENV variables `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` / `SKETCHUP_MCP_LOG_LEVEL` are no longer read by the Ruby side. After updating the extension, open Settings... once and enter the values you previously set via ENV.
 
 **Python (MCP server invoked by Claude)** — configured through ENV in the Claude Desktop MCP config:
 
