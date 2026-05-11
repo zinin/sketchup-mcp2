@@ -40,8 +40,8 @@ module SU_MCP
           Logger.log_tool("application", "started", "host=#{Config.host} port=#{Config.port}")
         rescue StandardError => e
           Logger.log_error("application.start", e)
-          UI.messagebox("MCP Server failed to start:\n\n#{e.message}\n\n" \
-                        "Check Plugins → MCP Server → Show Log for details.")
+          ::UI.messagebox("MCP Server failed to start:\n\n#{e.message}\n\n" \
+                          "Check Plugins → MCP Server → Show Log for details.")
           @server = nil
           @running = false
           @running_config = nil
