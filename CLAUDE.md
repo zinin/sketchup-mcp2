@@ -36,8 +36,8 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd su_mcp && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (112 runs / 253 assertions)
-uv run pytest tests/ -q        # Python (52 tests)
+ruby test/run_all.rb           # Ruby (120 runs / 279 assertions)
+uv run pytest tests/ -q        # Python (56 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 20-step end-to-end (covers all handlers)

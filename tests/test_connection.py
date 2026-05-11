@@ -2,7 +2,7 @@
 import asyncio
 import json
 import struct
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -117,9 +117,6 @@ async def test_send_command_oversized_response_disconnects(make_connection, fake
         await conn.send_command("x", {})
     assert exc_info.value.code == -32600
     assert conn._writer is None  # critical: disconnect happened
-
-
-from unittest.mock import AsyncMock
 
 
 async def test_send_command_timeout_disconnects(make_connection, fake_streams):
@@ -305,8 +302,6 @@ async def test_send_command_reconnects_after_disconnect(make_connection, fake_st
 
     # 2) подменяем connect, чтобы он подложил новые streams
     new_reader = asyncio.StreamReader()
-    from unittest.mock import MagicMock
-
     new_writer = MagicMock()
     new_writer.buffer = bytearray()
     new_writer.write = MagicMock(side_effect=lambda d: new_writer.buffer.extend(d))
@@ -329,9 +324,6 @@ async def test_send_command_reconnects_after_disconnect(make_connection, fake_st
     result = await conn.send_command("b", {})
     assert result == {"ok": True}
     assert conn._writer is new_writer
-
-
-from unittest.mock import patch
 
 
 async def test_get_connection_raises_connection_error_when_refused(monkeypatch):
@@ -358,3 +350,52 @@ async def test_close_connection_resets_singleton(monkeypatch):
     monkeypatch.setattr(conn_module, "_connection", fake)
     await conn_module.close_connection()
     assert conn_module._connection is None
+
+
+async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch):
+    """Concurrent first-callers of get_connection() must not each create a connection.
+
+    Без `_get_connection_lock` (connection.py:225) две параллельные холодные
+    точки могли бы обе увидеть `_connection is None`, инстанциировать свой
+    SketchUpConnection и вызвать open_connection дважды — один сокет осиротел
+    бы. Тест регрессионно фиксирует: один общий singleton, один реальный
+    open_connection.
+    """
+    from sketchup_mcp import connection as conn_module
+
+    monkeypatch.setattr(conn_module, "_connection", None)
+
+    open_call_count = 0
+    gate = asyncio.Event()
+
+    async def slow_open(*_args, **_kwargs):
+        nonlocal open_call_count
+        open_call_count += 1
+        # Удерживаем первое открытие до явного триггера, чтобы дать второму
+        # вызову шанс пройти cold-start path параллельно — без lock'а он бы
+        # тоже инициировал open_connection.
+        await gate.wait()
+        writer = MagicMock()
+        # is_closing() должен явно вернуть False, иначе второй get_connection
+        # увидит «writer is closing» и инициирует второй connect() уже не
+        # из-за cold-start race, а из-за реконнекта. Это замаскировало бы
+        # настоящий cold-start race в проверяемом коде.
+        writer.is_closing = MagicMock(return_value=False)
+        return asyncio.StreamReader(), writer
+
+    with patch("sketchup_mcp.connection.asyncio.open_connection", side_effect=slow_open):
+        t1 = asyncio.create_task(conn_module.get_connection())
+        t2 = asyncio.create_task(conn_module.get_connection())
+        # Дать обеим coroutines дойти до lock'а.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        gate.set()
+        c1, c2 = await asyncio.gather(t1, t2)
+
+    assert c1 is c2, "get_connection must return the same singleton for concurrent callers"
+    assert open_call_count == 1, (
+        f"open_connection called {open_call_count}× — cold-start race not guarded"
+    )
+
+    # Cleanup для последующих тестов.
+    monkeypatch.setattr(conn_module, "_connection", None)

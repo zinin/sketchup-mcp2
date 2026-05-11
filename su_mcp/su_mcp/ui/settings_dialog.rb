@@ -43,6 +43,12 @@ module SU_MCP
         # Windows-quirk reason we wrap UI.messagebox below — cheap insurance.
         dialog.add_action_callback("cancel")     { |_ctx|       ::UI.start_timer(0, false) { dialog.close } }
 
+        # Drop the @dialog singleton on close (Save / Cancel / OS X-button) so
+        # the next `show` rebuilds a fresh HtmlDialog instead of probing a
+        # destroyed one via `@dialog.visible?` — defensive against historical
+        # SU versions where visible? on a closed dialog could raise.
+        dialog.set_on_closed { @dialog = nil }
+
         dialog.set_file(HTML_PATH)
         dialog
       end

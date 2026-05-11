@@ -21,6 +21,25 @@ class StubWriter
 
   def write_default(section, key, value)
     @writes << [section, key, value]
+    true
+  end
+end
+
+# Simulates Sketchup.write_default returning false (corrupt prefs, disk full,
+# etc.) for a specific key, exercising the Config.update! raise path that
+# real-prod code depends on. Without this, the "write_default → false ⇒ raise"
+# contract (config.rb:76) has zero test coverage.
+class FailingWriter
+  attr_reader :writes
+
+  def initialize(fail_on_key:)
+    @writes = []
+    @fail_on_key = fail_on_key
+  end
+
+  def write_default(section, key, value)
+    @writes << [section, key, value]
+    key != @fail_on_key
   end
 end
 
@@ -140,5 +159,37 @@ class TestConfig < Minitest::Test
     reader = StubReader.new("log_level" => "VERBOSE")
     C.load_from_defaults!(reader)
     assert_equal "INFO", C.log_level
+  end
+
+  # --- write_default → false must raise (config.rb:76 contract) ---
+
+  def test_update_raises_when_write_default_returns_false_on_host
+    writer = FailingWriter.new(fail_on_key: "host")
+    error = assert_raises(RuntimeError) do
+      C.update!(host: "10.0.0.5", port: 9999, log_level: "WARN", writer: writer)
+    end
+    assert_match(/host/, error.message)
+  end
+
+  def test_update_raises_when_write_default_returns_false_on_port
+    writer = FailingWriter.new(fail_on_key: "port")
+    error = assert_raises(RuntimeError) do
+      C.update!(host: "10.0.0.5", port: 9999, log_level: "WARN", writer: writer)
+    end
+    assert_match(/port/, error.message)
+  end
+
+  def test_update_mutates_runtime_before_raising
+    # Documented invariant: runtime is mutated BEFORE persistence (config.rb:57-65).
+    # Even when write_default fails, the in-session Config reflects new values.
+    writer = FailingWriter.new(fail_on_key: "log_level")
+    begin
+      C.update!(host: "10.0.0.5", port: 9999, log_level: "WARN", writer: writer)
+    rescue RuntimeError
+      # expected
+    end
+    assert_equal "10.0.0.5", C.host
+    assert_equal 9999,       C.port
+    assert_equal "WARN",     C.log_level
   end
 end

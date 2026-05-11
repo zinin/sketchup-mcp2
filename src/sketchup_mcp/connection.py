@@ -159,8 +159,11 @@ class SketchUpConnection:
             # retry небезопасен.
             raise SketchUpError(-32000, f"connection error: {e}") from e
         except ConnectionError as e:
-            # ECONNRESET / BrokenPipe = разрыв на этапе write или drain.
-            # Peer не получил/не обработал запрос целиком → safe-to-retry.
+            # ECONNRESET / BrokenPipe = разрыв транспорта на любой фазе
+            # (_send_frame, drain, _recv_frame). Помечаем как _StaleSocketError;
+            # фактическая безопасность retry решается в send_command по
+            # whitelist _RETRY_SAFE_TOOLS — для мутативных tool'ов
+            # _StaleSocketError будет проброшен наверх caller'у.
             await self.disconnect()
             raise _StaleSocketError(-32000, f"connection error: {e}") from e
         except SketchUpError:
