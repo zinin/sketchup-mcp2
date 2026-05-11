@@ -37,6 +37,11 @@ module SU_MCP
 
   LOAD_ORDER.each { |path| Sketchup.require(File.join(PLUGIN_ROOT, path)) }
 
+  # Hydrate Config from SketchUp preferences (replaces ENV-based config).
+  SU_MCP::Core::Config.load_from_defaults!
+  # One-time messagebox for users coming from the ENV-based config.
+  SU_MCP::Core::Config.show_migration_banner!
+
   def self.install_menu
     menu = UI.menu("Plugins").add_submenu("MCP Server")
 
@@ -54,9 +59,13 @@ module SU_MCP
     menu.add_separator
     menu.add_item("Show Log") { SU_MCP::Core::Application.show_log }
     menu.add_item("Show Status") {
-      state = SU_MCP::Core::Application.running? \
-        ? "running on :#{SU_MCP::Core::Config::PORT}" \
-        : "stopped"
+      state =
+        if SU_MCP::Core::Application.running?
+          rc = SU_MCP::Core::Application.running_config
+          "running on #{rc[:host]}:#{rc[:port]}"
+        else
+          "stopped"
+        end
       SU_MCP::Core::Logger.log_tool("application", "status", state)
       Sketchup.status_text = "MCP Server: #{state}"
     }

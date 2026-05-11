@@ -2,27 +2,49 @@
 module SU_MCP
   module Core
     module Application
-      @server  = nil
-      @running = false
+      @server         = nil
+      @running        = false
+      @running_config = nil
+
+      # The Server class is resolved lazily so tests can swap in a stub.
+      def self.server_class
+        @server_class ||= Server
+      end
+
+      def self.server_class=(klass)
+        @server_class = klass
+      end
 
       def self.running?
         @running
       end
 
+      # Snapshot of {host, port, log_level} the live server was started with.
+      # Returns nil if no server is running.
+      def self.running_config
+        @running_config
+      end
+
       def self.start
         return if @running
         begin
-          @server = Server.new
+          @server = server_class.new
           @server.start
           @running = true
-          Sketchup.status_text = "MCP Server: running on :#{Config::PORT}"
-          Logger.log_tool("application", "started", "port=#{Config::PORT}")
+          @running_config = {
+            host:      Config.host,
+            port:      Config.port,
+            log_level: Config.log_level
+          }
+          Sketchup.status_text = "MCP Server: running on #{Config.host}:#{Config.port}"
+          Logger.log_tool("application", "started", "host=#{Config.host} port=#{Config.port}")
         rescue StandardError => e
           Logger.log_error("application.start", e)
           UI.messagebox("MCP Server failed to start:\n\n#{e.message}\n\n" \
                         "Check Plugins → MCP Server → Show Log for details.")
           @server = nil
           @running = false
+          @running_config = nil
         end
       end
 
@@ -31,6 +53,7 @@ module SU_MCP
         @server&.stop
         @server = nil
         @running = false
+        @running_config = nil
         Sketchup.status_text = "MCP Server: stopped"
         Logger.log_tool("application", "stopped")
       end

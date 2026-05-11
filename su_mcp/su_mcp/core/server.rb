@@ -23,7 +23,7 @@ module SU_MCP
 
       def start
         return if @running
-        @server = TCPServer.new(Config::HOST, Config::PORT)
+        @server = TCPServer.new(Config.host, Config.port)
         @running = true
         @timer_id = UI.start_timer(TIMER_INTERVAL, true) { on_timer_tick }
       end
