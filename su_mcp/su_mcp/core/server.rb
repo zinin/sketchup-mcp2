@@ -25,12 +25,12 @@ module SU_MCP
         return if @running
         @server = TCPServer.new(Config.host, Config.port)
         @running = true
-        @timer_id = UI.start_timer(TIMER_INTERVAL, true) { on_timer_tick }
+        @timer_id = ::UI.start_timer(TIMER_INTERVAL, true) { on_timer_tick }
       end
 
       def stop
         @running = false
-        UI.stop_timer(@timer_id) if @timer_id
+        ::UI.stop_timer(@timer_id) if @timer_id
         @timer_id = nil
         reset_client  # closes @client cleanly
         if @server

@@ -43,7 +43,7 @@ module SU_MCP
   SU_MCP::Core::Config.show_migration_banner!
 
   def self.install_menu
-    menu = UI.menu("Plugins").add_submenu("MCP Server")
+    menu = ::UI.menu("Plugins").add_submenu("MCP Server")
 
     start_item = menu.add_item("Start Server") { SU_MCP::Core::Application.start }
     menu.set_validation_proc(start_item) {
