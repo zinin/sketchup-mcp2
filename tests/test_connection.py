@@ -2,6 +2,7 @@
 import asyncio
 import json
 import struct
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -143,6 +144,77 @@ async def test_send_command_incomplete_read_disconnects(make_connection, fake_st
         await conn.send_command("x", {})
     assert exc_info.value.code == -32000
     assert conn._writer is None
+
+
+async def test_send_command_retries_on_zero_byte_eof(make_connection, fake_streams):
+    """Stale-socket: peer закрыл соединение, не прислав ни одного байта ответа.
+
+    Сценарий — Ruby-side idle_timeout убил клиента в простое между tool-вызовами.
+    asyncio.StreamWriter.is_closing() от peer-side FIN не становится True, поэтому
+    send_command идёт в _send_frame → drain ok → _recv_frame → readexactly(4) →
+    IncompleteReadError(partial=b"", expected=4). Этот сценарий **гарантирует**,
+    что peer не успел обработать запрос (иначе он бы прислал хотя бы 4 байта
+    заголовка). Поэтому безопасно reconnect+retry один раз, прозрачно для caller'а.
+    """
+    reader, _ = fake_streams
+    conn = make_connection()
+    # 1) первый запрос: peer закрыл соединение, ни одного байта ответа
+    reader.feed_eof()
+
+    # 2) подменяем connect, чтобы он подложил свежие streams под retry
+    new_reader = asyncio.StreamReader()
+    new_writer = MagicMock()
+    new_writer.buffer = bytearray()
+    new_writer.write = MagicMock(side_effect=lambda d: new_writer.buffer.extend(d))
+    new_writer.drain = AsyncMock()
+    new_writer.close = MagicMock()
+    new_writer.wait_closed = AsyncMock()
+    new_writer.is_closing = MagicMock(return_value=False)
+
+    async def fake_connect():
+        conn._reader = new_reader
+        conn._writer = new_writer
+
+    conn.connect = fake_connect
+
+    # 3) Подаём успешный ответ для retry-попытки.
+    #    _next_id уже инкрементнут до 2 первой попыткой; retry **переиспользует** rid=1
+    #    (точнее, increment произошёл ДО ошибки, _next_id уже =2; retry получит rid=2).
+    new_reader.feed_data(
+        encode_response({"jsonrpc": "2.0", "id": 2, "result": {"ok": True}})
+    )
+
+    result = await conn.send_command("foo", {"a": 1})
+    assert result == {"ok": True}
+
+    # Retry прошёл на свежем сокете
+    assert conn._writer is new_writer
+    sent_on_retry = decode_writer_frames(bytes(new_writer.buffer))
+    assert len(sent_on_retry) == 1
+    assert sent_on_retry[0]["params"]["name"] == "foo"
+    assert sent_on_retry[0]["params"]["arguments"] == {"a": 1}
+
+
+async def test_send_command_no_retry_on_partial_read(make_connection, fake_streams):
+    """Partial read = peer уже начал отвечать → НЕЛЬЗЯ retry (риск задвоения мутации).
+
+    Если Ruby успел прислать хотя бы один байт заголовка ответа, значит он уже
+    прошёл model.commit_operation. Перевыполнять — задвоить мутацию.
+    Регрессионный guard: при partial != b"" должна быть raise, БЕЗ retry.
+    """
+    reader, _ = fake_streams
+    conn = make_connection()
+    reader.feed_data(b"\x00\x00")  # 2 байта из 4 header'а
+    reader.feed_eof()
+
+    # connect не должен быть вызван — гарантия отсутствия retry
+    conn.connect = AsyncMock(side_effect=AssertionError("retry forbidden for partial read"))
+
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("mutate", {})
+    assert exc_info.value.code == -32000
+    assert conn._writer is None
+    conn.connect.assert_not_called()
 
 
 async def test_send_command_lock_serializes_concurrent(make_connection, fake_streams):

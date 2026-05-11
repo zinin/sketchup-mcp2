@@ -8,7 +8,11 @@ module SU_MCP
       TIMER_INTERVAL          = 0.1     # seconds between ticks
       READ_CHUNK              = 64 * 1024
       READ_MAX_ITERATIONS     = 50      # ≈3.2MB max drained per tick (50 × 64KB)
-      IDLE_DEADLINE_S         = 30.0    # without progress → reset_client
+      # 30s оказался слишком агрессивен для интерактивных LLM-сессий: между
+      # двумя tool-call'ами легко проходит больше времени (генерация модели,
+      # ввод пользователя). Python-сторона дополнительно умеет reconnect+retry
+      # один раз при stale-socket — это даёт «belt-and-suspenders».
+      IDLE_DEADLINE_S         = 300.0   # without progress → reset_client
       WRITE_SELECT_TIMEOUT_S  = 1.0     # if writer not ready within this → reset
 
       def initialize
