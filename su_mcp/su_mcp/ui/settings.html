@@ -27,6 +27,10 @@
 
   <div class="row">
     <label for="port">Port</label>
+    <!-- type="text" not "number": HtmlDialog is desktop-only (no mobile
+         numeric-keypad benefit) and `number` adds spinner buttons +
+         scroll-wheel-changes-value behavior that's surprising in a settings
+         dialog. Server-side validator covers all edge cases. -->
     <input type="text" id="port" autocomplete="off" spellcheck="false">
   </div>
   <div class="error" id="port-error"></div>
@@ -79,20 +83,28 @@
       document.getElementById('btn-save').disabled = !isDirty();
     }
 
-    window.applyState = function (state) {
-      document.getElementById('host').value      = state.host;
-      document.getElementById('port').value      = state.port;
-      document.getElementById('log_level').value = state.log_level;
-      savedState = { host: state.host, port: state.port, log_level: state.log_level };
-      refreshSaveButton();
+    // Returns warning text for the currently-typed host, or '' if none applies.
+    // Called both on initial applyState and on every host input event so users
+    // see the warning the moment they type 0.0.0.0 — not only after Save.
+    function hostSecurityWarning(host) {
+      if (host === '0.0.0.0') {
+        return '⚠ 0.0.0.0 exposes the server (incl. eval_ruby) to the local network with no authentication.';
+      }
+      return '';
+    }
 
-      var line = document.getElementById('status-line');
-      var hint = document.getElementById('status-hint');
-
-      if (state.running && state.current) {
-        line.textContent = 'Status: running on ' + state.current.host + ':' + state.current.port;
-        // Log-level changes apply immediately (Logger reads Config.log_level
-        // per call), so only host/port mismatches drive the restart banner.
+    // The status-hint slot is shared between two concerns: restart-needed and
+    // security warning. Security takes precedence — if both apply we still
+    // show the security one because it's the more actionable risk.
+    function refreshStatusHint(state) {
+      var hint    = document.getElementById('status-hint');
+      var typed   = document.getElementById('host').value;
+      var sec     = hostSecurityWarning(typed);
+      if (sec) {
+        hint.textContent = sec;
+        return;
+      }
+      if (state && state.running && state.current) {
         var savedDiffers =
           state.current.host !== state.host ||
           String(state.current.port) !== String(state.port);
@@ -100,9 +112,27 @@
           ? '(saved settings differ — restart needed to apply)'
           : '';
       } else {
-        line.textContent = 'Status: stopped';
         hint.textContent = '';
       }
+    }
+
+    var lastState = null;
+
+    window.applyState = function (state) {
+      document.getElementById('host').value      = state.host;
+      document.getElementById('port').value      = state.port;
+      document.getElementById('log_level').value = state.log_level;
+      savedState = { host: state.host, port: state.port, log_level: state.log_level };
+      lastState  = state;
+      refreshSaveButton();
+
+      var line = document.getElementById('status-line');
+      if (state.running && state.current) {
+        line.textContent = 'Status: running on ' + state.current.host + ':' + state.current.port;
+      } else {
+        line.textContent = 'Status: stopped';
+      }
+      refreshStatusHint(state);
     };
 
     window.onSaveResult = function (result) {
@@ -138,6 +168,10 @@
       document.getElementById(id).addEventListener('input', refreshSaveButton);
     });
     document.getElementById('log_level').addEventListener('change', refreshSaveButton);
+    // Live-update the security warning as the user types the host.
+    document.getElementById('host').addEventListener('input', function () {
+      refreshStatusHint(lastState);
+    });
 
     // Pull initial state from Ruby once DOM is ready.
     sketchup.load_state();

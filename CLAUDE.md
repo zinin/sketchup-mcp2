@@ -51,7 +51,7 @@ Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `
 
 | Setting | Default | Notes |
 |---|---|---|
-| Host | `127.0.0.1` | bind address; use `0.0.0.0` to accept connections from other machines (e.g. host → VM) |
+| Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead. |
 | Port | `9876` | 1..65535 |
 | Log Level | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
 

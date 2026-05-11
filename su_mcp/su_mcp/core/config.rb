@@ -54,15 +54,26 @@ module SU_MCP
       end
 
       # Caller is responsible for passing pre-validated, normalized values
-      # (see SettingsValidator). Runtime is mutated BEFORE persistence so any
-      # write_default failure leaves the current session consistent and old
-      # prefs intact (partial persistence is acceptable — UI re-loads on next
-      # open and reflects what actually got persisted).
+      # (see SettingsValidator). Runtime is mutated BEFORE persistence; the
+      # write_default loop is then sequential and stops on the first failure.
       #
-      # Sketchup.write_default returns Boolean — false means SketchUp could not
-      # persist the value (corrupt prefs, disk full, etc.). We raise so the
-      # caller's rescue can surface a "_general" error to the user instead of
-      # silently reporting ok:true while disk state diverges from runtime.
+      # Trade-offs of this order (chosen deliberately):
+      #   - Current session always sees the new values consistently — important
+      #     for log_level, which applies immediately without a server restart.
+      #   - If write_default returns false on the Nth key (N ∈ {1,2,3}),
+      #     runtime has all three new values, but on disk: keys 1..N-1 are new
+      #     and keys N..3 are old. The raise surfaces a "_general" UI error.
+      #   - After a SketchUp restart, load_from_defaults! reads each pref
+      #     independently → the session sees a mixed old/new state. The UI
+      #     reflects that mix on next open (state is read from prefs, not
+      #     from runtime), so the user can correct it explicitly.
+      #
+      # A truly atomic alternative would either roll back runtime (loses
+      # log_level immediacy) or pack the three values into one pref key
+      # (breaks schema + needs migration). Both were judged not worth the
+      # cost given write_default false is a vanishingly-rare fault (corrupt
+      # prefs, disk full). The raise path is covered by FailingWriter tests
+      # in test_config.rb.
       def self.update!(host:, port:, log_level:, writer: Sketchup)
         port_int = port.to_i
         self.host      = host
