@@ -17,14 +17,15 @@
 - `su_mcp/su_mcp/ui/settings_dialog.rb` — singleton wrapping UI::HtmlDialog + callbacks
 - `su_mcp/su_mcp/ui/settings.html` — single-page HTML/CSS/JS
 - `test/test_settings_validation.rb` — minitest for validator
+- `test/test_application.rb` — minitest for `Application.running_config` lifecycle (via StubServer)
 
 **Modified:**
-- `su_mcp/su_mcp/core/config.rb` — full rewrite (const → accessors, ENV removed)
+- `su_mcp/su_mcp/core/config.rb` — full rewrite (const → accessors, ENV removed, add `show_migration_banner!`, runtime-first `update!`)
 - `su_mcp/su_mcp/core/server.rb` (line 26)
-- `su_mcp/su_mcp/core/application.rb` (lines 18-19 + new `running_config` snapshot)
+- `su_mcp/su_mcp/core/application.rb` (full rewrite: injectable `server_class`, `running_config` snapshot, updated status text)
 - `su_mcp/su_mcp/core/logger.rb` (line 19)
-- `su_mcp/su_mcp/main.rb` (LOAD_ORDER additions, menu entry, boot-time load)
-- `test/test_config.rb` — remove ENV tests, add reader/writer-based tests
+- `su_mcp/su_mcp/main.rb` (LOAD_ORDER additions, menu entry, boot-time `load_from_defaults!` + `show_migration_banner!`, Show Status uses `running_config`)
+- `test/test_config.rb` — remove ENV tests, add reader/writer/UI-based tests
 - `CLAUDE.md`, `README.md` — update Configuration section
 
 **Unchanged:**
@@ -163,6 +164,67 @@ class TestConfig < Minitest::Test
   def test_level_value_for_unknown_falls_back_to_info
     assert_equal 1, C.level_value_for("FOO")
   end
+
+  # --- one-time ENV→prefs migration banner ---
+
+  class StubUI
+    attr_reader :messages
+    def initialize; @messages = []; end
+    def messagebox(text); @messages << text; nil; end
+  end
+
+  def test_migration_banner_shows_once_when_env_set_and_prefs_empty
+    reader = StubReader.new("migration_notified" => false)
+    writer = StubWriter.new
+    ui     = StubUI.new
+    ENV["SKETCHUP_MCP_HOST"] = "0.0.0.0"
+    begin
+      C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
+    ensure
+      ENV.delete("SKETCHUP_MCP_HOST")
+    end
+    assert_equal 1, ui.messages.size
+    assert_includes ui.messages.first, "Plugins"
+    assert_equal ["SU_MCP", "migration_notified", true], writer.writes[0]
+  end
+
+  def test_migration_banner_skipped_when_already_notified
+    reader = StubReader.new("migration_notified" => true)
+    writer = StubWriter.new
+    ui     = StubUI.new
+    ENV["SKETCHUP_MCP_PORT"] = "9999"
+    begin
+      C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
+    ensure
+      ENV.delete("SKETCHUP_MCP_PORT")
+    end
+    assert_empty ui.messages
+    assert_empty writer.writes
+  end
+
+  def test_migration_banner_skipped_when_no_env
+    reader = StubReader.new
+    writer = StubWriter.new
+    ui     = StubUI.new
+    %w[SKETCHUP_MCP_HOST SKETCHUP_MCP_PORT SKETCHUP_MCP_LOG_LEVEL].each { |v| ENV.delete(v) }
+    C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
+    assert_empty ui.messages
+    assert_empty writer.writes
+  end
+
+  def test_migration_banner_skipped_when_prefs_already_have_host
+    reader = StubReader.new("host" => "192.168.1.1")
+    writer = StubWriter.new
+    ui     = StubUI.new
+    ENV["SKETCHUP_MCP_HOST"] = "0.0.0.0"
+    begin
+      C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
+    ensure
+      ENV.delete("SKETCHUP_MCP_HOST")
+    end
+    assert_empty ui.messages
+    assert_empty writer.writes
+  end
 end
 ```
 
@@ -196,18 +258,44 @@ module SU_MCP
       end
 
       def self.load_from_defaults!(reader = Sketchup)
-        self.host      = reader.read_default(SECTION, "host",      DEFAULTS[:host])
+        self.host      = reader.read_default(SECTION, "host",      DEFAULTS[:host]).to_s
         self.port      = reader.read_default(SECTION, "port",      DEFAULTS[:port]).to_i
         self.log_level = reader.read_default(SECTION, "log_level", DEFAULTS[:log_level]).to_s.upcase
       end
 
+      # Caller is responsible for passing pre-validated, normalized values
+      # (see SettingsValidator). Runtime is mutated BEFORE persistence so any
+      # write_default failure leaves the current session consistent and old
+      # prefs intact (partial persistence is acceptable — UI re-loads on next
+      # open and reflects what actually got persisted).
       def self.update!(host:, port:, log_level:, writer: Sketchup)
-        writer.write_default(SECTION, "host",      host)
-        writer.write_default(SECTION, "port",      port.to_i)
-        writer.write_default(SECTION, "log_level", log_level)
         self.host      = host
         self.port      = port.to_i
         self.log_level = log_level
+        writer.write_default(SECTION, "host",      host)
+        writer.write_default(SECTION, "port",      port.to_i)
+        writer.write_default(SECTION, "log_level", log_level)
+      end
+
+      # One-time UI nudge for users migrating from the old ENV-based config.
+      # Shown when at least one of the legacy ENV vars is set, no prefs have
+      # been saved yet, and we haven't already shown this dialog.
+      def self.show_migration_banner!(reader: Sketchup, writer: Sketchup, ui: ::UI)
+        return if reader.read_default(SECTION, "migration_notified", false)
+        legacy_env_present =
+          %w[SKETCHUP_MCP_HOST SKETCHUP_MCP_PORT SKETCHUP_MCP_LOG_LEVEL].any? { |v| ENV[v] }
+        return unless legacy_env_present
+        prefs_empty =
+          reader.read_default(SECTION, "host", nil).nil? &&
+          reader.read_default(SECTION, "port", nil).nil? &&
+          reader.read_default(SECTION, "log_level", nil).nil?
+        return unless prefs_empty
+        ui.messagebox(
+          "MCP Server settings have moved to Plugins → MCP Server → Settings…\n\n" \
+          "Please open Settings and re-enter your configuration. " \
+          "Environment variables (SKETCHUP_MCP_HOST/PORT/LOG_LEVEL) are no longer read by the SketchUp extension."
+        )
+        writer.write_default(SECTION, "migration_notified", true)
       end
 
       def self.level_value
@@ -225,7 +313,7 @@ end
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `ruby test/test_config.rb`
-Expected: PASS — all 13 tests green.
+Expected: PASS — all 17 tests green.
 
 - [ ] **Step 5: Commit**
 
@@ -235,21 +323,26 @@ git commit -m "refactor: replace Config ENV/const reading with accessors + load/
 
 Constants PORT/HOST/LOG_LEVEL become mutable accessors. ENV reading
 removed; load_from_defaults! reads from injected reader (Sketchup by
-default), update! writes via injected writer. Tests use StubReader/
-StubWriter to run without SketchUp."
+default), update! writes via injected writer with runtime-first ordering
+so partial persistence keeps the current session consistent.
+show_migration_banner! shows a one-time messagebox for users coming from
+the ENV-based config. Tests use StubReader/StubWriter/StubUI to run
+without SketchUp."
 ```
 
 ---
 
-## Task 2: Switch all `Config::CONST` consumers to method form
+## Task 2: Consumers + boot wiring + `running_config` + test_application + migration banner
 
-Each consumer is one or two simple substitutions. We run the full Ruby test suite after the edits to make sure nothing else broke.
+Single atomic commit that takes the project from "Config refactored in isolation" (after Task 1) to "Config fully wired into running plugin." Intentionally not split so the working tree never sits in a state where consumers reference the now-deleted `Config::CONST` constants without a corresponding `load_from_defaults!` populating the accessors.
 
 **Files:**
 - Modify: `su_mcp/su_mcp/core/server.rb`
-- Modify: `su_mcp/su_mcp/core/application.rb`
+- Rewrite: `su_mcp/su_mcp/core/application.rb`
 - Modify: `su_mcp/su_mcp/core/logger.rb`
 - Modify: `su_mcp/su_mcp/main.rb`
+- Create: `test/test_application.rb`
+- Modify (if needed): `test/run_all.rb`
 
 - [ ] **Step 1: Update `core/server.rb` line 26**
 
@@ -262,20 +355,7 @@ to:
         @server = TCPServer.new(Config.host, Config.port)
 ```
 
-- [ ] **Step 2: Update `core/application.rb` lines 18-19**
-
-Change:
-```ruby
-          Sketchup.status_text = "MCP Server: running on :#{Config::PORT}"
-          Logger.log_tool("application", "started", "port=#{Config::PORT}")
-```
-to:
-```ruby
-          Sketchup.status_text = "MCP Server: running on :#{Config.port}"
-          Logger.log_tool("application", "started", "port=#{Config.port}")
-```
-
-- [ ] **Step 3: Update `core/logger.rb` line 19**
+- [ ] **Step 2: Update `core/logger.rb` line 19**
 
 Change:
 ```ruby
@@ -286,49 +366,7 @@ to:
         return unless Config.log_level == "DEBUG" && exception.backtrace
 ```
 
-- [ ] **Step 4: Update `main.rb` line 58**
-
-Change:
-```ruby
-        ? "running on :#{SU_MCP::Core::Config::PORT}" \
-```
-to:
-```ruby
-        ? "running on :#{SU_MCP::Core::Config.port}" \
-```
-
-- [ ] **Step 5: Run all Ruby tests**
-
-Run: `ruby test/run_all.rb`
-Expected: all tests PASS. `framing.rb` still uses `Config::MAX_MESSAGE_SIZE` (constant kept), so framing tests stay green. `test_state_machine.rb` uses the same constant; stays green.
-
-- [ ] **Step 6: Verify no leftover `Config::HOST`/`PORT`/`LOG_LEVEL` refs**
-
-Run: `grep -rn -E "Config::(HOST|PORT|LOG_LEVEL)" su_mcp/ test/`
-Expected: no output (zero matches). If any match remains, fix it before committing.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add su_mcp/su_mcp/core/server.rb su_mcp/su_mcp/core/application.rb \
-        su_mcp/su_mcp/core/logger.rb su_mcp/su_mcp/main.rb
-git commit -m "refactor: switch Config consumers to accessor methods
-
-server.rb, application.rb, logger.rb, main.rb now call Config.host/.port/
-.log_level instead of the deleted Config::HOST/PORT/LOG_LEVEL constants."
-```
-
----
-
-## Task 3: Wire boot-time load + Application.running_config snapshot
-
-The settings dialog needs to show the values the server was *running* with, not just the saved values — so `Application` captures a snapshot at `start`.
-
-**Files:**
-- Modify: `su_mcp/su_mcp/core/application.rb`
-- Modify: `su_mcp/su_mcp/main.rb`
-
-- [ ] **Step 1: Add `running_config` to `Application`**
+- [ ] **Step 3: Rewrite `core/application.rb` to add `running_config` snapshot + injectable Server**
 
 Replace the entire `su_mcp/su_mcp/core/application.rb` file with:
 
@@ -340,6 +378,15 @@ module SU_MCP
       @server         = nil
       @running        = false
       @running_config = nil
+
+      # The Server class is resolved lazily so tests can swap in a stub.
+      def self.server_class
+        @server_class ||= Server
+      end
+
+      def self.server_class=(klass)
+        @server_class = klass
+      end
 
       def self.running?
         @running
@@ -354,7 +401,7 @@ module SU_MCP
       def self.start
         return if @running
         begin
-          @server = Server.new
+          @server = server_class.new
           @server.start
           @running = true
           @running_config = {
@@ -362,8 +409,8 @@ module SU_MCP
             port:      Config.port,
             log_level: Config.log_level
           }
-          Sketchup.status_text = "MCP Server: running on :#{Config.port}"
-          Logger.log_tool("application", "started", "port=#{Config.port}")
+          Sketchup.status_text = "MCP Server: running on #{Config.host}:#{Config.port}"
+          Logger.log_tool("application", "started", "host=#{Config.host} port=#{Config.port}")
         rescue StandardError => e
           Logger.log_error("application.start", e)
           UI.messagebox("MCP Server failed to start:\n\n#{e.message}\n\n" \
@@ -398,7 +445,7 @@ module SU_MCP
 end
 ```
 
-- [ ] **Step 2: Add boot-time `load_from_defaults!` call in `main.rb`**
+- [ ] **Step 4: Update `main.rb` — boot wiring + Show Status using running_config**
 
 In `su_mcp/su_mcp/main.rb`, find:
 ```ruby
@@ -410,36 +457,156 @@ Replace with:
 
   # Hydrate Config from SketchUp preferences (replaces ENV-based config).
   SU_MCP::Core::Config.load_from_defaults!
+  # One-time messagebox for users coming from the ENV-based config.
+  SU_MCP::Core::Config.show_migration_banner!
 ```
 
-- [ ] **Step 3: Syntax-check both files**
+Then find the "Show Status" menu wiring (it currently references either
+`Config::PORT` or `Config.port`):
+```ruby
+    menu.add_item("Show Status") {
+      state = SU_MCP::Core::Application.running? \
+        ? "running on :#{SU_MCP::Core::Config::PORT}" \
+        : "stopped"
+      SU_MCP::Core::Logger.log_tool("application", "status", state)
+      Sketchup.status_text = "MCP Server: #{state}"
+    }
+```
+Replace with:
+```ruby
+    menu.add_item("Show Status") {
+      state =
+        if SU_MCP::Core::Application.running?
+          rc = SU_MCP::Core::Application.running_config
+          "running on #{rc[:host]}:#{rc[:port]}"
+        else
+          "stopped"
+        end
+      SU_MCP::Core::Logger.log_tool("application", "status", state)
+      Sketchup.status_text = "MCP Server: #{state}"
+    }
+```
+
+- [ ] **Step 5: Create `test/test_application.rb`**
+
+```ruby
+# test/test_application.rb
+require "minitest/autorun"
+require_relative "../su_mcp/su_mcp/core/config"
+
+# Stub the slice of the SketchUp Ruby API surface that Application touches at
+# runtime so we can exercise lifecycle + running_config without a live SketchUp.
+module Sketchup; def self.status_text=(_); end; end unless defined?(Sketchup)
+module UI;       def self.messagebox(*); end;    end unless defined?(UI)
+SKETCHUP_CONSOLE = nil unless defined?(SKETCHUP_CONSOLE)
+
+require_relative "../su_mcp/su_mcp/core/logger"
+require_relative "../su_mcp/su_mcp/core/application"
+
+class StubServer
+  attr_reader :start_called, :stop_called
+  def initialize; @start_called = false; @stop_called = false; end
+  def start; @start_called = true; end
+  def stop;  @stop_called  = true; end
+end
+
+class StubServerThatFails
+  def start; raise "simulated start failure"; end
+  def stop; end
+end
+
+class TestApplication < Minitest::Test
+  A = SU_MCP::Core::Application
+
+  def setup
+    A.stop if A.running?
+    A.server_class = StubServer
+    SU_MCP::Core::Config.host      = "127.0.0.1"
+    SU_MCP::Core::Config.port      = 9876
+    SU_MCP::Core::Config.log_level = "INFO"
+  end
+
+  def teardown
+    A.stop if A.running?
+    A.server_class = nil  # reset so Application.server_class falls back to ::Server next time
+  end
+
+  def test_start_captures_running_config_snapshot
+    A.start
+    rc = A.running_config
+    refute_nil rc
+    assert_equal "127.0.0.1", rc[:host]
+    assert_equal 9876,         rc[:port]
+    assert_equal "INFO",       rc[:log_level]
+  end
+
+  def test_stop_clears_running_config
+    A.start
+    A.stop
+    assert_nil A.running_config
+    refute A.running?
+  end
+
+  def test_start_failure_leaves_running_config_nil
+    A.server_class = StubServerThatFails
+    A.start
+    assert_nil A.running_config
+    refute A.running?
+  end
+end
+```
+
+- [ ] **Step 6: Syntax-check all changed/created files**
 
 Run:
 ```bash
+ruby -c su_mcp/su_mcp/core/server.rb
 ruby -c su_mcp/su_mcp/core/application.rb
+ruby -c su_mcp/su_mcp/core/logger.rb
 ruby -c su_mcp/su_mcp/main.rb
+ruby -c test/test_application.rb
 ```
-Expected: `Syntax OK` for both.
+Expected: `Syntax OK` for each.
 
-- [ ] **Step 4: Run the full Ruby test suite**
+- [ ] **Step 7: Verify no leftover `Config::HOST`/`PORT`/`LOG_LEVEL` refs**
+
+Run: `grep -rn -E "Config::(HOST|PORT|LOG_LEVEL)" su_mcp/ test/`
+Expected: zero matches.
+
+- [ ] **Step 8: Wire `test_application.rb` into `run_all.rb` if needed**
+
+Read `test/run_all.rb`. If it globs (`Dir[...]`), the new test is picked up automatically. Otherwise add:
+```ruby
+require_relative "test_application"
+```
+
+- [ ] **Step 9: Run the full Ruby test suite**
 
 Run: `ruby test/run_all.rb`
-Expected: all tests PASS (no new tests, but nothing broken).
+Expected: all tests PASS, including the 3 new `test_application.rb` tests. Pre-existing suites remain green.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add su_mcp/su_mcp/core/application.rb su_mcp/su_mcp/main.rb
-git commit -m "feat: boot-time Config load + Application.running_config snapshot
+git add su_mcp/su_mcp/core/server.rb su_mcp/su_mcp/core/application.rb \
+        su_mcp/su_mcp/core/logger.rb su_mcp/su_mcp/main.rb \
+        test/test_application.rb test/run_all.rb
+git commit -m "feat: wire Config into runtime + Application.running_config snapshot
 
-main.rb calls Config.load_from_defaults! once after modules are required.
-Application captures {host,port,log_level} at start so the upcoming
-settings dialog can show 'saved differs from running'."
+Switches all Config consumers to accessor form, calls
+Config.load_from_defaults! and show_migration_banner! at boot, makes
+Application capture a {host,port,log_level} snapshot at start and clear
+it on stop/start-failure. Show Status now reports the actually-running
+snapshot rather than the freshly-saved Config values. New
+test_application.rb verifies snapshot semantics via an injected
+StubServer."
 ```
+
+(Drop `test/run_all.rb` from `git add` if Step 8 did not need to change it.)
 
 ---
 
-## Task 4: `SettingsValidator` module (TDD)
+## Task 3: `SettingsValidator` module (TDD)
 
 Pure validation. No SketchUp deps. Returns `{ok:, errors:[, normalized:]}`.
 
@@ -494,6 +661,17 @@ class TestSettingsValidator < Minitest::Test
     assert_match(/long/i, result[:errors][:host])
   end
 
+  def test_rejects_host_with_invalid_characters
+    result = V.validate("host" => "127.0.0.1/foo", "port" => "9876", "log_level" => "INFO")
+    refute result[:ok]
+    assert_match(/invalid characters/i, result[:errors][:host])
+  end
+
+  def test_accepts_ipv6_unbracketed
+    result = V.validate("host" => "::1", "port" => "9876", "log_level" => "INFO")
+    assert result[:ok]
+  end
+
   def test_rejects_non_numeric_port
     result = V.validate("host" => "127.0.0.1", "port" => "abc", "log_level" => "INFO")
     refute result[:ok]
@@ -545,8 +723,11 @@ Expected: cannot load `settings_validator` — `LoadError` / `cannot load such f
 module SU_MCP
   module UI
     module SettingsValidator
-      VALID_LEVELS = %w[DEBUG INFO WARN ERROR].freeze
+      VALID_LEVELS    = %w[DEBUG INFO WARN ERROR].freeze
       MAX_HOST_LENGTH = 253
+      # Characters allowed in host. Covers IPv4 dotted-decimal, IPv6
+      # unbracketed (colons), hostnames (letters/digits/dots/dashes).
+      HOST_CHARSET    = /\A[A-Za-z0-9._\-:]+\z/
 
       # Validates a {"host", "port", "log_level"} hash (string keys, as parsed
       # from JSON sent by the HtmlDialog).
@@ -566,6 +747,8 @@ module SU_MCP
           errors[:host] = "Host must not contain whitespace"
         elsif host.length > MAX_HOST_LENGTH
           errors[:host] = "Host too long (max #{MAX_HOST_LENGTH} characters)"
+        elsif host !~ HOST_CHARSET
+          errors[:host] = "Host contains invalid characters"
         end
 
         port_int = Integer(port_raw, exception: false)
@@ -592,7 +775,7 @@ end
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `ruby test/test_settings_validation.rb`
-Expected: PASS — all 12 tests green.
+Expected: PASS — all 14 tests green.
 
 - [ ] **Step 5: Wire into `test/run_all.rb`**
 
@@ -616,7 +799,7 @@ log_level upcased, ready to pass to Config.update!."
 
 ---
 
-## Task 5: `settings.html` — UI shell
+## Task 4: `settings.html` — UI shell
 
 Single self-contained HTML file. No build step. The JS only handles DOM wiring and the three IPC actions (`load_state`, `save`, `cancel`).
 
@@ -634,16 +817,18 @@ Write `su_mcp/su_mcp/ui/settings.html` with:
   <meta charset="utf-8">
   <title>MCP Server Settings</title>
   <style>
-    body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; font-size: 13px; margin: 16px; color: #222; }
-    .row { display: flex; align-items: center; margin-bottom: 4px; }
-    .row label { width: 110px; }
-    .row input, .row select { flex: 1; padding: 4px 6px; font-size: 13px; box-sizing: border-box; }
-    .error { color: #c00; font-size: 11px; margin: 0 0 8px 110px; min-height: 14px; }
-    .status { border-top: 1px solid #ccc; padding-top: 10px; margin-top: 14px; font-size: 12px; color: #444; }
+    /* Use em / flex-basis instead of fixed px so the dialog survives Windows
+       125–200% display scaling and macOS Retina without overlap. */
+    body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; font-size: 13px; margin: 1em; color: #222; }
+    .row { display: flex; align-items: center; margin-bottom: 0.3em; }
+    .row label { flex: 0 0 8em; }
+    .row input, .row select { flex: 1; padding: 0.3em 0.5em; font-size: 1em; box-sizing: border-box; }
+    .error { color: #c00; font-size: 0.85em; margin: 0 0 0.6em 8em; min-height: 1.1em; }
+    .status { border-top: 1px solid #ccc; padding-top: 0.7em; margin-top: 1em; font-size: 0.95em; color: #444; }
     .status.hidden { display: none; }
-    .warning { color: #c80; margin-top: 4px; }
-    .buttons { text-align: right; margin-top: 16px; }
-    button { padding: 6px 14px; margin-left: 8px; font-size: 13px; }
+    .warning { color: #c80; margin-top: 0.3em; }
+    .buttons { text-align: right; margin-top: 1.1em; }
+    button { padding: 0.45em 1em; margin-left: 0.5em; font-size: 1em; }
   </style>
 </head>
 <body>
@@ -706,6 +891,8 @@ Write `su_mcp/su_mcp/ui/settings.html` with:
       if (state.running && state.current) {
         status.classList.remove('hidden');
         line.textContent = 'Status: running on ' + state.current.host + ':' + state.current.port;
+        // Log-level changes apply immediately (Logger reads Config.log_level
+        // per call), so only host/port mismatches drive the restart banner.
         var savedDiffers =
           state.current.host !== state.host ||
           String(state.current.port) !== String(state.port);
@@ -721,8 +908,15 @@ Write `su_mcp/su_mcp/ui/settings.html` with:
       clearErrors();
       if (!result.ok) {
         showErrors(result.errors || {});
+        // A '_general' error (e.g. internal exception) does not map to a
+        // form field; surface it under the host-error slot as a last resort.
+        if (result.errors && result.errors._general) {
+          document.getElementById('host-error').textContent =
+            result.errors._general;
+        }
       }
-      // ok === true → Ruby owns the next step (close dialog or restart prompt)
+      // ok === true → Ruby will call applyState again to refresh the UI and
+      // (optionally) prompt for restart via a native messagebox.
     };
 
     document.getElementById('btn-save').addEventListener('click', function () {
@@ -764,7 +958,7 @@ DOM ready, save on Save click, cancel on Cancel click."
 
 ---
 
-## Task 6: `SettingsDialog` Ruby class — IPC + Save flow
+## Task 5: `SettingsDialog` Ruby class — IPC + Save flow
 
 Singleton wrapping `UI::HtmlDialog`. Wires three callbacks. Owns the post-Save restart prompt.
 
@@ -780,15 +974,21 @@ require "json"
 module SU_MCP
   module UI
     module SettingsDialog
-      HTML_PATH = File.join(File.dirname(__FILE__), "settings.html").freeze
-      DIALOG_TITLE  = "MCP Server Settings"
-      DIALOG_PREFS  = "SU_MCP_SettingsDialog".freeze
+      HTML_PATH    = File.join(File.dirname(__FILE__), "settings.html").freeze
+      DIALOG_TITLE = "MCP Server Settings"
+      # Derive prefs_key from the Config section name so all our SU prefs
+      # cluster together. SketchUp uses this only for remembering dialog
+      # position/size — not related to our host/port/log_level prefs.
+      DIALOG_PREFS = "#{SU_MCP::Core::Config::SECTION}_SettingsDialog".freeze
 
       @dialog = nil
 
-      # Idempotent: bring existing dialog to front instead of opening a second one.
+      # Idempotent: refresh state and bring existing dialog to front instead of
+      # opening a second one. Always refreshing means the dialog stays accurate
+      # even if the server was toggled through the main menu in the meantime.
       def self.show
         if @dialog && @dialog.visible?
+          on_load_state(@dialog)
           @dialog.bring_to_front
           return
         end
@@ -807,14 +1007,16 @@ module SU_MCP
           style:           ::UI::HtmlDialog::STYLE_DIALOG
         )
 
-        dialog.add_action_callback("load_state") { |_ctx|         on_load_state(dialog) }
-        dialog.add_action_callback("save")       { |_ctx, json|   on_save(dialog, json) }
-        dialog.add_action_callback("cancel")     { |_ctx|         dialog.close }
+        dialog.add_action_callback("load_state") { |_ctx|       on_load_state(dialog) }
+        dialog.add_action_callback("save")       { |_ctx, json| on_save(dialog, json) }
+        dialog.add_action_callback("cancel")     { |_ctx|       dialog.close }
 
         dialog.set_file(HTML_PATH)
         dialog
       end
 
+      # Push current Config + Application state into the dialog. Called on
+      # initial DOM ready, after Save, and on show() when reopening.
       def self.on_load_state(dialog)
         state = {
           host:      SU_MCP::Core::Config.host,
@@ -823,7 +1025,7 @@ module SU_MCP
           running:   SU_MCP::Core::Application.running?,
           current:   SU_MCP::Core::Application.running_config
         }
-        dialog.execute_script("window.applyState(#{JSON.generate(state)})")
+        dialog.execute_script("window.applyState(#{js_safe_json(state)})")
       rescue StandardError => e
         SU_MCP::Core::Logger.log_error("settings_dialog.load_state", e)
       end
@@ -834,15 +1036,16 @@ module SU_MCP
 
         unless result[:ok]
           dialog.execute_script(
-            "window.onSaveResult(#{JSON.generate({ ok: false, errors: result[:errors] })})"
+            "window.onSaveResult(#{js_safe_json({ ok: false, errors: result[:errors] })})"
           )
           return
         end
 
-        normalized   = result[:normalized]
-        was_running  = SU_MCP::Core::Application.running?
-        old_host     = SU_MCP::Core::Config.host
-        old_port     = SU_MCP::Core::Config.port
+        normalized = result[:normalized]
+        # Snapshot what the server is *actually* running on (not the
+        # last-saved Config). Reverting saved values back to running values
+        # therefore does not provoke a restart prompt.
+        current_runtime = SU_MCP::Core::Application.running_config
 
         SU_MCP::Core::Config.update!(
           host:      normalized[:host],
@@ -850,20 +1053,42 @@ module SU_MCP
           log_level: normalized[:log_level]
         )
 
-        dialog.execute_script("window.onSaveResult(#{JSON.generate({ ok: true })})")
+        dialog.execute_script("window.onSaveResult(#{js_safe_json({ ok: true })})")
+        # Refresh the form + status banner with what was actually persisted.
+        on_load_state(dialog)
 
-        need_restart = was_running &&
-                       (normalized[:host] != old_host || normalized[:port] != old_port)
+        need_restart = current_runtime &&
+                       (normalized[:host] != current_runtime[:host] ||
+                        normalized[:port] != current_runtime[:port])
 
         if need_restart
-          answer = ::UI.messagebox("Restart server with new settings now?", MB_YESNO)
-          SU_MCP::Core::Application.restart if answer == IDYES
+          # Wrap UI.messagebox in UI.start_timer so it does not run inside the
+          # action_callback stack — a known Windows quirk that can sink the
+          # message box behind the main SketchUp window and freeze the UI.
+          ::UI.start_timer(0, false) do
+            answer = ::UI.messagebox("Restart server with new settings now?", MB_YESNO)
+            SU_MCP::Core::Application.restart if answer == IDYES
+            # After restart, refresh dialog state if it's still open so the
+            # status block reflects the new running config.
+            on_load_state(dialog) if @dialog && @dialog.visible?
+          end
         end
       rescue StandardError => e
         SU_MCP::Core::Logger.log_error("settings_dialog.save", e)
+        # Sanitize e.message in case it carries invalid UTF-8 or quotes that
+        # would break JSON.generate or be misinterpreted by the HTML parser.
+        safe_msg = e.message.to_s.encode("utf-8", invalid: :replace, undef: :replace)
         dialog.execute_script(
-          "window.onSaveResult(#{JSON.generate({ ok: false, errors: { host: \"Internal error: #{e.message}\" } })})"
+          "window.onSaveResult(#{js_safe_json({ ok: false, errors: { _general: "Internal error: #{safe_msg}" } })})"
         )
+      end
+
+      # JSON.generate does not escape "</" inside a <script> block context.
+      # Even though our payload is locally sourced, defense-in-depth: replace
+      # "</" → "<\/" so the JSON literal cannot prematurely terminate the
+      # script tag context if it were ever embedded that way.
+      def self.js_safe_json(value)
+        JSON.generate(value).gsub("</", "<\\/")
       end
     end
   end
@@ -878,9 +1103,9 @@ Expected: `Syntax OK`.
 - [ ] **Step 3: Verify no broken references in dependent modules**
 
 This file references:
-- `SU_MCP::Core::Config.host/.port/.log_level/.update!` — defined in Task 1
-- `SU_MCP::Core::Application.running?/.running_config/.restart` — `running_config` defined in Task 3
-- `SU_MCP::UI::SettingsValidator.validate` — defined in Task 4
+- `SU_MCP::Core::Config::SECTION`, `Config.host/.port/.log_level/.update!` — defined in Task 1
+- `SU_MCP::Core::Application.running?/.running_config/.restart` — defined in Task 2
+- `SU_MCP::UI::SettingsValidator.validate` — defined in Task 3
 - `SU_MCP::Core::Logger.log_error` — pre-existing
 - Sketchup-only globals (`UI::HtmlDialog`, `MB_YESNO`, `IDYES`, `UI.messagebox`) — not testable outside SketchUp
 
@@ -901,7 +1126,7 @@ Log-level changes apply immediately without restart."
 
 ---
 
-## Task 7: Wire UI files into `LOAD_ORDER` and add the menu entry
+## Task 6: Wire UI files into `LOAD_ORDER` and add the menu entry
 
 **Files:**
 - Modify: `su_mcp/su_mcp/main.rb`
@@ -983,7 +1208,7 @@ Expected: `Syntax OK`.
 - [ ] **Step 4: Run the full Ruby test suite one last time**
 
 Run: `ruby test/run_all.rb`
-Expected: all tests PASS — Config (13 tests), SettingsValidator (12 tests), and pre-existing suites combined.
+Expected: all tests PASS — Config (17 tests), Application (3 tests), SettingsValidator (14 tests), and pre-existing suites combined.
 
 - [ ] **Step 5: Commit**
 
@@ -997,7 +1222,7 @@ Menu gains a 'Settings...' item between Restart and Show Log."
 
 ---
 
-## Task 8: Update `CLAUDE.md` and `README.md`
+## Task 7: Update `CLAUDE.md` and `README.md`
 
 **Files:**
 - Modify: `CLAUDE.md`
@@ -1066,24 +1291,24 @@ Ruby side; Python ENV documentation kept where it appears."
 
 ---
 
-## Task 9: Final verification
+## Task 8: Final verification
 
 **Files:** none modified.
 
 - [ ] **Step 1: Run the full Ruby test suite**
 
 Run: `ruby test/run_all.rb`
-Expected: all tests PASS. The count should be the pre-existing 80 runs minus the 4 removed ENV tests, plus the 13 new Config tests and 12 new validator tests = approximately **101 runs** (exact count depends on the existing baseline). All assertions pass.
+Expected: all tests PASS. Approximate count: pre-existing 80 − 8 removed (the entire old `test_config.rb` is replaced) + 17 new Config + 14 SettingsValidator + 3 Application = around **106 runs** (exact total depends on whether you count `test_config.rb` as removed-and-added vs. modified). All assertions pass.
 
 - [ ] **Step 2: Run the Python test suite**
 
 Run: `uv run pytest tests/ -q`
 Expected: all 52 tests PASS. (No Python code was modified, so this is purely a regression check.)
 
-- [ ] **Step 3: Confirm no `Config::HOST`/`PORT`/`LOG_LEVEL` left in any file**
+- [ ] **Step 3: Confirm no `Config::HOST`/`PORT`/`LOG_LEVEL` left in code**
 
-Run: `grep -rn -E "Config::(HOST|PORT|LOG_LEVEL)" su_mcp/ test/ src/ docs/ 2>/dev/null`
-Expected: zero matches outside of `docs/superpowers/specs/2026-05-11-menu-settings-ui-design.md` (which is a historical record).
+Run: `grep -rn -E "Config::(HOST|PORT|LOG_LEVEL)" su_mcp/ test/ src/ 2>/dev/null`
+Expected: zero matches. (`docs/superpowers/` is excluded — design/plan documents reference the old names as historical context, which is fine.)
 
 - [ ] **Step 4: Confirm no `ENV["SKETCHUP_MCP_HOST"|"PORT"|"LOG_LEVEL"]` left in Ruby code**
 
@@ -1116,19 +1341,21 @@ The plan ends here. The implementer should hand the branch back for review (or m
 
 | Spec section | Covered by Task |
 |---|---|
-| 5.1 Config refactor | 1 |
-| 5.2 Boot wiring | 3 |
-| 5.3 Consumers | 2 |
-| 5.4 HtmlDialog files & IPC | 5, 6 |
-| 5.5 Save flow | 6 |
-| 5.6 Validation rules | 4 |
-| 5.7 HTML layout | 5 |
-| 5.8 Menu wiring | 7 |
+| 5.1 Config refactor (incl. update! runtime-first, .to_s host, migration banner) | 1 |
+| 5.2 Boot wiring (load_from_defaults! + show_migration_banner!) | 2 |
+| 5.3 Consumers + `running_config` + Show Status | 2 |
+| 5.4 HtmlDialog files & IPC | 4, 5 |
+| 5.5 Save flow (with on_load_state refresh + UI.start_timer wrap) | 5 |
+| 5.6 Validation rules (incl. host charset regex) | 3 |
+| 5.7 HTML layout (em / flex-basis for High-DPI) | 4 |
+| 5.8 Menu wiring | 6 |
 | 6.1 ENV removal | 1 (config rewrite drops `read_env`) |
-| 6.2 Docs | 8 |
-| 6.3 Packaging (no change) | — (verified in design; `cp_r` is recursive) |
-| 7.1 test_config.rb adapted | 1 |
-| 7.2 test_settings_validation.rb new | 4 |
-| 7.3 test_state_machine.rb (no change) | — (verified in spec) |
-| 8 Risks/edge cases | mitigations woven into Tasks 1/4/6 |
+| 6.2 Migration banner | 1 (Config.show_migration_banner!) + 2 (boot call) |
+| 6.3 Docs | 7 |
+| 6.4 Packaging (no change) | — (verified in design; `cp_r` is recursive) |
+| 7.1 test_application.rb new | 2 |
+| 7.2 test_config.rb adapted | 1 |
+| 7.3 test_settings_validation.rb new | 3 |
+| 7.4 test_state_machine.rb (no change) | — (verified in spec) |
+| 8 Risks/edge cases | mitigations woven into Tasks 1/2/5 |
 | 9 Out of scope | — (intentionally not implemented) |
