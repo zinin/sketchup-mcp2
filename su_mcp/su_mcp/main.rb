@@ -41,8 +41,6 @@ module SU_MCP
 
   # Hydrate Config from SketchUp preferences (replaces ENV-based config).
   SU_MCP::Core::Config.load_from_defaults!
-  # One-time messagebox for users coming from the ENV-based config.
-  SU_MCP::Core::Config.show_migration_banner!
 
   def self.install_menu
     menu = ::UI.menu("Plugins").add_submenu("MCP Server")

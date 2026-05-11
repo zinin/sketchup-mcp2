@@ -35,13 +35,14 @@ module SU_MCP
             host:      Config.host,
             port:      Config.port,
             log_level: Config.log_level
-          }
+          }.freeze
           Sketchup.status_text = "MCP Server: running on #{Config.host}:#{Config.port}"
           Logger.log_tool("application", "started", "host=#{Config.host} port=#{Config.port}")
         rescue StandardError => e
           Logger.log_error("application.start", e)
           ::UI.messagebox("MCP Server failed to start:\n\n#{e.message}\n\n" \
                           "Check Plugins → MCP Server → Show Log for details.")
+          @server&.stop rescue nil
           @server = nil
           @running = false
           @running_config = nil

@@ -39,7 +39,9 @@ module SU_MCP
 
         dialog.add_action_callback("load_state") { |_ctx|       on_load_state(dialog) }
         dialog.add_action_callback("save")       { |_ctx, json| on_save(dialog, json) }
-        dialog.add_action_callback("cancel")     { |_ctx|       dialog.close }
+        # Defer dialog.close out of the JS action_callback frame for the same
+        # Windows-quirk reason we wrap UI.messagebox below — cheap insurance.
+        dialog.add_action_callback("cancel")     { |_ctx|       ::UI.start_timer(0, false) { dialog.close } }
 
         dialog.set_file(HTML_PATH)
         dialog
@@ -96,29 +98,43 @@ module SU_MCP
           # action_callback stack — a known Windows quirk that can sink the
           # message box behind the main SketchUp window and freeze the UI.
           ::UI.start_timer(0, false) do
-            answer = ::UI.messagebox("Restart server with new settings now?", MB_YESNO)
-            SU_MCP::Core::Application.restart if answer == IDYES
-            # After restart, refresh dialog state if it's still open so the
-            # status block reflects the new running config.
-            on_load_state(dialog) if @dialog && @dialog.visible?
+            answer = ::UI.messagebox("Restart server with new settings now?", ::MB_YESNO)
+            SU_MCP::Core::Application.restart if answer == ::IDYES
+            # Refresh the *current* dialog (@dialog) — the closure-captured
+            # `dialog` could be stale if the user closed and reopened the
+            # window between Save and the timer firing.
+            on_load_state(@dialog) if @dialog && @dialog.visible?
           end
         end
       rescue StandardError => e
         SU_MCP::Core::Logger.log_error("settings_dialog.save", e)
-        # Sanitize e.message in case it carries invalid UTF-8 or quotes that
-        # would break JSON.generate or be misinterpreted by the HTML parser.
-        safe_msg = e.message.to_s.encode("utf-8", invalid: :replace, undef: :replace)
-        dialog.execute_script(
-          "window.onSaveResult(#{js_safe_json({ ok: false, errors: { _general: "Internal error: #{safe_msg}" } })})"
-        )
+        # Sanitize e.message in case it carries invalid UTF-8 bytes that would
+        # break JSON.generate. scrub replaces invalid bytes with "?" verbatim.
+        safe_msg = e.message.to_s.scrub("?")
+        # Guard against the dialog being closed mid-save: if execute_script
+        # itself fails, we have already logged the original cause above and
+        # nothing more we can do — swallow secondary failure instead of
+        # propagating it back across the SketchUp action_callback boundary.
+        begin
+          dialog.execute_script(
+            "window.onSaveResult(#{js_safe_json({ ok: false, errors: { _general: "Internal error: #{safe_msg}" } })})"
+          )
+        rescue StandardError
+          nil
+        end
       end
 
       # JSON.generate does not escape "</" inside a <script> block context.
       # Even though our payload is locally sourced, defense-in-depth: replace
       # "</" → "<\/" so the JSON literal cannot prematurely terminate the
-      # script tag context if it were ever embedded that way.
+      # script tag context if it were ever embedded that way. Also escape
+      # U+2028 / U+2029 — they are valid JSON but historically terminate JS
+      # string literals on engines older than ES2019.
       def self.js_safe_json(value)
-        JSON.generate(value).gsub("</", "<\\/")
+        JSON.generate(value)
+          .gsub("</",       "<\\/")
+          .gsub(" ",   "\\u2028")
+          .gsub(" ",   "\\u2029")
       end
     end
   end

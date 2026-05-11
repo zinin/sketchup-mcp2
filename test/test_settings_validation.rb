@@ -89,4 +89,30 @@ class TestSettingsValidator < Minitest::Test
     assert_kind_of Integer, result[:normalized][:port]
     assert_equal 443, result[:normalized][:port]
   end
+
+  def test_rejects_non_hash_payload
+    [nil, [], "string", 42, true].each do |bad|
+      result = V.validate(bad)
+      refute result[:ok], "expected #{bad.inspect} to be rejected"
+      assert_equal "Bad payload format", result[:errors][:_general]
+    end
+  end
+
+  def test_rejects_port_float_string
+    result = V.validate("host" => "127.0.0.1", "port" => "9876.0", "log_level" => "INFO")
+    refute result[:ok]
+    assert_includes result[:errors][:port], "1 and 65535"
+  end
+
+  def test_rejects_port_with_surrounding_whitespace
+    result = V.validate("host" => "127.0.0.1", "port" => "  9876  ", "log_level" => "INFO")
+    refute result[:ok]
+    assert_includes result[:errors][:port], "1 and 65535"
+  end
+
+  def test_rejects_host_with_null_byte
+    result = V.validate("host" => "127.0.0.1\x00", "port" => "9876", "log_level" => "INFO")
+    refute result[:ok]
+    assert_match(/invalid characters/i, result[:errors][:host])
+  end
 end

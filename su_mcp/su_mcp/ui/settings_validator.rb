@@ -15,6 +15,8 @@ module SU_MCP
       #   {ok: true,  errors: {}, normalized: {host:, port:, log_level:}}
       #   {ok: false, errors: {host?: msg, port?: msg, log_level?: msg}}
       def self.validate(payload)
+        return { ok: false, errors: { _general: "Bad payload format" } } unless payload.is_a?(Hash)
+
         errors = {}
         host       = payload["host"].to_s
         port_raw   = payload["port"].to_s
@@ -30,7 +32,7 @@ module SU_MCP
           errors[:host] = "Host contains invalid characters"
         end
 
-        port_int = Integer(port_raw, exception: false)
+        port_int = port_raw =~ /\A\d+\z/ ? port_raw.to_i : nil
         if port_int.nil? || port_int < 1 || port_int > 65535
           errors[:port] = "Port must be a number between 1 and 65535"
         end

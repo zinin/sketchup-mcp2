@@ -116,64 +116,29 @@ class TestConfig < Minitest::Test
     assert_equal 1, C.level_value_for("FOO")
   end
 
-  # --- one-time ENV→prefs migration banner ---
+  # --- load_from_defaults! fallback-to-DEFAULTS on invalid persisted prefs ---
 
-  class StubUI
-    attr_reader :messages
-    def initialize; @messages = []; end
-    def messagebox(text); @messages << text; nil; end
+  def test_load_from_defaults_falls_back_when_host_invalid
+    reader = StubReader.new("host" => "bad host with space")
+    C.load_from_defaults!(reader)
+    assert_equal "127.0.0.1", C.host
   end
 
-  def test_migration_banner_shows_once_when_env_set_and_prefs_empty
-    reader = StubReader.new("migration_notified" => false)
-    writer = StubWriter.new
-    ui     = StubUI.new
-    ENV["SKETCHUP_MCP_HOST"] = "0.0.0.0"
-    begin
-      C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
-    ensure
-      ENV.delete("SKETCHUP_MCP_HOST")
-    end
-    assert_equal 1, ui.messages.size
-    assert_includes ui.messages.first, "Plugins"
-    assert_equal ["SU_MCP", "migration_notified", true], writer.writes[0]
+  def test_load_from_defaults_falls_back_when_port_non_numeric
+    reader = StubReader.new("port" => "abc")
+    C.load_from_defaults!(reader)
+    assert_equal 9876, C.port
   end
 
-  def test_migration_banner_skipped_when_already_notified
-    reader = StubReader.new("migration_notified" => true)
-    writer = StubWriter.new
-    ui     = StubUI.new
-    ENV["SKETCHUP_MCP_PORT"] = "9999"
-    begin
-      C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
-    ensure
-      ENV.delete("SKETCHUP_MCP_PORT")
-    end
-    assert_empty ui.messages
-    assert_empty writer.writes
+  def test_load_from_defaults_falls_back_when_port_out_of_range
+    reader = StubReader.new("port" => "0")
+    C.load_from_defaults!(reader)
+    assert_equal 9876, C.port
   end
 
-  def test_migration_banner_skipped_when_no_env
-    reader = StubReader.new
-    writer = StubWriter.new
-    ui     = StubUI.new
-    %w[SKETCHUP_MCP_HOST SKETCHUP_MCP_PORT SKETCHUP_MCP_LOG_LEVEL].each { |v| ENV.delete(v) }
-    C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
-    assert_empty ui.messages
-    assert_empty writer.writes
-  end
-
-  def test_migration_banner_skipped_when_prefs_already_have_host
-    reader = StubReader.new("host" => "192.168.1.1")
-    writer = StubWriter.new
-    ui     = StubUI.new
-    ENV["SKETCHUP_MCP_HOST"] = "0.0.0.0"
-    begin
-      C.show_migration_banner!(reader: reader, writer: writer, ui: ui)
-    ensure
-      ENV.delete("SKETCHUP_MCP_HOST")
-    end
-    assert_empty ui.messages
-    assert_empty writer.writes
+  def test_load_from_defaults_falls_back_when_log_level_unknown
+    reader = StubReader.new("log_level" => "VERBOSE")
+    C.load_from_defaults!(reader)
+    assert_equal "INFO", C.log_level
   end
 end

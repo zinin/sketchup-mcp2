@@ -36,7 +36,7 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd su_mcp && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (80 runs / 168 assertions)
+ruby test/run_all.rb           # Ruby (112 runs / 253 assertions)
 uv run pytest tests/ -q        # Python (52 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
@@ -56,8 +56,6 @@ Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `
 | Log Level | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
 
 Log-level changes apply immediately. Host/port changes prompt the user to restart the server if it is running.
-
-> **Migration from 0.0.1:** ENV variables `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` / `SKETCHUP_MCP_LOG_LEVEL` are no longer read by the Ruby side. After updating the extension, open Settings... once and enter the values you previously set via ENV.
 
 **Python (MCP server invoked by Claude)** — configured through ENV in the Claude Desktop MCP config:
 
