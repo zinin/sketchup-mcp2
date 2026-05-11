@@ -146,15 +146,15 @@ async def test_send_command_incomplete_read_disconnects(make_connection, fake_st
     assert conn._writer is None
 
 
-async def test_send_command_retries_on_zero_byte_eof(make_connection, fake_streams):
-    """Stale-socket: peer закрыл соединение, не прислав ни одного байта ответа.
+async def test_send_command_retries_on_zero_byte_eof_for_readonly(make_connection, fake_streams):
+    """Stale-socket для read-only tool: peer закрыл соединение, 0 байт ответа.
 
     Сценарий — Ruby-side idle_timeout убил клиента в простое между tool-вызовами.
     asyncio.StreamWriter.is_closing() от peer-side FIN не становится True, поэтому
     send_command идёт в _send_frame → drain ok → _recv_frame → readexactly(4) →
-    IncompleteReadError(partial=b"", expected=4). Этот сценарий **гарантирует**,
-    что peer не успел обработать запрос (иначе он бы прислал хотя бы 4 байта
-    заголовка). Поэтому безопасно reconnect+retry один раз, прозрачно для caller'а.
+    IncompleteReadError(partial=b"", expected=4). Для READ-ONLY tools повтор
+    безопасен (даже если Ruby выполнил handler, повторное чтение модели
+    идемпотентно). Прозрачно retry'им.
     """
     reader, _ = fake_streams
     conn = make_connection()
@@ -178,21 +178,43 @@ async def test_send_command_retries_on_zero_byte_eof(make_connection, fake_strea
     conn.connect = fake_connect
 
     # 3) Подаём успешный ответ для retry-попытки.
-    #    _next_id уже инкрементнут до 2 первой попыткой; retry **переиспользует** rid=1
-    #    (точнее, increment произошёл ДО ошибки, _next_id уже =2; retry получит rid=2).
+    #    _next_id уже инкрементнут до 2 первой попыткой; retry получит rid=2.
     new_reader.feed_data(
         encode_response({"jsonrpc": "2.0", "id": 2, "result": {"ok": True}})
     )
 
-    result = await conn.send_command("foo", {"a": 1})
+    # get_model_info ∈ _RETRY_SAFE_TOOLS → retry разрешён
+    result = await conn.send_command("get_model_info", {})
     assert result == {"ok": True}
 
     # Retry прошёл на свежем сокете
     assert conn._writer is new_writer
     sent_on_retry = decode_writer_frames(bytes(new_writer.buffer))
     assert len(sent_on_retry) == 1
-    assert sent_on_retry[0]["params"]["name"] == "foo"
-    assert sent_on_retry[0]["params"]["arguments"] == {"a": 1}
+    assert sent_on_retry[0]["params"]["name"] == "get_model_info"
+
+
+async def test_send_command_no_retry_on_zero_byte_eof_for_mutating(make_connection, fake_streams):
+    """Stale-socket для МУТАТИВНОГО tool — retry ЗАПРЕЩЁН (Codex review, PR #1).
+
+    Контр-пример: Ruby `write_response` имеет `IO.select` write-timeout 1 сек.
+    Если истекает, `reset_client` закрывает сокет **уже после**
+    `model.commit_operation`. Python видит partial=b"", но мутация применена —
+    retry задвоит её. Поэтому для мутативных — только пробрасываем ошибку
+    наверх, caller (LLM) явно решает, что делать.
+    """
+    reader, _ = fake_streams
+    conn = make_connection()
+    reader.feed_eof()  # 0 bytes — выглядит как stale socket
+
+    # connect не должен быть вызван — гарантия отсутствия retry
+    conn.connect = AsyncMock(side_effect=AssertionError("retry forbidden for mutating tool"))
+
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("create_component", {"type": "cube"})
+    assert exc_info.value.code == -32000
+    assert conn._writer is None
+    conn.connect.assert_not_called()
 
 
 async def test_send_command_no_retry_on_partial_read(make_connection, fake_streams):

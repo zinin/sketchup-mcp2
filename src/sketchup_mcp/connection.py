@@ -25,13 +25,31 @@ _DISCONNECT_TIMEOUT = 5.0  # секунд на graceful close сокета
 class _StaleSocketError(SketchUpError):
     """Маркер «peer закрыл сокет до отправки хоть одного байта ответа».
 
-    Зачем отдельный класс: индикатор того, что запрос **гарантированно** не был
-    обработан peer'ом (иначе он бы прислал минимум 4 байта length-prefix). Это
-    допускает безопасный reconnect+retry без риска задвоить мутативную операцию.
+    Сам по себе индикатор НЕДОСТАТОЧЕН для безопасного retry: см. Codex review
+    на PR #1. Контр-пример — Ruby-сторонний `write_response`: `IO.select`
+    таймаутится за 1 сек, `reset_client` закрывает сокет **уже после**
+    `model.commit_operation`. Python видит partial=b"", но мутация применена —
+    retry задвоит её.
 
-    IS-A SketchUpError — если retry тоже фейлится, экземпляр прокидывается наверх
-    как обычная транспортная ошибка кода -32000.
+    Поэтому retry ограничен whitelist'ом read-only tools (`_RETRY_SAFE_TOOLS`).
+    Для мутативных — поднимаем наверх как обычную транспортную ошибку.
     """
+
+
+# Tools без побочных эффектов на модель — безопасно retry'ить при stale-socket.
+# Список синхронизирован с handlers/* на Ruby: всё, что не пишет в модель и не
+# выполняет произвольный Ruby. Любая правка списка требует ревью соответствующего
+# Ruby-handler'а на side effects.
+_RETRY_SAFE_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_model_info",
+        "list_components",
+        "get_component_info",
+        "find_components",
+        "list_layers",
+        "get_selection",
+    }
+)
 
 
 @dataclass
@@ -93,9 +111,12 @@ class SketchUpConnection:
             try:
                 return await self._send_once(name, args)
             except _StaleSocketError:
-                # peer закрыл сокет до отправки байт ответа → запрос не был
-                # обработан, мутации нет, retry один раз на свежем соединении.
                 # `disconnect()` уже сделан внутри `_send_once`.
+                # Retry ТОЛЬКО для side-effect-free tools: Ruby `write_response`
+                # может закрыть сокет уже после `commit_operation`, и тогда
+                # partial=b"" не гарантирует, что мутации не было.
+                if name not in _RETRY_SAFE_TOOLS:
+                    raise
                 return await self._send_once(name, args)
 
     async def _send_once(self, name: str, args: dict[str, Any]) -> Any:
