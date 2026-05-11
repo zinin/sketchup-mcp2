@@ -12,7 +12,7 @@
 
 ## Status
 
-All 8 tasks complete. Branch: `feature/menu-settings-ui`. Latest commit: `2253be2`.
+All 8 tasks complete + external code review applied. Branch: `feature/menu-settings-ui`. Latest commit: `544bf71`.
 
 | # | Task | Commit(s) |
 |---|---|---|
@@ -27,8 +27,10 @@ All 8 tasks complete. Branch: `feature/menu-settings-ui`. Latest commit: `2253be
 | 7 | Update `CLAUDE.md` Configuration section | `88c46ec` |
 | — | Polish: ASCII ellipsis in CLAUDE.md menu label (consistency with `main.rb` literal) | `2253be2` |
 | 8 | Final verification (no commit — automated checks only) | — |
+| — | Plan trim (per `/superpowers:continue-plan-fresh-session`) | `6f4f4b1` |
+| — | **Post-review fixes** — 17 fixes from multi-reviewer cross-validation (claude/codex/ccs-glm/gemini/3×ollama); migration banner removed entirely per user decision | `544bf71` |
 
-**Final verification:** Ruby `108 runs / 246 assertions / 0 failures`. Python `52 passed`. Zero `Config::HOST/PORT/LOG_LEVEL` refs in production. ENV reads only inside `show_migration_banner!` (intentional) and `test_config.rb` migration tests (intentional). `.rbz` builds at 36 KB and includes all 3 new `ui/` files.
+**Final verification (post-review):** Ruby `112 runs / 253 assertions / 0 failures`. Python `52 passed`. `.rbz` builds and includes all 3 new `ui/` files. Migration banner mechanism (originally part of Task 2) was removed in `544bf71` as speculative complexity — no other users exist.
 
 ---
 
