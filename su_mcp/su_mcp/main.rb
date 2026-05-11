@@ -33,12 +33,17 @@ module SU_MCP
     handlers/eval
     core/server
     core/application
+    ui/settings_validator
+    ui/settings_dialog
   ].freeze
 
   LOAD_ORDER.each { |path| Sketchup.require(File.join(PLUGIN_ROOT, path)) }
 
+  # Hydrate Config from SketchUp preferences (replaces ENV-based config).
+  SU_MCP::Core::Config.load_from_defaults!
+
   def self.install_menu
-    menu = UI.menu("Plugins").add_submenu("MCP Server")
+    menu = ::UI.menu("Plugins").add_submenu("MCP Server")
 
     start_item = menu.add_item("Start Server") { SU_MCP::Core::Application.start }
     menu.set_validation_proc(start_item) {
@@ -52,14 +57,8 @@ module SU_MCP
 
     menu.add_item("Restart Server") { SU_MCP::Core::Application.restart }
     menu.add_separator
+    menu.add_item("Settings...") { SU_MCP::UI::SettingsDialog.show }
     menu.add_item("Show Log") { SU_MCP::Core::Application.show_log }
-    menu.add_item("Show Status") {
-      state = SU_MCP::Core::Application.running? \
-        ? "running on :#{SU_MCP::Core::Config::PORT}" \
-        : "stopped"
-      SU_MCP::Core::Logger.log_tool("application", "status", state)
-      Sketchup.status_text = "MCP Server: #{state}"
-    }
   end
 
   unless file_loaded?(__FILE__)

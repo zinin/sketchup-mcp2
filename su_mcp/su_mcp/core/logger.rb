@@ -16,7 +16,7 @@ module SU_MCP
 
       def self.log_error(tool, exception)
         log("ERROR", "tool=#{tool} class=#{exception.class.name} msg=#{exception.message}")
-        return unless Config::LOG_LEVEL == "DEBUG" && exception.backtrace
+        return unless Config.log_level == "DEBUG" && exception.backtrace
         exception.backtrace.first(3).each { |bt| write("    #{bt}") }
       end
 

@@ -22,6 +22,36 @@ logger = logging.getLogger("sketchup_mcp.connection")
 _DISCONNECT_TIMEOUT = 5.0  # секунд на graceful close сокета
 
 
+class _StaleSocketError(SketchUpError):
+    """Маркер «peer закрыл сокет до отправки хоть одного байта ответа».
+
+    Сам по себе индикатор НЕДОСТАТОЧЕН для безопасного retry: см. Codex review
+    на PR #1. Контр-пример — Ruby-сторонний `write_response`: `IO.select`
+    таймаутится за 1 сек, `reset_client` закрывает сокет **уже после**
+    `model.commit_operation`. Python видит partial=b"", но мутация применена —
+    retry задвоит её.
+
+    Поэтому retry ограничен whitelist'ом read-only tools (`_RETRY_SAFE_TOOLS`).
+    Для мутативных — поднимаем наверх как обычную транспортную ошибку.
+    """
+
+
+# Tools без побочных эффектов на модель — безопасно retry'ить при stale-socket.
+# Список синхронизирован с handlers/* на Ruby: всё, что не пишет в модель и не
+# выполняет произвольный Ruby. Любая правка списка требует ревью соответствующего
+# Ruby-handler'а на side effects.
+_RETRY_SAFE_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_model_info",
+        "list_components",
+        "get_component_info",
+        "find_components",
+        "list_layers",
+        "get_selection",
+    }
+)
+
+
 @dataclass
 class SketchUpConnection:
     host: str
@@ -78,66 +108,94 @@ class SketchUpConnection:
 
     async def send_command(self, name: str, args: dict[str, Any]) -> Any:
         async with self._lock:
-            if self._writer is None or self._writer.is_closing():
-                await self._connect_or_raise()
-            rid = self._next_id
-            self._next_id += 1
-            request = {
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {"name": name, "arguments": args},
-                "id": rid,
-            }
-            body = json.dumps(request).encode("utf-8")
-            if len(body) > config.MAX_MESSAGE_SIZE:
-                raise SketchUpError(
-                    -32600,
-                    f"request too large: {len(body)} bytes (cap {config.MAX_MESSAGE_SIZE})",
-                )
             try:
-                response_body = await asyncio.wait_for(
-                    self._roundtrip(body), timeout=self.timeout
-                )
-            except asyncio.TimeoutError:
-                # NB: cancel of `_roundtrip` happens after potential partial
-                # write — `disconnect()` форсирует свежий TCP-сокет.
-                await self.disconnect()
-                raise SketchUpError(
-                    -32000, f"timeout after {self.timeout}s"
-                ) from None
-            except (ConnectionError, asyncio.IncompleteReadError) as e:
-                await self.disconnect()
-                raise SketchUpError(-32000, f"connection error: {e}") from e
-            except SketchUpError:
-                # Транспортные ошибки (-32600 oversize/zero-length от _recv_frame).
-                # Stream после них рассинхронизирован — обязательно disconnect.
-                await self.disconnect()
-                raise
-            except asyncio.CancelledError:
-                # SIGTERM/Ctrl+C во время roundtrip: writer мог отправить часть
-                # запроса. Без disconnect сокет остаётся half-open, и Ruby видит
-                # «висящего клиента» при следующем подключении. Disconnect перед
-                # пробросом гарантирует чистый стейт.
-                await self.disconnect()
-                raise
-            try:
-                response = json.loads(response_body)
-            except json.JSONDecodeError as e:
-                await self.disconnect()
-                raise SketchUpError(-32700, f"parse error: {e}") from e
-            if response.get("id") != rid:
-                await self.disconnect()
-                raise SketchUpError(
-                    -32603, f"id mismatch: sent {rid}, got {response.get('id')}"
-                )
-            if "error" in response:
-                err = response["error"]
-                raise SketchUpError(
-                    err.get("code", -32000),
-                    err.get("message", "unknown"),
-                    err.get("data"),
-                )
-            return response.get("result", {})
+                return await self._send_once(name, args)
+            except _StaleSocketError:
+                # `disconnect()` уже сделан внутри `_send_once`.
+                # Retry ТОЛЬКО для side-effect-free tools: Ruby `write_response`
+                # может закрыть сокет уже после `commit_operation`, и тогда
+                # partial=b"" не гарантирует, что мутации не было.
+                if name not in _RETRY_SAFE_TOOLS:
+                    raise
+                return await self._send_once(name, args)
+
+    async def _send_once(self, name: str, args: dict[str, Any]) -> Any:
+        if self._writer is None or self._writer.is_closing():
+            await self._connect_or_raise()
+        rid = self._next_id
+        self._next_id += 1
+        request = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": name, "arguments": args},
+            "id": rid,
+        }
+        body = json.dumps(request).encode("utf-8")
+        if len(body) > config.MAX_MESSAGE_SIZE:
+            raise SketchUpError(
+                -32600,
+                f"request too large: {len(body)} bytes (cap {config.MAX_MESSAGE_SIZE})",
+            )
+        try:
+            response_body = await asyncio.wait_for(
+                self._roundtrip(body), timeout=self.timeout
+            )
+        except asyncio.TimeoutError:
+            # NB: cancel of `_roundtrip` happens after potential partial
+            # write — `disconnect()` форсирует свежий TCP-сокет. НЕ retry:
+            # peer мог успеть commit мутацию, второй вызов задвоил бы её.
+            await self.disconnect()
+            raise SketchUpError(
+                -32000, f"timeout after {self.timeout}s"
+            ) from None
+        except asyncio.IncompleteReadError as e:
+            await self.disconnect()
+            if e.partial == b"":
+                # 0 байт прочитано = peer закрыл соединение ДО отправки заголовка.
+                # Гарантия: запрос не был обработан (иначе peer прислал бы
+                # минимум 4 байта length-prefix). Safe-to-retry.
+                raise _StaleSocketError(-32000, f"connection error: {e}") from e
+            # Partial read = peer уже начал отвечать → мутация могла произойти,
+            # retry небезопасен.
+            raise SketchUpError(-32000, f"connection error: {e}") from e
+        except ConnectionError as e:
+            # ECONNRESET / BrokenPipe = разрыв транспорта на любой фазе
+            # (_send_frame, drain, _recv_frame). Помечаем как _StaleSocketError;
+            # фактическая безопасность retry решается в send_command по
+            # whitelist _RETRY_SAFE_TOOLS — для мутативных tool'ов
+            # _StaleSocketError будет проброшен наверх caller'у.
+            await self.disconnect()
+            raise _StaleSocketError(-32000, f"connection error: {e}") from e
+        except SketchUpError:
+            # Транспортные ошибки (-32600 oversize/zero-length от _recv_frame).
+            # Stream после них рассинхронизирован — обязательно disconnect.
+            await self.disconnect()
+            raise
+        except asyncio.CancelledError:
+            # SIGTERM/Ctrl+C во время roundtrip: writer мог отправить часть
+            # запроса. Без disconnect сокет остаётся half-open, и Ruby видит
+            # «висящего клиента» при следующем подключении. Disconnect перед
+            # пробросом гарантирует чистый стейт.
+            await self.disconnect()
+            raise
+        try:
+            response = json.loads(response_body)
+        except json.JSONDecodeError as e:
+            await self.disconnect()
+            raise SketchUpError(-32700, f"parse error: {e}") from e
+        if response.get("id") != rid:
+            await self.disconnect()
+            raise SketchUpError(
+                -32603, f"id mismatch: sent {rid}, got {response.get('id')}"
+            )
+        if "error" in response:
+            err = response["error"]
+            raise SketchUpError(
+                err.get("code", -32000),
+                err.get("message", "unknown"),
+                err.get("data"),
+            )
+        return response.get("result", {})
 
     async def _connect_or_raise(self) -> None:
         """Wrap `connect()` so any `OSError` (incl. `gaierror`) → `ConnectionError`.

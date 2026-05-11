@@ -36,8 +36,8 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd su_mcp && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (80 runs / 168 assertions)
-uv run pytest tests/ -q        # Python (52 tests)
+ruby test/run_all.rb           # Ruby (120 runs / 279 assertions)
+uv run pytest tests/ -q        # Python (56 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 20-step end-to-end (covers all handlers)
@@ -45,11 +45,23 @@ python examples/smoke_check.py # 20-step end-to-end (covers all handlers)
 
 Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.
 
-## Configuration via ENV
+## Configuration
 
-- `SKETCHUP_MCP_HOST` (default `127.0.0.1`)
+**Ruby (SketchUp extension)** — settings are edited through `Plugins → MCP Server → Settings...` and persisted in SketchUp preferences under section `SU_MCP`. No ENV variables are read on the Ruby side.
+
+| Setting | Default | Notes |
+|---|---|---|
+| Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead. |
+| Port | `9876` | 1..65535 |
+| Log Level | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
+
+Log-level changes apply immediately. Host/port changes prompt the user to restart the server if it is running.
+
+**Python (MCP server invoked by Claude)** — configured through ENV in the Claude Desktop MCP config:
+
+- `SKETCHUP_MCP_HOST` (default `127.0.0.1`) — where to connect to the SketchUp extension
 - `SKETCHUP_MCP_PORT` (default `9876`)
-- `SKETCHUP_MCP_TIMEOUT` (Python only; default `60` seconds)
+- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds)
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
 
 ## Architecture
