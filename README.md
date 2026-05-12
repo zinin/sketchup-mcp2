@@ -34,10 +34,26 @@ We're using uv so you'll need to ```brew install uv```
 
 ### Sketchup Extension
 
-1. Download or build the latest `.rbz` file
+1. Download or build the latest `.rbz` file (see «Building the `.rbz` from source» below)
 2. In Sketchup, go to Window > Extension Manager
 3. Click "Install Extension" and select the downloaded `.rbz` file
 4. Restart Sketchup
+
+#### Building the `.rbz` from source
+
+The packager (`su_mcp/package.rb`) depends on the `rubyzip` gem. Install it once:
+
+```bash
+gem install --user-install rubyzip
+```
+
+Then build:
+
+```bash
+cd su_mcp && ruby package.rb
+```
+
+The resulting `su_mcp_v<version>.rbz` lands in `su_mcp/`.
 
 ## Usage
 
