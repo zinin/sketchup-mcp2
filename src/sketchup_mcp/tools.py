@@ -18,8 +18,12 @@ from sketchup_mcp.errors import SketchUpError, format_error
 logger = logging.getLogger("sketchup_mcp.tools")
 
 
-async def _call(ctx: Context, name: str, **kwargs) -> str:
+async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
+
+    `tool_name` is positional-only (PEP 570) so that wrappers can pass user
+    kwargs containing a ``name`` key via ``**args`` without colliding with
+    this parameter — see find_components/create_layer.
 
     - Connection errors → human-readable string, server keeps running.
     - SketchUpError → ``format_error`` string.
@@ -31,7 +35,7 @@ async def _call(ctx: Context, name: str, **kwargs) -> str:
     except ConnectionError as e:
         return f"SketchUp not running or extension not started: {e}"
     try:
-        result = await sketchup.send_command(name, kwargs)
+        result = await sketchup.send_command(tool_name, kwargs)
     except ConnectionError as e:
         # Cached connection was stale and reconnect inside send_command failed:
         # `_connect_or_raise` re-raises OSError as ConnectionError before the
