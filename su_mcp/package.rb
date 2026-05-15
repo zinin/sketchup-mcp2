@@ -5,7 +5,7 @@ require 'fileutils'
 
 # Configuration
 EXTENSION_NAME = 'su_mcp'
-VERSION = '0.0.2'
+VERSION = '0.0.3'
 OUTPUT_NAME = "#{EXTENSION_NAME}_v#{VERSION}.rbz"
 
 # Create temp directory
