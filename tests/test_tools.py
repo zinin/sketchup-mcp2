@@ -196,6 +196,26 @@ def test_dimensions_rejects_zero_or_negative_element():
         ("export_scene", {"format": "skp"}, "export", {"format": "skp"}),
         ("chamfer_edge", {"id": "1"}, "chamfer_edges", {"entity_id": "1", "distance": 5.0}),
         ("fillet_edge", {"id": "1"}, "fillet_edges", {"entity_id": "1", "radius": 5.0, "segments": 8}),
+        # Read-only / introspection tools (без user-параметра name)
+        ("get_model_info", {}, "get_model_info", {}),
+        ("list_components", {}, "list_components", {"recursive": False, "max_depth": 3}),
+        ("list_components", {"recursive": True, "max_depth": 5},
+         "list_components", {"recursive": True, "max_depth": 5}),
+        ("get_component_info", {"id": "abc"}, "get_component_info", {"id": "abc"}),
+        ("list_layers", {}, "list_layers", {}),
+        ("undo", {}, "undo", {}),
+        # Tools с user-параметром `name=` — regression для kwarg collision с `_call`.
+        # До фикса сигнатура `_call(ctx, name, **kwargs)` ловила позиционное
+        # tool-name И kwarg-name (через **args), вызывая
+        # `TypeError: _call() got multiple values for argument 'name'`.
+        ("find_components", {}, "find_components", {"max_depth": 3}),
+        ("find_components", {"name": "Casting"},
+         "find_components", {"name": "Casting", "max_depth": 3}),
+        ("find_components",
+         {"name": "X", "layer": "Frame_BSR", "type": "group", "max_depth": 5},
+         "find_components",
+         {"name": "X", "layer": "Frame_BSR", "type": "group", "max_depth": 5}),
+        ("create_layer", {"name": "Frame_BSR"}, "create_layer", {"name": "Frame_BSR"}),
     ],
 )
 async def test_tool_wrapper_calls_ruby_correctly(
