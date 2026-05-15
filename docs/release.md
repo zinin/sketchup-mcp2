@@ -2,6 +2,16 @@
 
 Step-by-step for the next PyPI/GitHub release. PyPI tokens live in `~/.pypirc` (chmod 600); `twine` reads them automatically.
 
+## 0. Pre-flight
+
+```bash
+git fetch origin
+git log --oneline origin/master..HEAD   # local-only commits ahead of remote
+git status                              # tree should have no tracked-file modifications
+```
+
+If HEAD has diverged from `origin/master`, decide **rebase** vs **merge** before the bump commit.
+
 ## 1. Bump version in 5 places (must match)
 
 - `pyproject.toml` — `version = "X.Y.Z"`
@@ -10,7 +20,7 @@ Step-by-step for the next PyPI/GitHub release. PyPI tokens live in `~/.pypirc` (
 - `su_mcp/package.rb` — `VERSION = 'X.Y.Z'`
 - `su_mcp/su_mcp.rb` — `ext.version = 'X.Y.Z'`
 
-Commit (`chore: bump to vX.Y.Z`) and push.
+Run `uv lock` to refresh `uv.lock` with the new project version (otherwise the next `uv` call updates it post-release and you end up with a stray `chore: sync uv.lock` commit). Commit (`chore: bump to vX.Y.Z`) and push.
 
 ## 2. Pre-flight tests
 
@@ -24,6 +34,7 @@ ruby test/run_all.rb             # Ruby — must be green
 ```bash
 rm -rf dist/ su_mcp/*.rbz
 uv build                                     # → dist/*.whl + dist/*.tar.gz
+uvx twine check dist/*                       # validate metadata / README rendering
 (cd su_mcp && ruby package.rb)               # → su_mcp/su_mcp_vX.Y.Z.rbz
 ```
 
@@ -41,12 +52,14 @@ Verify install in a fresh venv (the project's own `.venv` would conflict):
 mkdir -p /tmp/verify && cd /tmp/verify && uv venv -q && \
   uv pip install -q --index-url https://test.pypi.org/simple/ \
     --extra-index-url https://pypi.org/simple/ \
+    --index-strategy unsafe-best-match \
     sketchup-mcp2==X.Y.Z && \
   .venv/bin/python -c "import sketchup_mcp; print(sketchup_mcp.__version__)"
 rm -rf /tmp/verify
 ```
 
 `--extra-index-url` is required — TestPyPI doesn't host the `mcp` dependency.
+`--index-strategy unsafe-best-match` is required because uv otherwise locks onto the first index that contains the package at all; once `sketchup-mcp2` exists on pypi.org, uv won't look at TestPyPI for the new version without this flag.
 
 ## 5. Production PyPI
 
