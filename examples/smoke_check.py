@@ -3,7 +3,9 @@
 
 Pre-conditions:
   1. SketchUp 2024+ is running with an empty model.
-  2. Ruby plugin v0.0.1 is installed and started via Plugins → MCP Server → Start.
+  2. Ruby SketchUp plugin is installed and started via Plugins → MCP Server →
+     Start. The plugin version must satisfy the handshake range declared in
+     src/sketchup_mcp/compat.py (MIN_RUBY..MAX_RUBY); step 22 verifies this.
   3. Run with the same Python venv used by the MCP server.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
 
@@ -211,6 +213,15 @@ async def main() -> int:
         print(f"    python={payload['python_version']} ruby={payload['ruby_version']}")
         print(f"    compatible={payload['compatible']} error={payload['error']}")
         assert payload["compatible"] is True, f"version mismatch: {payload}"
+        # Two-way verdict sanity: Ruby payload must have populated all fields.
+        # `compatible=True` with any of these None would mean the verdict was
+        # reached on partial data (Python silently accepting missing Ruby side).
+        assert payload["ruby_version"] is not None, f"ruby_version missing: {payload}"
+        assert payload["ruby_min_compatible_python"] is not None, \
+            f"two-way field ruby_min_compatible_python missing: {payload}"
+        assert payload["ruby_max_compatible_python"] is not None, \
+            f"two-way field ruby_max_compatible_python missing: {payload}"
+        assert payload["error"] is None, f"error reported despite compatible=true: {payload}"
 
         print("\nALL STEPS PASSED ✓")
         return 0

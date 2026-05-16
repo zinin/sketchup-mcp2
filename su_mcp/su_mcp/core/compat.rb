@@ -9,11 +9,13 @@ module SU_MCP
       MIN_PYTHON   = "0.0.3"
       MAX_PYTHON   = "0.0.3"
 
-      PART_RE = /\A\d+\z/.freeze
+      PART_RE = /\A[0-9]+\z/.freeze
 
       # Parse "X.Y.Z" → [X, Y, Z] (Integers). Raise ArgumentError on any
-      # other shape. Strict: each component must match /\A\d+\z/ — Integer()
-      # alone would accept "+1", "0x10", etc.
+      # other shape. Strict: each component must match /\A[0-9]+\z/ (ASCII
+      # only — Ruby's \d is ASCII-by-default, but [0-9]+ is explicit so
+      # this stays visually parallel to Python's compat.py _PART_RE).
+      # Integer() alone would accept "+1", "0x10", etc.
       def self.parse(v)
         unless v.is_a?(String)
           raise ArgumentError, "version must be a string, got #{v.class}"

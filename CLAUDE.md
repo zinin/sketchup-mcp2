@@ -41,7 +41,7 @@ ruby test/run_all.rb           # Ruby (154 runs / 354 assertions)
 uv run pytest tests/ -q        # Python (81 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 21-step end-to-end (covers all handlers)
+python examples/smoke_check.py # 22-step end-to-end (covers all handlers)
 ```
 
 Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.

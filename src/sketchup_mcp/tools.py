@@ -487,7 +487,20 @@ async def get_version(ctx: Context) -> str:
         # fires only on Ruby-side errors that survive the bypass.
         return _payload(None, None, None, False, str(e))
 
-    ruby_payload = json.loads(raw["content"][0]["text"])
+    # Defensive parse: any unexpected shape (missing keys, non-list content,
+    # non-string text, invalid JSON, non-dict payload) must STILL produce a
+    # payload — the tool's contract is "always returns a payload even on
+    # mismatch / error", so a KeyError/IndexError/TypeError/JSONDecodeError
+    # escaping here would violate it.
+    try:
+        ruby_payload = json.loads(raw["content"][0]["text"])
+        if not isinstance(ruby_payload, dict):
+            raise TypeError(
+                f"ruby payload is {type(ruby_payload).__name__}, expected dict"
+            )
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
+        return _payload(None, None, None, False,
+                        f"unexpected get_version response shape: {e}")
     ruby_version = ruby_payload.get("ruby_version")
     ruby_min = ruby_payload.get("min_compatible_python")
     ruby_max = ruby_payload.get("max_compatible_python")
@@ -502,9 +515,9 @@ async def get_version(ctx: Context) -> str:
     try:
         ruby_accepts_python = bool(
             ruby_min and ruby_max and
-            compat._parse(ruby_min)
-            <= compat._parse(compat.CLIENT_VERSION)
-            <= compat._parse(ruby_max)
+            compat.parse(ruby_min)
+            <= compat.parse(compat.CLIENT_VERSION)
+            <= compat.parse(ruby_max)
         )
     except ValueError:
         ruby_accepts_python = False

@@ -12,7 +12,15 @@ class TestCompat < Minitest::Test
     assert_equal [10, 20, 30], SU_MCP::Core::Compat.parse("10.20.30")
   end
 
-  ["0.1", "0.1.0.0", "abc", "", "v1"].each_with_index do |bad, i|
+  # Mirrors tests/test_compat.py negatives. ١..٣ are Arabic-Indic
+  # digits; Ruby's \d is ASCII-by-default but the regex is [0-9]+ to mirror
+  # Python's ASCII-only intent.
+  [
+    "0.1", "0.1.0.0", "abc", "", "v1",
+    "0.1.0-rc1", "v1.0.0",
+    " 0.1.0", "0.1.0 ", "0.1.0+", "+1.0.0", "1_0.0.0",
+    "١.٢.٣", "0.1.٣",
+  ].each_with_index do |bad, i|
     define_method("test_parse_invalid_#{i}_#{bad.gsub(/\W/, '_')}") do
       assert_raises(ArgumentError) { SU_MCP::Core::Compat.parse(bad) }
     end

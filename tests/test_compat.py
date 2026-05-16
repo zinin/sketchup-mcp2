@@ -8,9 +8,9 @@ from sketchup_mcp.errors import IncompatibleVersionError
 # -------- _parse --------
 
 def test_parse_valid_tuple():
-    assert compat._parse("0.1.0") == (0, 1, 0)
-    assert compat._parse("1.2.3") == (1, 2, 3)
-    assert compat._parse("10.20.30") == (10, 20, 30)
+    assert compat.parse("0.1.0") == (0, 1, 0)
+    assert compat.parse("1.2.3") == (1, 2, 3)
+    assert compat.parse("10.20.30") == (10, 20, 30)
 
 
 @pytest.mark.parametrize(
@@ -27,18 +27,20 @@ def test_parse_valid_tuple():
         "0.1.0+",     # sign char
         "+1.0.0",     # sign char
         "1_0.0.0",    # underscore separator (rejected by strict regex)
+        "١.٢.٣",  # Arabic-Indic digits (Unicode \d but not ASCII [0-9]+)
+        "0.1.٣",            # mixed ASCII + Unicode digit — Ruby's ASCII \d rejects
     ],
 )
 def test_parse_invalid_raises(bad):
     with pytest.raises(ValueError):
-        compat._parse(bad)
+        compat.parse(bad)
 
 
 def test_parse_non_string_raises():
     with pytest.raises(ValueError):
-        compat._parse(None)  # type: ignore[arg-type]
+        compat.parse(None)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
-        compat._parse(123)  # type: ignore[arg-type]
+        compat.parse(123)  # type: ignore[arg-type]
 
 
 # -------- check_ruby_version --------
@@ -96,12 +98,12 @@ def test_unparseable_raises_clear_message():
 
 def test_min_le_max_invariant():
     """Sanity: declared range cannot be empty."""
-    assert compat._parse(compat.MIN_RUBY) <= compat._parse(compat.MAX_RUBY)
+    assert compat.parse(compat.MIN_RUBY) <= compat.parse(compat.MAX_RUBY)
 
 
 def test_max_ruby_matches_python_version():
     """Release-time forgot-to-bump catcher: when releasing N, MAX_RUBY == N."""
-    assert compat._parse(compat.MAX_RUBY) == compat._parse(compat.CLIENT_VERSION)
+    assert compat.parse(compat.MAX_RUBY) == compat.parse(compat.CLIENT_VERSION)
 
 
 def test_python_version_is_imported_from_init():

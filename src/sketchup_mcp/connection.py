@@ -187,17 +187,20 @@ class SketchUpConnection:
         except json.JSONDecodeError as e:
             await self.disconnect()
             raise SketchUpError(-32700, f"parse error: {e}") from e
+        # Reject malformed non-dict top-level JSON before any .get() call.
+        # `assert` is unsuitable: stripped by `python -O`, leaving the
+        # subsequent .get() to raise AttributeError under optimized runs.
+        if not isinstance(response, dict):
+            await self.disconnect()
+            raise SketchUpError(
+                -32603,
+                f"malformed JSON-RPC response (not a dict): {type(response).__name__}",
+            )
         if response.get("id") != rid:
             await self.disconnect()
             raise SketchUpError(
                 -32603, f"id mismatch: sent {rid}, got {response.get('id')}"
             )
-        # Defensive: malformed plugin could send a non-dict at the top level.
-        # (The id-match check above usually catches this — Hash with id matching
-        # rid is highly unlikely from a malformed peer — but make the assumption
-        # explicit before we call .get() again.)
-        assert isinstance(response, dict), \
-            f"malformed JSON-RPC response (not a dict): {type(response).__name__}"
         # Version handshake — bypassed for the diagnostic tool get_version so users
         # on mismatched versions can still query the verdict.
         if name != "get_version":

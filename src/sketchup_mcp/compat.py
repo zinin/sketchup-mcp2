@@ -17,14 +17,17 @@ from sketchup_mcp.errors import IncompatibleVersionError
 MIN_RUBY = "0.0.3"
 MAX_RUBY = "0.0.3"
 
-_PART_RE = re.compile(r"\A\d+\Z")
+_PART_RE = re.compile(r"\A[0-9]+\Z")
 
 
-def _parse(v: str) -> tuple[int, int, int]:
+def parse(v: str) -> tuple[int, int, int]:
     """Parse 'X.Y.Z' → (X, Y, Z). Raise ValueError on anything else.
 
-    Strict: each component must match `\\A\\d+\\Z` (no whitespace, no
-    sign, no underscores). int() alone would accept "+1", " 1", etc.
+    Strict: each component must match `\\A[0-9]+\\Z` (ASCII only — no
+    whitespace, sign, underscores, or Unicode digits like "١٢٣"). int()
+    alone would accept "+1", " 1", "١٢٣", etc.; the regex `\\d+` in
+    Python also accepts Unicode digits, hence the explicit `[0-9]+` to
+    stay consistent with Ruby's ASCII-by-default `\\d`.
     """
     if not isinstance(v, str):
         raise ValueError(f"version must be a string, got {type(v).__name__}")
@@ -36,20 +39,20 @@ def _parse(v: str) -> tuple[int, int, int]:
 
 def check_ruby_version(server_version: str | None) -> None:
     """Raise IncompatibleVersionError if the SketchUp plugin version is
-    outside [MIN_RUBY, MAX_RUBY] or absent (pre-0.1.0 plugin)."""
+    outside [MIN_RUBY, MAX_RUBY] or absent (pre-handshake plugin)."""
     if server_version is None:
         raise IncompatibleVersionError(_msg_ruby_missing())
     try:
-        rv = _parse(server_version)
+        rv = parse(server_version)
     except ValueError:
         raise IncompatibleVersionError(
             f"unparseable server_version {server_version!r}; "
             f"expected X.Y.Z (numeric). "
             f"Call `get_version` to inspect handshake state."
         )
-    if rv < _parse(MIN_RUBY):
+    if rv < parse(MIN_RUBY):
         raise IncompatibleVersionError(_msg_ruby_too_old(server_version))
-    if rv > _parse(MAX_RUBY):
+    if rv > parse(MAX_RUBY):
         raise IncompatibleVersionError(_msg_ruby_too_new(server_version))
 
 
