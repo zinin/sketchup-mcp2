@@ -41,12 +41,93 @@
 
 ### Files NOT touched (sanity check)
 
-- `src/sketchup_mcp/connection.py` — wire protocol unchanged.
 - `src/sketchup_mcp/config.py` — no new env vars.
 - `src/sketchup_mcp/errors.py` — no new error types.
 - `su_mcp/su_mcp/core/*.rb` — server, framing, errors unchanged.
 - `su_mcp/su_mcp/handlers/{geometry,operations,joints,materials,export,model,eval}.rb` — all existing handlers untouched.
-- `pyproject.toml`, `uv.lock` — no new dependencies (FastMCP already provides `Image`).
+- `pyproject.toml`, `uv.lock` — no new dependencies (FastMCP already provides `Image`); `asyncio_mode = "auto"` is already set at `pyproject.toml:48-49`.
+
+> `src/sketchup_mcp/connection.py` is touched by one tiny addition to
+> `_RETRY_SAFE_TOOLS` — see Task 4 step 4.3.
+
+---
+
+## Task 0: Pre-implementation acceptance gate — live SketchUp 2026 verification
+
+The design rests on three assumptions that cannot be verified from
+stubs. **Do these checks before writing the Ruby handler**, paste the
+outputs into the PR description, and stop early if any check fails (or
+the implementation will need different keys / fall-back strategies).
+
+Requires SketchUp 2026 running with the existing plugin (v0.0.3) loaded.
+
+- [ ] **Step 0.1: Empirically verify `rendering_options` keys for each style**
+
+In SketchUp's Ruby Console:
+
+```ruby
+m = Sketchup.active_model
+ro = m.rendering_options
+%w[DisplayShaded DisplayShadedUsingAllSameObject DrawEdges
+   DrawFaces DrawHidden DrawProfilesOnly].each do |k|
+  begin
+    before = ro[k]
+    ro[k] = before                       # no-op write
+    puts "#{k}: OK (value=#{before.inspect})"
+  rescue => e
+    puts "#{k}: FAIL — #{e.class}: #{e.message}"
+  end
+end
+```
+
+Expected: every key prints `OK`. If any key fails, update §5.3 of the
+design with the working alternative (typically `RenderMode`, `Texture`,
+or `DrawBackEdges`) before Task 6.
+
+- [ ] **Step 0.2: Verify `view.camera` returns a fresh object each call**
+
+```ruby
+v = Sketchup.active_model.active_view
+puts v.camera.object_id == v.camera.object_id ? "SAME OBJECT — handler must snapshot via deep copy" : "FRESH each call"
+```
+
+Either result is fine — the handler already deep-copies via
+`Sketchup::Camera.new(eye, target, up)` per §5.4 — but knowing the
+behavior helps debugging if a regression appears.
+
+- [ ] **Step 0.3: Verify `rendering_options[]=` does NOT enter the undo stack**
+
+1. Note the current Edit → Undo menu label (e.g. "Undo Move"
+   — whatever is at the top).
+2. Run in Ruby Console: `Sketchup.active_model.rendering_options["DrawEdges"] = false`
+3. Restore: `Sketchup.active_model.rendering_options["DrawEdges"] = true`
+4. Re-check Edit → Undo menu label — must be **unchanged** from step 1.
+
+If the undo entry changes, the design assumption in §5.5 is wrong and
+the handler must wrap its RO writes in
+`model.start_operation("__sumcp_screenshot__", true, false, true)`
+(transparent flag = true so screenshots never pollute user-visible undo).
+Update §5.5 + §12 risks + Task 6 implementation accordingly.
+
+- [ ] **Step 0.4: Verify `Sketchup.send_action("viewIso:")` synchronicity**
+
+```ruby
+v = Sketchup.active_model.active_view
+c0 = [v.camera.eye, v.camera.target]
+Sketchup.send_action("viewIso:")
+c1 = [v.camera.eye, v.camera.target]
+puts "send_action sync: #{c0 != c1 ? 'YES (camera changed before return)' : 'NO (camera unchanged — DEFERRED)'}"
+```
+
+If `NO` — `send_action` is asynchronous, and the entire preset path
+needs redesign (DISPUTED group G1; see review iter 1). The check
+result is the empirical input the disputed-issues discussion needs.
+
+- [ ] **Step 0.5: Confirm results in PR description**
+
+Acceptance gate: paste the four block outputs into the PR description
+before requesting review. If Step 0.1 / 0.3 / 0.4 fail, halt and
+re-open the design discussion. Step 0.2 is informational only.
 
 ---
 
@@ -63,35 +144,27 @@ Create `tests/test_prompts.py`:
 """Tests for the SketchUp modeling-strategy MCP prompt.
 
 The prompt is registered as a side-effect of importing
-``sketchup_mcp.prompts``. Importing it from inside the test ensures the
-registration ran by the time we query the prompt registry.
+``sketchup_mcp.prompts``. The module-level import below runs the
+registration once for the whole test module (cheaper than a per-test
+autouse fixture).
 """
-import pytest
+import sketchup_mcp.prompts  # noqa: F401 — register the prompt for these tests
 
 from sketchup_mcp.app import mcp
 
 
-@pytest.fixture(autouse=True)
-def _load_prompts():
-    """Force import of the prompts module so the @mcp.prompt decorator runs."""
-    import sketchup_mcp.prompts  # noqa: F401
-
-
-@pytest.mark.asyncio
 async def test_prompt_registered():
     prompts = await mcp.list_prompts()
     names = [p.name for p in prompts]
     assert "sketchup_modeling_strategy" in names
 
 
-@pytest.mark.asyncio
 async def test_prompt_returns_non_empty_text():
     result = await mcp.get_prompt("sketchup_modeling_strategy", {})
     text = result.messages[0].content.text
     assert len(text) > 200, f"prompt body suspiciously short: {len(text)} chars"
 
 
-@pytest.mark.asyncio
 async def test_prompt_anchor_phrases():
     """Guard rails — these phrases encode critical guidance and must
     survive future edits. If you intentionally rephrase one, update this
@@ -109,7 +182,24 @@ async def test_prompt_anchor_phrases():
         assert anchor in text, f"missing anchor phrase: {anchor!r}"
 
 
-@pytest.mark.asyncio
+async def test_prompt_required_sections():
+    """Guard the structural skeleton of the prompt — section headers
+    must all be present. Wording inside sections is allowed to drift;
+    losing a whole section is not."""
+    result = await mcp.get_prompt("sketchup_modeling_strategy", {})
+    text = result.messages[0].content.text
+    for section in [
+        "# 1. Pre-flight",
+        "# 2. Tool priority",
+        "# 3. Conventions",
+        "# 4. After every mutation",
+        "# 5. Error recovery",
+        "# 6. Known traps",
+        "# 7. Joinery defaults",
+    ]:
+        assert section in text, f"missing section header: {section!r}"
+
+
 async def test_prompt_description_present():
     prompts = await mcp.list_prompts()
     p = next(p for p in prompts if p.name == "sketchup_modeling_strategy")
@@ -117,13 +207,16 @@ async def test_prompt_description_present():
     assert "SketchUp" in p.description
 ```
 
+> `asyncio_mode = "auto"` is already set in `pyproject.toml:48-49`, so
+> the `async def` tests above run natively without `@pytest.mark.asyncio`.
+
 - [ ] **Step 1.2: Run tests, verify they fail**
 
 Run: `uv run pytest tests/test_prompts.py -v`
 
-Expected: 4 errors with `ModuleNotFoundError: No module named 'sketchup_mcp.prompts'`.
-
-If `pytest-asyncio` is not configured, the failure may instead be `Failed: async def functions are not natively supported`. In that case, see Step 2.4 — we'll add a `pytest.ini` marker setting.
+Expected: 5 errors (one per test). The exact error is
+`ModuleNotFoundError: No module named 'sketchup_mcp.prompts'`, surfacing
+at the file-level import.
 
 Do NOT commit at this step. Failing tests don't ship alone.
 
@@ -134,7 +227,9 @@ Do NOT commit at this step. Failing tests don't ship alone.
 **Files:**
 - Create: `src/sketchup_mcp/prompts.py`
 - Modify: `src/sketchup_mcp/app.py` (one new import at end of file)
-- Possibly modify: `pyproject.toml` or `pytest.ini` (asyncio marker — see Step 2.4)
+
+> Note: `asyncio_mode = "auto"` is already set in `pyproject.toml:48-49`,
+> so no asyncio-marker step is needed.
 
 - [ ] **Step 2.1: Create `src/sketchup_mcp/prompts.py`**
 
@@ -241,27 +336,12 @@ import sketchup_mcp.prompts  # noqa: E402, F401
 
 Run: `uv run pytest tests/test_prompts.py -v`
 
-Expected: 4 passes.
+Expected: 5 passes.
 
-- [ ] **Step 2.4: If async tests skipped — configure asyncio mode**
-
-If output shows `4 skipped` or `async def functions are not natively supported`, add asyncio-mode setting. Check `pyproject.toml` for an existing `[tool.pytest.ini_options]` table; if it lists `asyncio_mode = "auto"` or markers exist, async should already work. Otherwise, add to `pyproject.toml`:
-
-```toml
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-```
-
-(If `pyproject.toml` already has this table, only add the missing key.)
-
-Re-run Step 2.3 until 4 passes.
-
-- [ ] **Step 2.5: Commit**
+- [ ] **Step 2.4: Commit**
 
 ```bash
 git add src/sketchup_mcp/prompts.py src/sketchup_mcp/app.py tests/test_prompts.py
-# also pyproject.toml if Step 2.4 modified it
-git add pyproject.toml 2>/dev/null || true
 git commit -m "feat(prompts): add sketchup_modeling_strategy MCP prompt
 
 Registers a single MCP prompt teaching Claude the project conventions:
@@ -287,36 +367,57 @@ Create `tests/test_screenshot.py`:
 ```python
 """Tests for the get_viewport_screenshot MCP tool wrapper.
 
-The wrapper performs Pydantic validation, sends a JSON-RPC call via the
-SketchUpConnection singleton, base64-decodes the response, and wraps
-the resulting bytes in mcp.server.fastmcp.Image.
+Validation tests go through FastMCP's full dispatch path
+(`mcp.call_tool`), not via a non-existent `.fn` attribute or direct
+function call — that's the only way Pydantic validation actually runs.
+Mime-type assertions use the public `img.format` constructor argument
+rather than the private `img._mime_type` attribute.
 """
 import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from mcp.server.fastmcp import Image
-from pydantic import ValidationError
+from mcp.types import ImageContent
 
+from sketchup_mcp.app import mcp
 from sketchup_mcp.errors import SketchUpError
 
-# 1×1 transparent PNG, base64-encoded.
+# 1×1 transparent PNG, base64-encoded. Real PNG bytes — starts with the
+# PNG magic header so consumers (e.g. live smoke) can validate.
 _TINY_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q"
     "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
 _TINY_PNG_BYTES = base64.b64decode(_TINY_PNG_B64)
+assert _TINY_PNG_BYTES.startswith(b"\x89PNG\r\n\x1a\n"), "fixture PNG corrupted"
+
+
+def _ruby_result_for(png_b64=_TINY_PNG_B64, w=1, h=1,
+                     preset="current", style="default"):
+    """Build the MCP-shaped JSON-RPC result our Ruby handler returns."""
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    '{"png_base64": "' + png_b64 + '",'
+                    f'"width": {w}, "height": {h},'
+                    f'"preset_used": "{preset}", "style_used": "{style}"}}'
+                ),
+            }
+        ],
+        "isError": False,
+    }
 
 
 def _mock_connection(result):
-    """Return a context manager that patches get_connection to a mock
-    whose send_command returns ``result``."""
+    """Patch get_connection so its returned object's send_command yields ``result``."""
     conn = MagicMock()
     conn.send_command = AsyncMock(return_value=result)
     return patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn))
 
 
-@pytest.mark.asyncio
 async def test_screenshot_minimal_payload():
     """Default call passes the full default param map to Ruby."""
     captured: dict = {}
@@ -324,19 +425,7 @@ async def test_screenshot_minimal_payload():
     async def fake_send(name, args):
         captured["name"] = name
         captured["args"] = args
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        '{"png_base64": "' + _TINY_PNG_B64 + '",'
-                        '"width": 1, "height": 1,'
-                        '"preset_used": "current", "style_used": "default"}'
-                    ),
-                }
-            ],
-            "isError": False,
-        }
+        return _ruby_result_for()
 
     conn = MagicMock()
     conn.send_command = AsyncMock(side_effect=fake_send)
@@ -355,76 +444,86 @@ async def test_screenshot_minimal_payload():
     }
 
 
-@pytest.mark.asyncio
 async def test_screenshot_max_size_clamps():
-    """max_size below 64 or above 4096 is rejected by Pydantic."""
-    from sketchup_mcp.tools import get_viewport_screenshot
+    """max_size below 64 or above 4096 is rejected by FastMCP/Pydantic
+    validation — exercised through the dispatcher (``mcp.call_tool``)
+    because that's where validation lives."""
+    # Connection is mocked so failed-validation paths don't try to touch sockets.
+    conn = MagicMock(); conn.send_command = AsyncMock(return_value=_ruby_result_for())
+    with patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn)):
+        # Force the screenshot wrapper to be importable+registered.
+        import sketchup_mcp.tools  # noqa: F401
+        for bad in (10, 99999):
+            with pytest.raises(Exception) as exc_info:
+                await mcp.call_tool("get_viewport_screenshot", {"max_size": bad})
+            # FastMCP raises a Pydantic ValidationError-derived class — keep
+            # the assertion loose so a future FastMCP version that wraps it
+            # in its own error class doesn't break the test.
+            assert "max_size" in str(exc_info.value)
 
-    with pytest.raises(ValidationError):
-        await get_viewport_screenshot.fn(ctx=None, max_size=10)  # type: ignore[attr-defined]
-    with pytest.raises(ValidationError):
-        await get_viewport_screenshot.fn(ctx=None, max_size=99999)  # type: ignore[attr-defined]
 
-
-@pytest.mark.asyncio
 async def test_screenshot_view_preset_invalid():
-    from sketchup_mcp.tools import get_viewport_screenshot
+    conn = MagicMock(); conn.send_command = AsyncMock(return_value=_ruby_result_for())
+    with patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn)):
+        import sketchup_mcp.tools  # noqa: F401
+        with pytest.raises(Exception) as exc_info:
+            await mcp.call_tool("get_viewport_screenshot",
+                                {"view_preset": "diagonal"})
+        assert "view_preset" in str(exc_info.value)
 
-    with pytest.raises(ValidationError):
-        await get_viewport_screenshot.fn(ctx=None, view_preset="diagonal")  # type: ignore[attr-defined]
 
-
-@pytest.mark.asyncio
 async def test_screenshot_style_invalid():
-    from sketchup_mcp.tools import get_viewport_screenshot
+    conn = MagicMock(); conn.send_command = AsyncMock(return_value=_ruby_result_for())
+    with patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn)):
+        import sketchup_mcp.tools  # noqa: F401
+        with pytest.raises(Exception) as exc_info:
+            await mcp.call_tool("get_viewport_screenshot", {"style": "cartoon"})
+        assert "style" in str(exc_info.value)
 
-    with pytest.raises(ValidationError):
-        await get_viewport_screenshot.fn(ctx=None, style="cartoon")  # type: ignore[attr-defined]
 
-
-@pytest.mark.asyncio
 async def test_screenshot_returns_image():
     """On success, the wrapper returns a FastMCP Image with PNG bytes."""
-    result_text = (
-        '{"png_base64": "' + _TINY_PNG_B64 + '",'
-        '"width": 1, "height": 1,'
-        '"preset_used": "iso", "style_used": "shaded"}'
-    )
-    payload = {
-        "content": [{"type": "text", "text": result_text}],
-        "isError": False,
-    }
-    with _mock_connection(payload):
+    with _mock_connection(_ruby_result_for(preset="iso", style="shaded")):
         from sketchup_mcp.tools import get_viewport_screenshot
-
         img = await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
 
     assert isinstance(img, Image)
     assert img.data == _TINY_PNG_BYTES
-    # Format hint surfaces as image/png in mime_type.
-    assert img._mime_type == "image/png"
+    # Public `format` attribute — the constructor arg we passed.
+    # Avoid `img._mime_type` (private, FastMCP-internal).
+    assert getattr(img, "format", None) == "png" or img._format == "png"
 
 
-@pytest.mark.asyncio
+async def test_screenshot_via_mcp_dispatch():
+    """End-to-end through FastMCP dispatcher: verifies the Image returned
+    by the wrapper is serialized to ImageContent with mimeType=image/png
+    in the MCP envelope. This catches FastMCP-side regressions that unit
+    tests of the wrapper alone would miss."""
+    with _mock_connection(_ruby_result_for(preset="iso", style="shaded")):
+        import sketchup_mcp.tools  # noqa: F401
+        result = await mcp.call_tool("get_viewport_screenshot",
+                                     {"view_preset": "iso", "style": "shaded"})
+
+    # FastMCP's call_tool returns a sequence of content blocks.
+    contents = list(result)
+    assert contents, "no content blocks returned"
+    img_block = next((c for c in contents if isinstance(c, ImageContent)), None)
+    assert img_block is not None, f"expected ImageContent, got {contents!r}"
+    assert img_block.mimeType == "image/png"
+    assert img_block.data, "image data is empty"
+    # data is base64-encoded by ImageContent serializer.
+    assert base64.b64decode(img_block.data).startswith(b"\x89PNG\r\n\x1a\n")
+
+
 async def test_screenshot_base64_decode_failure():
     """Invalid base64 in Ruby response surfaces as a clear error."""
-    result_text = (
-        '{"png_base64": "not-base64!@#$",'
-        '"width": 1, "height": 1,'
-        '"preset_used": "current", "style_used": "default"}'
-    )
-    payload = {
-        "content": [{"type": "text", "text": result_text}],
-        "isError": False,
-    }
-    with _mock_connection(payload):
+    bad = _ruby_result_for(png_b64="not-base64!@#$")
+    with _mock_connection(bad):
         from sketchup_mcp.tools import get_viewport_screenshot
-
         with pytest.raises(SketchUpError):
             await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
 
 
-@pytest.mark.asyncio
 async def test_screenshot_propagates_ruby_error():
     """A JSON-RPC error from Ruby surfaces as SketchUpError."""
     conn = MagicMock()
@@ -433,7 +532,6 @@ async def test_screenshot_propagates_ruby_error():
     )
     with patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn)):
         from sketchup_mcp.tools import get_viewport_screenshot
-
         with pytest.raises(SketchUpError):
             await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
 ```
@@ -442,7 +540,10 @@ async def test_screenshot_propagates_ruby_error():
 
 Run: `uv run pytest tests/test_screenshot.py -v`
 
-Expected: All 7 tests fail with `ImportError: cannot import name 'get_viewport_screenshot' from 'sketchup_mcp.tools'`.
+Expected: All 8 tests fail. The first failures are
+`ImportError: cannot import name 'get_viewport_screenshot' from 'sketchup_mcp.tools'`
+(for tests that directly import it) and `Unknown tool: get_viewport_screenshot`
+(for tests that go through `mcp.call_tool`).
 
 Do NOT commit yet.
 
@@ -520,6 +621,11 @@ async def get_viewport_screenshot(
     - restore_view: when true (default), camera and rendering_options are
       snapshotted before mutation and restored after the snapshot, so the
       user's viewport is unchanged.
+
+    Note on operation order (Ruby handler): snapshot → preset → style →
+    zoom_extents → write_image → restore. Restore runs in an outer ``ensure``
+    block, so an exception anywhere between snapshot and write_image still
+    leaves the viewport in its original state.
     """
     try:
         sketchup = await get_connection()
@@ -568,30 +674,67 @@ async def get_viewport_screenshot(
     return Image(data=png_bytes, format="png")
 ```
 
-- [ ] **Step 4.3: Run tests**
+- [ ] **Step 4.3: Add tool to `_RETRY_SAFE_TOOLS`**
 
-Run: `uv run pytest tests/test_screenshot.py -v`
+Open `src/sketchup_mcp/connection.py`. Find `_RETRY_SAFE_TOOLS` at line ~43. Add `"get_viewport_screenshot"` to the frozenset:
 
-Expected: 7 passes.
+```python
+_RETRY_SAFE_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_model_info",
+        "list_components",
+        "get_component_info",
+        "find_components",
+        "list_layers",
+        "get_selection",
+        "get_viewport_screenshot",  # read-only viewport capture; idempotent in
+                                    # both restore_view modes (no document state changes)
+    }
+)
+```
+
+- [ ] **Step 4.4: Add a regression test in `tests/test_connection.py`**
+
+Append at the bottom of `tests/test_connection.py`:
+
+```python
+def test_get_viewport_screenshot_is_retry_safe():
+    """get_viewport_screenshot is read-only (no document state changes
+    in either restore_view mode); regression guard against accidental
+    removal from the retry whitelist."""
+    from sketchup_mcp.connection import _RETRY_SAFE_TOOLS
+    assert "get_viewport_screenshot" in _RETRY_SAFE_TOOLS
+```
+
+- [ ] **Step 4.5: Run screenshot tests**
+
+Run: `uv run pytest tests/test_screenshot.py tests/test_connection.py -v`
+
+Expected: 8 screenshot tests + the new connection regression test pass.
 
 If `test_screenshot_propagates_ruby_error` fails: check that the `except SketchUpError` is **not** caught — the wrapper should re-raise it as-is (Pydantic-level `ConnectionError` is the only one we rewrap).
 
-- [ ] **Step 4.4: Run full Python test suite**
+- [ ] **Step 4.6: Run full Python test suite**
 
 Run: `uv run pytest tests/ -q`
 
-Expected: existing 56 tests + 4 prompt tests + 7 screenshot tests = 67 pass. No regressions.
+Expected: existing 56 tests + 5 prompt tests + 8 screenshot tests + 1 new connection test = 70 pass. No regressions.
 
-- [ ] **Step 4.5: Commit**
+- [ ] **Step 4.7: Commit**
 
 ```bash
-git add src/sketchup_mcp/tools.py tests/test_screenshot.py
+git add src/sketchup_mcp/tools.py src/sketchup_mcp/connection.py \
+        tests/test_screenshot.py tests/test_connection.py
 git commit -m "feat(tools): add get_viewport_screenshot wrapper returning MCP Image
 
 Thin wrapper around the new Ruby handler: Pydantic-validates
 max_size/view_preset/zoom_extents/style/restore_view, round-trips a
 JSON-RPC call, base64-decodes the png_base64 field, and returns
-mcp.server.fastmcp.Image so Claude can see the scene between steps."
+mcp.server.fastmcp.Image so Claude can see the scene between steps.
+
+Also adds get_viewport_screenshot to connection._RETRY_SAFE_TOOLS —
+the handler is idempotent (no document state changes), so stale-socket
+retry is safe. Regression test guards against accidental removal."
 ```
 
 ---
@@ -610,51 +753,105 @@ Create `test/test_view.rb`:
 #
 # Unit tests for SU_MCP::Handlers::View.viewport_screenshot.
 # Stubs the SketchUp API surface we touch: Sketchup module,
-# Sketchup::Model, Sketchup::View, Sketchup::Camera.
+# Sketchup::Model, Sketchup::View, Sketchup::Camera, RenderingOptions.
 
 require "minitest/autorun"
 require "base64"
 require "tmpdir"
 
+# 1×1 transparent PNG bytes — used as the stubbed write_image output so
+# tests assert real PNG magic bytes, not a "FAKE_PNG_BYTES" placeholder.
+TINY_PNG_BYTES = Base64.strict_decode64(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9Q" \
+  "DwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
 # --- Minimal SketchUp stubs ---------------------------------------------------
 # We stub only the API our handler touches. Other tests in test/ already
-# define some of these — that's fine, Ruby ``module`` declarations are
-# additive. Avoid redefining methods if they're already there.
+# define some of these — Ruby ``module`` declarations are additive.
 
 module Sketchup
   class Camera
     attr_accessor :eye, :target, :up
+    attr_writer :perspective, :fov, :height
     def initialize(eye = [0, 0, 0], target = [0, 0, 0], up = [0, 0, 1])
       @eye, @target, @up = eye, target, up
+      @perspective = true
+      @fov = 35.0
+      @height = 100.0
     end
-    def ==(other) other.is_a?(Camera) && eye == other.eye && target == other.target && up == other.up; end
+    def perspective?; @perspective; end
+    def fov; @fov; end
+    def height; @height; end
+    def ==(o)
+      o.is_a?(Camera) && eye == o.eye && target == o.target && up == o.up &&
+        perspective? == o.perspective? && fov == o.fov && height == o.height
+    end
+  end
+
+  # Strict rendering_options stub: rejects unknown keys (mirrors SketchUp 2024+
+  # behaviour). Tracks all writes via the `writes` accessor so tests can spy.
+  class RenderingOptionsStub
+    KNOWN_KEYS = %w[
+      DisplayShaded DisplayShadedUsingAllSameObject DrawEdges DrawFaces
+      DrawHidden DrawProfilesOnly RenderMode Texture DrawBackEdges
+    ].freeze
+
+    attr_reader :writes
+    def initialize(initial)
+      @data = initial.dup
+      @writes = []
+    end
+    def [](k); @data[k]; end
+    def []=(k, v)
+      raise ArgumentError, "unknown rendering_options key: #{k.inspect}" unless KNOWN_KEYS.include?(k)
+      @writes << [k, v]
+      @data[k] = v
+    end
+    def dup; @data.dup; end
+    def each_pair(&blk); @data.each_pair(&blk); end
+    def keys; @data.keys; end
   end
 
   class View
-    attr_accessor :camera, :vpwidth, :vpheight, :model
-    attr_reader :write_image_calls, :zoom_extents_calls
+    attr_accessor :model, :write_image_size_override, :zoom_extents_raises
+    attr_reader :write_image_calls, :zoom_extents_calls, :camera_writes
 
     def initialize(model:)
+      self.vpwidth = 1920          # NOTE: via setter, not direct ivar
+      self.vpheight = 1080         # (see CONCERN-13 in review iter 1)
       @camera = Camera.new([10, 10, 10], [0, 0, 0], [0, 0, 1])
-      @vpwidth = 1920
-      @vpheight = 1080
       @model = model
       @write_image_calls = []
       @zoom_extents_calls = 0
       @write_image_result = true
+      @write_image_size_override = nil   # nil → write TINY_PNG_BYTES; integer → write that many bytes
+      @zoom_extents_raises = false
+      @camera_writes = []                # spy: every camera= assignment
+    end
+
+    attr_accessor :vpwidth, :vpheight
+    attr_reader :camera
+
+    def camera=(c)
+      @camera_writes << c
+      @camera = c
     end
 
     def write_image(filename:, width:, height:, antialias: nil, compression: nil, transparent: nil)
-      @write_image_calls << {filename: filename, width: width, height: height}
-      File.binwrite(filename, "FAKE_PNG_BYTES") if @write_image_result
+      @write_image_calls << {filename: filename, width: width, height: height,
+                              compression: compression}
+      if @write_image_result
+        bytes = @write_image_size_override ? ("\x00" * @write_image_size_override) : TINY_PNG_BYTES
+        File.binwrite(filename, bytes)
+      end
       @write_image_result
     end
 
-    def force_write_image_failure!
-      @write_image_result = false
-    end
+    def force_write_image_failure!; @write_image_result = false; end
 
     def zoom_extents
+      raise StandardError, "stub zoom_extents failure" if @zoom_extents_raises
       @zoom_extents_calls += 1
     end
   end
@@ -662,14 +859,14 @@ module Sketchup
   class Model
     attr_reader :rendering_options
     def initialize
-      @rendering_options = {
+      @rendering_options = RenderingOptionsStub.new(
         "DisplayShaded" => true,
         "DisplayShadedUsingAllSameObject" => false,
         "DrawEdges" => true,
         "DrawHidden" => false,
         "DrawProfilesOnly" => false,
         "DrawFaces" => true,
-      }
+      )
     end
   end
 
@@ -682,27 +879,22 @@ module Sketchup
       true
     end
 
-    def reset_send_action_calls!
-      @send_action_calls = []
-    end
-
-    def active_model
-      @active_model ||= Model.new
-    end
-
-    def reset_active_model!
-      @active_model = Model.new
-    end
+    def reset_send_action_calls!; @send_action_calls = []; end
+    def active_model; @active_model ||= Model.new; end
+    def reset_active_model!; @active_model = Model.new; end
   end
 end
 
 # --- Load production code -----------------------------------------------------
+# Order matters: errors / config / logger / helpers must precede dispatch
+# (CRITICAL-6 in review iter 1 — dispatch.rb references Core::Logger).
 require_relative "../su_mcp/su_mcp/core/errors"
+require_relative "../su_mcp/su_mcp/core/config"
+require_relative "../su_mcp/su_mcp/helpers/units"
+require_relative "../su_mcp/su_mcp/core/logger"
 require_relative "../su_mcp/su_mcp/helpers/validation"
+require_relative "../su_mcp/su_mcp/helpers/entities"
 require_relative "../su_mcp/su_mcp/handlers/view"
-
-# Dispatch loads errors itself; we require it last so its sibling
-# requires don't override our stubs.
 require_relative "../su_mcp/su_mcp/handlers/dispatch"
 
 class TestView < Minitest::Test
@@ -711,9 +903,8 @@ class TestView < Minitest::Test
   def setup
     Sketchup.reset_send_action_calls!
     Sketchup.reset_active_model!
-    # Inject a fresh View into the model for each test so call counts reset.
     @view = Sketchup::View.new(model: Sketchup.active_model)
-    Sketchup.active_model.define_singleton_method(:active_view) { @__view ||= nil }
+    # Wire the view as model.active_view.
     Sketchup.active_model.instance_variable_set(:@__view, @view)
     Sketchup.active_model.define_singleton_method(:active_view) {
       instance_variable_get(:@__view)
@@ -753,60 +944,123 @@ class TestView < Minitest::Test
   # --- validation -------------------------------------------------------------
 
   def test_invalid_view_preset_raises
-    assert_raises(SU_MCP::Core::StructuredError) do
-      call("view_preset" => "diagonal")
-    end
+    assert_raises(SU_MCP::Core::StructuredError) { call("view_preset" => "diagonal") }
   end
 
   def test_invalid_style_raises
-    assert_raises(SU_MCP::Core::StructuredError) do
-      call("style" => "cartoon")
-    end
+    assert_raises(SU_MCP::Core::StructuredError) { call("style" => "cartoon") }
   end
 
   def test_invalid_max_size_too_small_raises
-    assert_raises(SU_MCP::Core::StructuredError) do
-      call("max_size" => 10)
-    end
+    assert_raises(SU_MCP::Core::StructuredError) { call("max_size" => 10) }
   end
 
   def test_invalid_max_size_too_large_raises
-    assert_raises(SU_MCP::Core::StructuredError) do
-      call("max_size" => 99999)
-    end
+    assert_raises(SU_MCP::Core::StructuredError) { call("max_size" => 99999) }
   end
 
-  # --- camera/RO snapshot+restore --------------------------------------------
+  def test_no_active_view_raises
+    # Replace active_view with nil to simulate "SketchUp not ready".
+    Sketchup.active_model.define_singleton_method(:active_view) { nil }
+    assert_raises(SU_MCP::Core::StructuredError) { call }
+  end
+
+  # --- camera snapshot/restore -----------------------------------------------
 
   def test_camera_restored_when_flag_true
-    snapshot = @view.camera
+    # Strengthened (CONCERN-7): we need to make sure the production code actually
+    # ran a restore-assignment AND brought the camera back to the original state.
+    original = @view.camera                            # capture before stubbing
+    # Simulate `send_action` mutating the camera in-band: replace it with a
+    # marker, then trust the handler to restore via @view.camera=.
+    @view.define_singleton_method(:trigger_preset_mutation!) do
+      self.camera = Sketchup::Camera.new([99, 99, 99], [9, 9, 9], [0, 0, 1])
+    end
+    # Hook into send_action to perform the mutation when preset is requested.
+    Sketchup.define_singleton_method(:send_action) do |name|
+      (@send_action_calls ||= []) << name
+      Sketchup.active_model.active_view.trigger_preset_mutation!
+      true
+    end
+
     call("view_preset" => "top", "restore_view" => true)
-    assert_equal snapshot.eye, @view.camera.eye
-    assert_equal snapshot.target, @view.camera.target
+
+    # We should see >=1 restore assignment, and the final camera should equal original.
+    assert @view.camera_writes.size >= 1,
+           "expected at least one camera= assignment for restore"
+    assert_equal original.eye, @view.camera.eye
+    assert_equal original.target, @view.camera.target
+    assert_equal original.up, @view.camera.up
   end
 
   def test_camera_not_restored_when_flag_false
-    # We replace the camera via send_action; our stub doesn't really change
-    # the camera, but the handler logic should NOT issue a restore call.
-    # Verify by tracking whether camera was reassigned post-write_image.
-    # Simpler: track that the handler did NOT re-assign view.camera after
-    # write_image. We expose a tap on camera= for that.
-    assigns = []
-    @view.define_singleton_method(:camera=) do |c|
-      assigns << c
-      instance_variable_set(:@camera, c)
-    end
     call("view_preset" => "top", "restore_view" => false)
-    assert_empty assigns, "camera= should not be called when restore_view=false"
+    assert_empty @view.camera_writes,
+                 "camera= should not be called when restore_view=false"
   end
 
-  def test_rendering_options_restored_for_style
-    snap = Sketchup.active_model.rendering_options.dup
-    call("style" => "wireframe", "restore_view" => true)
-    snap.each do |k, v|
-      assert_equal v, Sketchup.active_model.rendering_options[k],
-                   "RO key #{k} not restored: was #{v.inspect}, got #{Sketchup.active_model.rendering_options[k].inspect}"
+  def test_camera_restored_after_zoom_extents_failure
+    # Outer ensure must restore camera even when zoom_extents raises (CRITICAL-3).
+    @view.zoom_extents_raises = true
+    original = @view.camera
+    begin
+      call("zoom_extents" => true, "restore_view" => true)
+    rescue SU_MCP::Core::StructuredError
+      # zoom_extents failure is swallowed by handler's inner rescue, but if
+      # outer chain raises, we should still see restore have happened.
     end
+    # If zoom_extents is the only failure and is swallowed, no exception
+    # propagates; verify camera matches original either way.
+    assert_equal original.eye, @view.camera.eye,
+                 "camera should be restored even after zoom_extents failure"
+  end
+
+  # --- rendering_options snapshot/restore -------------------------------------
+
+  def test_rendering_options_restored_for_style
+    # Pre-mutate one of the target keys so we can detect proper restore.
+    Sketchup.active_model.rendering_options["DrawEdges"] = false
+    snap_before = Sketchup.active_model.rendering_options.dup
+
+    call("style" => "wireframe", "restore_view" => true)
+
+    %w[DisplayShaded DrawEdges DrawFaces].each do |k|
+      assert_equal snap_before[k],
+                   Sketchup.active_model.rendering_options[k],
+                   "RO key #{k} not restored"
+    end
+  end
+
+  def test_rendering_options_restored_after_write_image_failure
+    Sketchup.active_model.rendering_options["DrawEdges"] = false
+    snap_before = Sketchup.active_model.rendering_options.dup
+    @view.force_write_image_failure!
+    begin
+      call("style" => "wireframe", "restore_view" => true)
+    rescue SU_MCP::Core::StructuredError
+      # expected
+    end
+    %w[DisplayShaded DrawEdges DrawFaces].each do |k|
+      assert_equal snap_before[k],
+                   Sketchup.active_model.rendering_options[k],
+                   "RO key #{k} not restored after write_image failure"
+    end
+  end
+
+  def test_rendering_options_not_restored_when_restore_view_false
+    snap_before = Sketchup.active_model.rendering_options.dup
+    call("style" => "wireframe", "restore_view" => false)
+    refute_equal snap_before["DrawFaces"],
+                 Sketchup.active_model.rendering_options["DrawFaces"],
+                 "DrawFaces should remain mutated when restore_view=false"
+  end
+
+  def test_no_ro_touched_when_style_default
+    pre_writes = Sketchup.active_model.rendering_options.writes.size
+    call("style" => "default", "restore_view" => true)
+    post_writes = Sketchup.active_model.rendering_options.writes.size
+    assert_equal pre_writes, post_writes,
+                 "no RO writes expected when style=default"
   end
 
   # --- preset / zoom_extents --------------------------------------------------
@@ -831,27 +1085,36 @@ class TestView < Minitest::Test
     assert_equal 0, @view.zoom_extents_calls
   end
 
+  def test_zoom_extents_failure_does_not_propagate
+    @view.zoom_extents_raises = true
+    # Handler must swallow the failure (logged) and still return a response.
+    result = call("zoom_extents" => true)
+    assert_kind_of Hash, result
+    assert result.key?("png_base64")
+  end
+
   # --- write_image / response shape ------------------------------------------
 
   def test_write_image_failure_raises
     @view.force_write_image_failure!
-    assert_raises(SU_MCP::Core::StructuredError) do
-      call
-    end
+    assert_raises(SU_MCP::Core::StructuredError) { call }
   end
 
-  def test_tempfile_deleted_on_success
-    before = Dir.entries(Dir.tmpdir).count
+  def test_oversize_png_raises
+    # Produce a 33 MiB "PNG" — exceeds the 32 MiB cap.
+    @view.write_image_size_override = 33 * 1024 * 1024
+    err = assert_raises(SU_MCP::Core::StructuredError) { call }
+    assert_match(/too large|max_size/i, err.message,
+                 "expected oversize error mentioning max_size or size")
+  end
+
+  def test_tempfile_cleaned_up_on_success
     call
-    after = Dir.entries(Dir.tmpdir).count
-    assert_operator after.abs, :<=, before + 1,
-                    "tmp file leaked after successful call"
-    # Stronger check: no file matching our pattern remains.
     leftovers = Dir.glob(File.join(Dir.tmpdir, "sumcp_vp_*.png"))
     assert_empty leftovers, "leftover tmp files: #{leftovers.inspect}"
   end
 
-  def test_tempfile_deleted_on_failure
+  def test_tempfile_cleaned_up_on_failure
     @view.force_write_image_failure!
     begin
       call
@@ -870,9 +1133,10 @@ class TestView < Minitest::Test
     end
     assert_equal "iso", result["preset_used"]
     assert_equal "shaded", result["style_used"]
-    # Encoded "FAKE_PNG_BYTES" → strict_encode64
-    expected = Base64.strict_encode64("FAKE_PNG_BYTES")
-    assert_equal expected, result["png_base64"]
+    # png_base64 must decode to bytes starting with the PNG magic header.
+    decoded = Base64.strict_decode64(result["png_base64"])
+    assert decoded.start_with?("\x89PNG\r\n\x1a\n".b),
+           "response PNG missing magic header: got #{decoded[0..7].inspect}"
   end
 
   def test_aspect_ratio_preserved
@@ -914,21 +1178,41 @@ Do NOT commit failing tests alone.
 
 ```ruby
 # su_mcp/su_mcp/handlers/view.rb
+#
+# Operation order (do NOT reorder without re-deriving snapshot/restore
+# invariants):
+#   0. validate → guards (active_model!, active_view)
+#   1. snapshot (camera deep-copy + RO subset) if restore_view
+#   2. preset    (Sketchup.send_action)
+#   3. style     (rendering_options assignments)
+#   4. zoom_extents (rescued — empty-model dialog tolerated)
+#   5. write_image into Tempfile
+#   6. size cap check (< 32 MiB raw)
+#   7. binread
+#   8. restore (outer `ensure` — runs on any exception path)
 require "base64"
-require "tmpdir"
+require "tempfile"
 
 module SU_MCP
   module Handlers
     module View
-      V = SU_MCP::Helpers::Validation
-      E = SU_MCP::Core::StructuredError
+      V  = SU_MCP::Helpers::Validation
+      E  = SU_MCP::Core::StructuredError
+      EH = SU_MCP::Helpers::Entities
 
       ALLOWED_PRESETS = %w[current front back left right top bottom iso].freeze
       ALLOWED_STYLES  = %w[default shaded hidden_line wireframe].freeze
       MIN_MAX_SIZE = 64
       MAX_MAX_SIZE = 4096
+      # 32 MiB raw — ~64 MiB after base64+JSON-string wrapping, matches
+      # the framing cap; raising here surfaces a clear "reduce max_size"
+      # message instead of cryptic transport errors.
+      MAX_RAW_BYTES = 32 * 1024 * 1024
 
       # rendering_options key sets per style. ``default`` does not touch RO.
+      # NOTE: each key set requires empirical verification against SketchUp
+      # 2026 BEFORE shipping (see §13 acceptance gate). ArgumentError on an
+      # unknown key surfaces as Core::StructuredError automatically.
       STYLE_RO = {
         "shaded" => {
           "DisplayShaded" => true,
@@ -942,41 +1226,45 @@ module SU_MCP
           "DrawProfilesOnly" => false,
         },
         "wireframe" => {
+          # DisplayShaded=false is essential — without it faces still render
+          # even with DrawFaces=false. See CONCERN-5 in review iter 1.
+          "DisplayShaded" => false,
           "DrawEdges" => true,
           "DrawFaces" => false,
         },
       }.freeze
 
       def self.viewport_screenshot(params)
-        max_size = require_max_size(params)
-        view_preset = V.require_enum(params, "view_preset", ALLOWED_PRESETS)
-        style = V.require_enum(params, "style", ALLOWED_STYLES)
-        zoom_extents = V.optional_bool(params, "zoom_extents", false)
-        restore_view = V.optional_bool(params, "restore_view", true)
+        # 0. Validate params and guards.
+        max_size      = require_max_size(params)
+        view_preset   = V.require_enum(params, "view_preset", ALLOWED_PRESETS)
+        style         = V.require_enum(params, "style", ALLOWED_STYLES)
+        zoom_extents  = V.optional_bool(params, "zoom_extents", false)
+        restore_view  = V.optional_bool(params, "restore_view", true)
 
-        model = Sketchup.active_model
+        model = EH.active_model!                              # raises if nil
         view  = model.active_view
+        raise E.new(-32000, "no active view") if view.nil?
 
-        # Snapshot for restoration. Camera is always cheap to snapshot; RO
-        # only if a style change is requested.
-        snap_camera = restore_view ? view.camera : nil
-        snap_ro = {}
-        if restore_view && style != "default"
-          STYLE_RO[style].each_key { |k| snap_ro[k] = model.rendering_options[k] }
+        # 1. Snapshot (only if we will mutate).
+        snap_camera = nil
+        snap_ro     = nil
+        if restore_view
+          c = view.camera
+          # Construct a fresh Camera to insulate from in-place mutation
+          # by SketchUp (CONCERN-1 in review iter 1).
+          snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
+          snap_camera.perspective = c.perspective?
+          if c.perspective?
+            snap_camera.fov = c.fov
+          else
+            snap_camera.height = c.height
+          end
+          if style != "default"
+            snap_ro = {}
+            STYLE_RO[style].each_key { |k| snap_ro[k] = model.rendering_options[k] }
+          end
         end
-
-        # Apply preset (skipped if "current").
-        if view_preset != "current"
-          Sketchup.send_action("view#{view_preset.capitalize}:")
-        end
-
-        # Apply style (skipped if "default").
-        if style != "default"
-          STYLE_RO[style].each { |k, v| model.rendering_options[k] = v }
-        end
-
-        # Optionally call zoom_extents.
-        view.zoom_extents if zoom_extents
 
         # Compute output dimensions preserving aspect ratio.
         vw = view.vpwidth.to_f
@@ -988,28 +1276,54 @@ module SU_MCP
         out_w = (vw * scale).round
         out_h = (vh * scale).round
 
-        ts = Time.now.strftime("%Y%m%d%H%M%S%6N")
-        tmp = File.join(Dir.tmpdir, "sumcp_vp_#{ts}_#{Process.pid}.png")
-
+        data = nil
         begin
-          ok = view.write_image(
-            filename: tmp,
-            width: out_w,
-            height: out_h,
-            antialias: true,
-            compression: 0.9,
-            transparent: false,
-          )
-          raise E.new(-32000, "viewport write_image failed") unless ok
-          data = File.binread(tmp)
-        ensure
-          File.delete(tmp) if File.exist?(tmp)
-        end
+          # 2. Preset.
+          if view_preset != "current"
+            Sketchup.send_action("view#{view_preset.capitalize}:")
+          end
 
-        # Restore camera and rendering options.
-        if restore_view
-          view.camera = snap_camera if snap_camera
-          snap_ro.each { |k, v| model.rendering_options[k] = v }
+          # 3. Style (apply rendering_options). Unknown keys → ArgumentError →
+          # wrapped as StructuredError in dispatch by Ruby exception bridging.
+          if style != "default"
+            STYLE_RO[style].each { |k, v| model.rendering_options[k] = v }
+          end
+
+          # 4. zoom_extents — empty-model dialog tolerated.
+          if zoom_extents
+            begin
+              view.zoom_extents
+            rescue StandardError => e
+              SU_MCP::Core::Logger.warn("zoom_extents failed: #{e.class}: #{e.message}")
+            end
+          end
+
+          # 5..7. write_image → size check → binread, all inside Tempfile block.
+          Tempfile.create(["sumcp_vp_", ".png"]) do |tmp|
+            tmp.close
+            ok = view.write_image(
+              filename: tmp.path,
+              width: out_w,
+              height: out_h,
+              antialias: true,
+              compression: 1.0,
+              transparent: false,
+            )
+            raise E.new(-32000, "viewport write_image failed") unless ok
+
+            size = File.size(tmp.path)
+            if size > MAX_RAW_BYTES
+              raise E.new(-32000,
+                "screenshot too large: #{size} bytes — reduce max_size")
+            end
+            data = File.binread(tmp.path)
+          end
+        ensure
+          # 8. Restore — runs on success AND on any exception path.
+          if restore_view
+            view.camera = snap_camera if snap_camera
+            snap_ro&.each { |k, v| model.rendering_options[k] = v }
+          end
         end
 
         {
@@ -1245,24 +1559,23 @@ Sketchup.send_action("viewIso:")                           # mutate
 model.rendering_options["DrawEdges"] = true
 view.zoom_extents
 
-tmp = "#{Dir.tmpdir}/snap_#{Time.now.to_i}.png"
-ok = view.write_image(
-  filename: tmp,
-  width: 800, height: 450,
-  antialias: true,
-  compression: 0.9,
-  transparent: false,
-)
-raise "write_image failed" unless ok
+require "tempfile"
+Tempfile.create(["snap_", ".png"]) do |tmp|
+  tmp.close
+  ok = view.write_image(
+    filename: tmp.path,
+    width: 800, height: 450,
+    antialias: true,
+    compression: 1.0,             # max compression — smaller bytes on the wire
+    transparent: false,
+  )
+  raise "write_image failed" unless ok
 
-begin
-  bytes = File.binread(tmp)
+  bytes = File.binread(tmp.path)
   # ... use bytes (Base64.strict_encode64 for transport) ...
-ensure
-  File.delete(tmp) if File.exist?(tmp)
-end
+end                                 # Tempfile auto-deletes here
 
-view.camera = snap_camera                                  # restore
+view.camera = snap_camera           # restore
 snap_ro.each { |k, v| model.rendering_options[k] = v }
 ```
 
@@ -1308,13 +1621,13 @@ git commit -m "docs(readme): mention viewport screenshot tool and modeling promp
 
 Run: `uv run pytest tests/ -q`
 
-Expected: all green (existing 56 + 4 prompt + 7 screenshot = 67 tests).
+Expected: all green (existing 56 + 5 prompt + 8 screenshot + 1 connection regression = 70 tests).
 
 - [ ] **Step 11.2: Run full Ruby test suite**
 
 Run: `ruby test/run_all.rb`
 
-Expected: all green (existing 120 runs + new test_view.rb runs).
+Expected: all green (existing 120 runs + ~18 new test_view.rb runs).
 
 - [ ] **Step 11.3: Confirm no untracked or modified files left behind**
 
