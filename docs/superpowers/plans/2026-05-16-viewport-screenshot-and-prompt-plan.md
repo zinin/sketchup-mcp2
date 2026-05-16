@@ -1505,24 +1505,31 @@ Identify the last step number and the cleanup section (if any).
 
 - [ ] **Step 7.2: Add the screenshot step**
 
-Append a new step before the cleanup section. Use the pattern of existing steps (number, call, assert, print). Suggested code:
+The existing `smoke_check.py` calls Ruby directly through the
+`SketchUpConnection.send_command`-based `call(conn, tool, **args)` helper
+(it does NOT use FastMCP's `ClientSession` — Python MCP server is not
+booted by the smoke). Match that convention. FastMCP-level `Image`
+serialization is already covered by `test_screenshot_via_mcp_dispatch`
+in `tests/test_screenshot.py`, so no live FastMCP testing is needed.
+
+Append before the cleanup section:
 
 ```python
-    # 21. Screenshot
-    print("step 21: get_viewport_screenshot")
-    result = await session.call_tool(
-        "get_viewport_screenshot",
-        {"view_preset": "iso", "zoom_extents": True, "max_size": 640},
-    )
-    assert not result.isError, f"screenshot returned isError: {result}"
-    img = result.content[0]
-    assert img.type == "image", f"expected image, got {img.type}"
-    assert img.mimeType == "image/png", f"expected png mime, got {img.mimeType}"
-    assert len(img.data) > 1000, f"PNG suspiciously small: {len(img.data)} chars b64"
-    print(f"  screenshot ok: {len(img.data)} chars base64 PNG")
-```
+    import base64
 
-If the existing steps use a different convention (e.g. `await client.call_tool(...)`), match it instead of literally copying the snippet.
+    step = 21; print(f"[{step}] get_viewport_screenshot — exercise the new tool")
+    result = await call(
+        conn, "get_viewport_screenshot",
+        view_preset="iso", zoom_extents=True, max_size=640,
+        style="default", restore_view=True,
+    )
+    payload = json.loads(text_of(result))
+    assert "png_base64" in payload, f"missing png_base64 in {payload!r}"
+    png = base64.b64decode(payload["png_base64"])
+    assert png.startswith(b"\x89PNG\r\n\x1a\n"), \
+        f"missing PNG magic header: got {png[0:8]!r}"
+    print(f"    PNG ok: {len(png)} bytes, {payload['width']}×{payload['height']}")
+```
 
 - [ ] **Step 7.3: Sanity check that the smoke check still parses**
 
