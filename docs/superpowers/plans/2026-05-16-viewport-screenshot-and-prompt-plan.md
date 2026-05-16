@@ -253,7 +253,7 @@ Follow this strategy to be effective and avoid common pitfalls.
 # 7. Joinery defaults
 For mortise/tenon/dovetail/finger joints, when the user doesn't
 specify:
-- joint dimensions ~ 0.3-0.5 x board thickness;
+- joint dimensions ≈ 0.3-0.5 × board thickness;
 - number of fingers/tails: 3-5 for typical drawer-width boards
   (200-400 mm);
 - if uncertain, ASK before generating — joints are hard to fix after
@@ -522,38 +522,35 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     Returns the raw MCP-shaped result dict
     (``{"content": [...], "isError": False}``).
 
-    Translates ``ConnectionError`` to :class:`SketchUpError` so callers
-    that cannot return a graceful string (e.g. ``get_viewport_screenshot``
-    which must return :class:`Image`) get a single, uniform exception
-    type. Text-returning callers (via :func:`_call`) catch and format it
-    into a user-readable string.
+    Does **not** translate :class:`ConnectionError` to anything — that
+    is each caller's responsibility, since callers have divergent
+    strategies for unavailable-server (string-returning tools surface a
+    graceful string, Image-returning tools raise). Centralising the
+    conversion here would introduce brittle string-based detection in
+    callers and lose the canonical error text shared by the 22 existing
+    text-returning tools.
 
     See the design's §5.8 for the rationale on error-handling asymmetry
     between text-returning and Image-returning tools.
     """
-    try:
-        sketchup = await get_connection()
-    except ConnectionError as e:
-        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
-    try:
-        return await sketchup.send_command(tool_name, kwargs)
-    except ConnectionError as e:
-        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
+    sketchup = await get_connection()              # may raise ConnectionError
+    return await sketchup.send_command(tool_name, kwargs)  # raises SketchUpError
 
 
 async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
 
     Same external contract as before — kept for compatibility with the 22
-    existing string-returning tools.  Now delegates to :func:`_raw_call`
-    for connection handling and converts the result to a string.
+    existing string-returning tools. Now delegates to :func:`_raw_call`
+    for connection acquisition and converts the result to a string.
+    Connection failures surface as the canonical legacy string so the LLM
+    sees a stable, actionable hint.
     """
     try:
         result = await _raw_call(ctx, tool_name, **kwargs)
+    except ConnectionError as e:
+        return f"SketchUp not running or extension not started: {e}"
     except SketchUpError as e:
-        # ConnectionError-derived: surface as graceful string for the LLM.
-        if e.code == -32000 and "SketchUp not running" in (e.message or ""):
-            return e.message or "SketchUp not running"
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
     content = result.get("content") if isinstance(result, dict) else None
     if (
@@ -648,17 +645,23 @@ async def get_viewport_screenshot(
     leaves the viewport in its original state.
     """
     # Delegate connection + send_command to _raw_call so we don't duplicate
-    # the transport logic of _call. ConnectionError surfaces as SketchUpError;
-    # see design §5.8 for the error-handling asymmetry rationale.
-    raw = await _raw_call(
-        ctx,
-        "get_viewport_screenshot",
-        max_size=max_size,
-        view_preset=view_preset,
-        zoom_extents=zoom_extents,
-        style=style,
-        restore_view=restore_view,
-    )
+    # the transport logic of _call. _raw_call does NOT translate
+    # ConnectionError (text-tools and Image-tools have divergent strategies),
+    # so we convert here: there is no Image sentinel for "not connected",
+    # so raise SketchUpError. See design §5.8 for the error-handling
+    # asymmetry rationale.
+    try:
+        raw = await _raw_call(
+            ctx,
+            "get_viewport_screenshot",
+            max_size=max_size,
+            view_preset=view_preset,
+            zoom_extents=zoom_extents,
+            style=style,
+            restore_view=restore_view,
+        )
+    except ConnectionError as e:
+        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
 
     # Ruby returns MCP-shaped {content: [{type: "text", text: JSON-blob}], ...}.
     # Extract the JSON blob and decode the base64 PNG into raw bytes.
@@ -1170,6 +1173,29 @@ class TestView < Minitest::Test
                  "no camera assignment expected for view_preset='current'"
   end
 
+  def test_2d_camera_with_restore_view_fails_fast
+    # 2D / match-photo cameras carry additional state we do not copy
+    # (aspect_ratio, image_width, scale_2d, center_2d). With restore_view=true
+    # the handler must fail fast rather than silently regress the viewport.
+    @view.camera.define_singleton_method(:is_2d?) { true }
+    err = assert_raises(SU_MCP::Core::StructuredError) {
+      call("restore_view" => true)
+    }
+    assert_match(/2D|match-photo|is_2d/, err.message,
+                 "expected error mentioning 2D/match-photo; got #{err.message.inspect}")
+    assert_match(/restore_view=false/, err.message,
+                 "expected error suggesting restore_view=false; got #{err.message.inspect}")
+  end
+
+  def test_2d_camera_with_restore_view_false_succeeds
+    # restore_view=false skips the snapshot entirely, so the 2D guard is
+    # bypassed — screenshot proceeds normally.
+    @view.camera.define_singleton_method(:is_2d?) { true }
+    result = call("restore_view" => false)
+    assert_kind_of Hash, result
+    assert result.key?("png_base64")
+  end
+
   def test_camera_assigned_for_preset_orthographic
     # When the current camera is parallel projection (perspective=false),
     # build_preset_camera must override `height` from the bbox — copying
@@ -1439,6 +1465,17 @@ module SU_MCP
         snap_ro     = nil
         if restore_view
           c = view.camera
+          # 2D / match-photo guard. Only eye/target/up/perspective/fov/height
+          # are deep-copied; 2D cameras carry aspect_ratio, image_width,
+          # scale_2d, center_2d that we don't restore. Fail fast rather than
+          # silently regress the viewport — see design §5.4 step 1, §5.6
+          # edge cases.
+          if c.respond_to?(:is_2d?) && c.is_2d?
+            raise E.new(-32000,
+              "restore_view is not supported for 2D / match-photo cameras " \
+              "(camera.is_2d? == true); pass restore_view=false to take the " \
+              "screenshot without restoring viewport state")
+          end
           # Construct a fresh Camera (deep copy) — verified safe in SU 2026.
           snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
           snap_camera.perspective = c.perspective?
@@ -1755,7 +1792,18 @@ Find the table that looks like:
 Insert a new row after `Introspection`:
 
 ```markdown
-| View | `get_viewport_screenshot` (returns MCP Image; optional view_preset/style/zoom_extents; non-destructive by default) |
+| View | `get_viewport_screenshot` (returns MCP Image; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
+```
+
+Also add a note immediately after the table:
+
+```markdown
+> **SketchUp version requirement (viewport screenshot only):** the
+> `get_viewport_screenshot` tool relies on SketchUp 2026 behavior for
+> `view.camera=` (synchronous), `Sketchup::RenderingOptions["RenderMode"]`
+> writability, and `Sketchup::Camera#is_2d?`. Earlier SketchUp versions
+> may work but are not tested and not officially supported by this tool.
+> All other tools target the same baseline as the rest of the plugin.
 ```
 
 - [ ] **Step 8.3: Add a Prompts paragraph**

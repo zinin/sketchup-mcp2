@@ -221,9 +221,19 @@ is `nil`. Never dereference into `nil`.
    view  = model.active_view; raise StructuredError if view.nil?
 
 1. (if restore_view)
+     # 2D / match-photo guard — only eye/target/up/perspective/fov/height
+     # are deep-copied. 2D cameras carry additional state (aspect_ratio,
+     # image_width, scale_2d, center_2d) which would not be restored.
+     # Fail fast rather than silently regress the user's viewport.
+     c = view.camera
+     if c.is_2d?
+       raise Core::StructuredError.new(-32000,
+         "restore_view is not supported for 2D / match-photo cameras " \
+         "(camera.is_2d? == true); pass restore_view=false to take the " \
+         "screenshot without restoring viewport state")
+     end
      # Deep snapshot — construct a fresh Camera so mutating the live
      # view does not affect the snapshot. See CONCERN-1 in review iter 1.
-     c = view.camera
      snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
      snap_camera.perspective = c.perspective?
      if c.perspective?
@@ -340,6 +350,14 @@ not polluted by screenshots.
 - **Oversize result**: when raw PNG > 32 MiB the handler raises
   `Core::StructuredError` with a hint to reduce `max_size`. See §5.4
   step 6.
+- **2D / match-photo cameras**: `Sketchup::Camera#is_2d?` indicates a
+  camera in two-point-perspective or match-photo mode. Such cameras
+  carry additional state (`aspect_ratio`, `image_width`, `scale_2d`,
+  `center_2d`) that the snapshot does NOT copy, so `restore_view=true`
+  would silently regress the viewport. With `restore_view=true` and a
+  2D camera, the handler **fails fast** with a hint to pass
+  `restore_view=false` (see §5.4 step 1). `restore_view=false` always
+  works regardless of camera mode.
 
 ### 5.7 Security
 
@@ -470,24 +488,30 @@ async def _raw_call(ctx, tool_name, /, **kwargs) -> dict:
     """Acquire the connection and execute one tools/call. Returns the
     raw result dict (MCP-shaped: {"content": [...], "isError": ...}).
 
-    Translates ConnectionError → SketchUpError for Image-returning
-    callers; text-returning callers (via _call) format their own
-    user-friendly string. See note below on error-handling asymmetry."""
+    Does NOT translate ConnectionError — that is each caller's job, since
+    text-tools and Image-tools have divergent strategies (string vs raise).
+    Centralising the translation here would force callers into brittle
+    substring-based detection of the connection-failure case. See the
+    note below on error-handling asymmetry."""
 ```
 
 Then:
 
 - `_call(ctx, name, **kw)` — unchanged externally — internally:
-  `_raw_call → catch SketchUpError → format_error string`.
-- `get_viewport_screenshot` — `_raw_call → parse content[0].text → json
-  → base64-decode → Image`.
+  `_raw_call → except ConnectionError → "SketchUp not running or
+  extension not started: …" string → except SketchUpError → format_error
+  string`.
+- `get_viewport_screenshot` — `_raw_call → except ConnectionError → raise
+  SketchUpError(-32000, …) → parse content[0].text → json → base64-decode
+  → Image`.
 
 **Documented error-handling asymmetry.** String-returning tools surface
 `ConnectionError` as a human-readable string (graceful — the LLM sees
-"SketchUp not running…" and can continue or retry). The screenshot tool
-raises `SketchUpError` because there is no Image sentinel for "not
-connected". This is *intentional* and lives here as a single canonical
-note — neither approach is more correct in isolation; they are matched
+"SketchUp not running or extension not started…" and can continue or
+retry). The screenshot tool raises `SketchUpError` because there is no
+Image sentinel for "not connected". This is *intentional* and lives here
+as a single canonical note — neither approach is more correct in
+isolation; they are matched
 to what the tool can communicate.
 
 ### 6.3 How users see it
@@ -546,6 +570,8 @@ start of a chat. The server never injects it automatically.
 | `test_rendering_options_not_restored_when_restore_view_false` | Negative case: with `style="wireframe", restore_view=false`, RO keys stay mutated. |
 | `test_no_ro_touched_when_style_default` | Spy on `model.rendering_options[]=`; with `style="default", restore_view=true`, no RO key is written. |
 | `test_camera_assigned_for_preset` | `view_preset="iso"` triggers exactly one direct `view.camera=` assignment with deterministic eye/target/up (computed from `Helpers::Geometry.visible_bounds(model)` and `PRESET_DIR["iso"]`). Spy verifies `Sketchup.send_action` is NOT called. |
+| `test_2d_camera_with_restore_view_fails_fast` | When `view.camera.is_2d? == true` and `restore_view=true`, handler raises `StructuredError` with hint to use `restore_view=false`. Silent partial-restore is forbidden. |
+| `test_2d_camera_with_restore_view_false_succeeds` | Negative: with `restore_view=false`, 2D camera does not trigger the guard — screenshot proceeds normally. |
 | `test_camera_assigned_for_preset_orthographic` | When current camera is parallel projection, `view.camera.height` must be bbox-derived (not copied from current camera) — otherwise `view_preset="top"` would clip the model. |
 | `test_preset_camera_uses_visible_bounds` | Preset camera is framed on `Helpers::Geometry.visible_bounds(model)`, NOT `model.bounds`. Verified via method spy on `visible_bounds` (avoids stubbing a full entities/group graph). |
 | `test_visible_bounds_not_called_for_current_preset` | Negative case: `view_preset="current"` must NOT invoke `visible_bounds` — no camera mutation, no framing logic. |
@@ -700,6 +726,20 @@ Resolved during review iter 1:
   Claude's behavior. Mitigation: `test_prompt_anchor_phrases` (word-
   level) AND `test_prompt_required_sections` (section-level) tests
   in §7.1.
+- **Large screenshot response may briefly stall SketchUp UI thread**:
+  The Ruby server is single-threaded, and `core/server.rb#write_response`
+  performs a blocking `@client.write(frame)`. With `max_size=4096` on a
+  detailed/textured scene, raw PNG can approach the 32 MiB cap → ~64 MiB
+  on the wire after base64 + JSON-wrap. If the Python client reads slowly,
+  the SketchUp UI thread can pause inside the `UI.start_timer` callback
+  for the duration of the write — measured worst-case ~hundreds of ms,
+  not freezing. Mitigation: the default `max_size=800` keeps responses
+  ≪ 1 MB so blocking write is single-digit ms (imperceptible). Power
+  users who explicitly request `max_size=4096` may see a brief UI hitch;
+  documented here so it doesn't surprise. A chunked / non-blocking
+  `write_response` was considered (would keep the UI responsive under
+  the full cap) but it is a large refactor of the core wire path
+  affecting all 22 existing tools — out of scope for this feature.
 - **SketchUp native modal dialogs**: SketchUp may surface C++-level modal
   dialogs in edge cases — e.g. an empty-model warning on some versions
   triggered by `view.zoom_extents`, or a low-memory warning from
@@ -716,6 +756,15 @@ Resolved during review iter 1:
   responsibility.
 
 ## 13. Acceptance criteria
+
+**Supported SketchUp version**: SketchUp 2026 (and later, if the API
+surface used remains stable). Earlier versions may work but are NOT
+officially supported by `get_viewport_screenshot` — empirical
+verification of `view.camera=` synchronicity, `RenderingOptions`
+key writability, `Sketchup::Camera#is_2d?`, and absence of transaction
+side-effects from RO writes was performed exclusively on SU 2026. All
+other plugin tools retain their existing version compatibility (broader
+historical baseline).
 
 The work is complete when:
 
@@ -738,7 +787,26 @@ The work is complete when:
       — confirmed by attaching an observer and writing both `RenderMode`
       and `DrawHidden` outside any `start_operation`. §5.5 holds.
 - [ ] `get_viewport_screenshot` is registered as an MCP tool and
-      callable through Claude Desktop, returning an MCP `Image`.
+      returns an MCP `Image`. Verified at two layers:
+   - **FastMCP serialization** (`Image` → `ImageContent` with
+     `mimeType="image/png"`) is asserted by
+     `tests/test_screenshot.py::test_screenshot_via_mcp_dispatch` —
+     full FastMCP dispatch path with a mocked SketchUp connection. This
+     unit test covers the Python side of the contract end-to-end.
+   - **Live Ruby handler** (camera/RO snapshot/restore, `View#write_image`,
+     base64 encoding, JSON-RPC envelope) is asserted by
+     `examples/smoke_check.py` step 19 — raw TCP against a running
+     SketchUp + plugin (PNG magic + dimensions + size > 1 KiB).
+
+      Note: an automated full end-to-end test through a real `Claude
+      Desktop` client + MCP stdio transport is intentionally NOT part of
+      acceptance — it would require either bundling Claude Desktop in CI
+      or driving the MCP stdio protocol from a custom Python client.
+      Either path is significant infrastructure for closing a thin
+      remaining gap (FastMCP stdio transport + ImageContent
+      serialization end-to-end), which is exercised manually before each
+      release. If a regression appears at that layer, follow up by
+      adding `examples/smoke_mcp_client.py` to automate it.
 - [ ] `get_viewport_screenshot` appears in `_RETRY_SAFE_TOOLS`
       (`src/sketchup_mcp/connection.py`); the regression test in
       `tests/test_connection.py` is green.
