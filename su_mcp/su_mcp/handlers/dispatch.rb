@@ -110,6 +110,7 @@ module SU_MCP
         when "undo"                  then Handlers::Model.undo(params)
         when "get_selection"         then Handlers::Model.get_selection(params)
         when "get_viewport_screenshot" then Handlers::View.viewport_screenshot(params)
+        when "get_version"             then Handlers::System.get_version(params)
         else
           raise Core::StructuredError.new(-32601, "unknown tool: #{tool}")
         end

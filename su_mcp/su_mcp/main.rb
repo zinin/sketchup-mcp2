@@ -32,6 +32,7 @@ module SU_MCP
     handlers/export
     handlers/model
     handlers/eval
+    handlers/system
     handlers/view
     core/server
     core/application
