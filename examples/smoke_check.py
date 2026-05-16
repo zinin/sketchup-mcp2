@@ -164,20 +164,46 @@ async def main() -> int:
         path = ex["path"]
         assert os.path.exists(path), f"export file missing: {path}"
 
+        import base64
+
+        step = 19; print(f"[{step}] get_viewport_screenshot — exercise the new tool")
+        result = await call(
+            conn, "get_viewport_screenshot",
+            view_preset="iso", zoom_extents=True, max_size=640,
+            style="default", restore_view=True,
+        )
+        payload = json.loads(text_of(result))
+        # Structural assertions — response shape.
+        for key in ("png_base64", "width", "height", "preset_used", "style_used"):
+            assert key in payload, f"missing {key!r} in {payload!r}"
+        assert payload["preset_used"] == "iso", f"unexpected preset_used: {payload['preset_used']!r}"
+        assert payload["style_used"] == "default", f"unexpected style_used: {payload['style_used']!r}"
+        # Dimension sanity — width/height are positive integers, both ≤ max_size=640.
+        w, h = payload["width"], payload["height"]
+        assert isinstance(w, int) and isinstance(h, int), f"non-int dimensions: {w!r}×{h!r}"
+        assert 0 < w <= 640 and 0 < h <= 640, f"dimensions out of bounds: {w}×{h}"
+        # Content sanity — must be a non-trivial PNG (a valid 1×1 PNG is ~70 bytes;
+        # require > 1024 bytes to rule out blank/empty captures).
+        png = base64.b64decode(payload["png_base64"])
+        assert png.startswith(b"\x89PNG\r\n\x1a\n"), \
+            f"missing PNG magic header: got {png[0:8]!r}"
+        assert len(png) > 1024, f"PNG suspiciously small: {len(png)} bytes"
+        print(f"    PNG ok: {len(png)} bytes, {w}×{h}, preset={payload['preset_used']}")
+
         # NB: cleanup must precede undo. `undo` rolls back the last undoable
         # operation, which here is mortise_tenon (export bypasses the undo
         # stack). Running undo first would invalidate b_mortise/b_tenon (the
         # post-subtract IDs captured in step 14) and the cleanup loop would
         # silently no-op on stale IDs while leaving the restored mortise board
         # behind in the model.
-        step = 19; print(f"[{step}] cleanup: delete created components")
+        step = 20; print(f"[{step}] cleanup: delete created components")
         for cid in [id_bool, b_mortise, b_tenon]:
             try:
                 await call(conn, "delete_component", id=cid)
             except Exception as e:
                 print(f"    (cleanup non-fatal: {e})")
 
-        step = 20; print(f"[{step}] undo — verify the tool runs without error")
+        step = 21; print(f"[{step}] undo — verify the tool runs without error")
         await call(conn, "undo")
 
         print("\nALL STEPS PASSED ✓")
