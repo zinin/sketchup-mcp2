@@ -12,13 +12,21 @@ git status                              # tree should have no tracked-file modif
 
 If HEAD has diverged from `origin/master`, decide **rebase** vs **merge** before the bump commit.
 
-## 1. Bump version in 5 places (must match)
+## 1. Bump version in 7 places (must match)
 
 - `pyproject.toml` — `version = "X.Y.Z"`
 - `src/sketchup_mcp/__init__.py` — `__version__ = "X.Y.Z"`
+- `src/sketchup_mcp/compat.py` — `MAX_RUBY = "X.Y.Z"` (and `MIN_RUBY` only if this release breaks wire/handler contract with the previous Ruby plugin)
 - `su_mcp/extension.json` — `"version": "X.Y.Z"`
 - `su_mcp/package.rb` — `VERSION = 'X.Y.Z'`
 - `su_mcp/su_mcp.rb` — `ext.version = 'X.Y.Z'`
+- `su_mcp/su_mcp/core/compat.rb` — `SERVER_VERSION = "X.Y.Z"` and `MAX_PYTHON = "X.Y.Z"` (and `MIN_PYTHON` only if this release breaks wire/handler contract with the previous Python client)
+
+**MIN/MAX policy:** default to bumping only `MAX_*` to the new release; keep `MIN_*` pointing to the oldest counterpart still supported. Three invariant tests defend against typos and forgotten bumps:
+
+* `test_min_le_max_invariant` (Python + Ruby) — range cannot be empty.
+* `test_max_ruby_matches_python_version` (Python) — Python's view of Ruby max must equal current `CLIENT_VERSION` at release time.
+* `test_max_python_matches_server_version` (Ruby) — Ruby's view of Python max must equal plugin `SERVER_VERSION` at release time.
 
 Run `uv lock` to refresh `uv.lock` with the new project version (otherwise the next `uv` call updates it post-release and you end up with a stray `chore: sync uv.lock` commit). Commit (`chore: bump to vX.Y.Z`) and push.
 
