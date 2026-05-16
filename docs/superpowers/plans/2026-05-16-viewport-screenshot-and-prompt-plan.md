@@ -23,7 +23,7 @@
 | `src/sketchup_mcp/prompts.py` | Defines `sketchup_modeling_strategy` MCP prompt; pure text constant + one `@mcp.prompt`-decorated function. |
 | `tests/test_prompts.py` | Asserts registration, body length, anchor phrases, description presence. |
 | `tests/test_screenshot.py` | Asserts Python tool wrapper: validation, payload shape, base64-decoding, `Image` return, error propagation. |
-| `su_mcp/su_mcp/handlers/view.rb` | Ruby handler `Handlers::View.viewport_screenshot`: validation, camera/RO snapshot/restore, send_action for preset, write_image to tmpfile, base64 response. |
+| `su_mcp/su_mcp/handlers/view.rb` | Ruby handler `Handlers::View.viewport_screenshot`: validation, camera/RO snapshot/restore, direct `view.camera=` for preset (no `send_action`), write_image to tmpfile, base64 response. |
 | `test/test_view.rb` | Ruby unit tests for the handler using minitest stubs of `Sketchup::*` API. |
 
 ### Files to MODIFY
@@ -223,9 +223,14 @@ Follow this strategy to be effective and avoid common pitfalls.
   as a unit.
 
 # 4. After every mutation — verify
-- Tools that create or modify entities return {id, name, type, bbox_mm}.
-  Read bbox_mm to confirm the result matches the intent before the
-  next step.
+- Geometry, material, boolean, joinery, and edge tools that create or
+  modify a single entity return {id, name, type, bbox_mm}. When bbox_mm
+  is returned, read it to confirm the result matches the intent before
+  the next step (and to relocate the entity if its id becomes stale
+  after destructive operations like boolean_operation).
+- Other tools — delete_component, create_layer, undo, list/find
+  queries, get_model_info, get_selection — have their own response
+  shapes; see the tool docs.
 - For visual confirmation across multiple parts:
   get_viewport_screenshot(view_preset="iso", zoom_extents=true).
 
@@ -440,8 +445,10 @@ async def test_screenshot_returns_image():
     assert isinstance(img, Image)
     assert img.data == _TINY_PNG_BYTES
     # Public `format` attribute — the constructor arg we passed.
-    # Avoid `img._mime_type` (private, FastMCP-internal).
-    assert getattr(img, "format", None) == "png" or img._format == "png"
+    # Avoid `img._mime_type` / `img._format` (private FastMCP internals).
+    # MIME/format is additionally verified via the dispatch path in
+    # `test_screenshot_via_mcp_dispatch` which asserts ImageContent.mimeType.
+    assert img.format == "png"
 
 
 async def test_screenshot_via_mcp_dispatch():
@@ -1055,10 +1062,19 @@ class TestView < Minitest::Test
     # Expect at least 2 assignments: preset apply + restore.
     assert @view.camera_writes.size >= 2,
            "expected preset assignment + restore assignment; got #{@view.camera_writes.size}"
-    # The FINAL camera (after handler return) should equal the original snapshot.
+    # The FINAL camera (after handler return) must match the original snapshot
+    # on every restorable property — not just `eye`. A broken restore that only
+    # writes `eye` would otherwise pass.
     final_camera = @view.camera_writes.last
-    assert_equal original.eye.respond_to?(:to_a) ? original.eye.to_a : original.eye,
-                 final_camera.eye.respond_to?(:to_a) ? final_camera.eye.to_a : final_camera.eye
+    assert_equal original.eye.to_a,    final_camera.eye.to_a,    "eye not restored"
+    assert_equal original.target.to_a, final_camera.target.to_a, "target not restored"
+    assert_equal original.up.to_a,     final_camera.up.to_a,     "up not restored"
+    assert_equal original.perspective?, final_camera.perspective?, "perspective flag not restored"
+    if original.perspective?
+      assert_in_delta original.fov, final_camera.fov, 1e-6, "fov not restored"
+    else
+      assert_in_delta original.height, final_camera.height, 1e-6, "height not restored"
+    end
   end
 
   def test_camera_not_restored_when_flag_false
@@ -1071,18 +1087,24 @@ class TestView < Minitest::Test
 
   def test_camera_restored_after_zoom_extents_failure
     # Outer ensure must restore camera even when zoom_extents raises (CRITICAL-3).
+    # Combine with a preset switch so "restore" has something non-trivial to undo —
+    # without the preset, the camera never changes and the test could pass even
+    # if restore is broken.
     @view.zoom_extents_raises = true
     original = @view.camera
-    begin
-      call("zoom_extents" => true, "restore_view" => true)
-    rescue SU_MCP::Core::StructuredError
-      # zoom_extents failure is swallowed by handler's inner rescue, but if
-      # outer chain raises, we should still see restore have happened.
+    # zoom_extents failure is swallowed by handler's inner `rescue StandardError`,
+    # so call() returns normally — no rescue needed here.
+    call("view_preset" => "top", "zoom_extents" => true, "restore_view" => true)
+    # Full property check — any partial restore would slip past an `eye`-only assert.
+    assert_equal original.eye.to_a,    @view.camera.eye.to_a,    "eye not restored"
+    assert_equal original.target.to_a, @view.camera.target.to_a, "target not restored"
+    assert_equal original.up.to_a,     @view.camera.up.to_a,     "up not restored"
+    assert_equal original.perspective?, @view.camera.perspective?, "perspective flag not restored"
+    if original.perspective?
+      assert_in_delta original.fov, @view.camera.fov, 1e-6, "fov not restored"
+    else
+      assert_in_delta original.height, @view.camera.height, 1e-6, "height not restored"
     end
-    # If zoom_extents is the only failure and is swallowed, no exception
-    # propagates; verify camera matches original either way.
-    assert_equal original.eye, @view.camera.eye,
-                 "camera should be restored even after zoom_extents failure"
   end
 
   # --- rendering_options snapshot/restore -------------------------------------
@@ -1146,6 +1168,69 @@ class TestView < Minitest::Test
     call("view_preset" => "current", "restore_view" => false)
     assert_empty @view.camera_writes,
                  "no camera assignment expected for view_preset='current'"
+  end
+
+  def test_camera_assigned_for_preset_orthographic
+    # When the current camera is parallel projection (perspective=false),
+    # build_preset_camera must override `height` from the bbox — copying
+    # the current camera's height would clip or empty-frame the model.
+    @view.camera.perspective = false
+    @view.camera.height = 999_999.0      # nonsense baseline; bbox-derived override must apply
+    call("view_preset" => "top", "restore_view" => false)
+    assigned = @view.camera_writes.last
+    refute assigned.perspective?, "preset camera should inherit perspective=false"
+    refute_in_delta 999_999.0, assigned.height, 1.0,
+                    "ortho preset must override height from bbox, not copy current camera's"
+    # With the default test bbox (≈ unit cube), `diag * 0.6` is small;
+    # the exact value is implementation-defined, just assert it's bounded.
+    assert assigned.height > 0 && assigned.height < 999_999.0,
+           "ortho preset height should be bbox-derived, got #{assigned.height}"
+  end
+
+  def test_preset_camera_uses_visible_bounds
+    # Handler must call Helpers::Geometry.visible_bounds(model) (NOT
+    # model.bounds directly) so it frames only the geometry the user can
+    # see. Verified via method spy — avoids building a full entities/group
+    # graph in stubs.
+    spy_calls = []
+    geom_mod  = SU_MCP::Helpers::Geometry
+    geom_mod.singleton_class.send(:alias_method, :__orig_visible_bounds, :visible_bounds)
+    geom_mod.define_singleton_method(:visible_bounds) do |model|
+      spy_calls << model
+      Sketchup::BBox.new(center: Geom::Point3d.new(0, 0, 0), diagonal: 100.0)
+    end
+    begin
+      call("view_preset" => "iso", "restore_view" => false)
+      assert_equal 1, spy_calls.size,
+                   "handler should call Helpers::Geometry.visible_bounds exactly once for preset != current"
+      assert_same Sketchup.active_model, spy_calls.first,
+                  "visible_bounds should receive the active model"
+    ensure
+      geom_mod.define_singleton_method(:visible_bounds,
+                                       geom_mod.method(:__orig_visible_bounds))
+      geom_mod.singleton_class.send(:remove_method, :__orig_visible_bounds)
+    end
+  end
+
+  def test_visible_bounds_not_called_for_current_preset
+    # For view_preset="current" no camera mutation happens, so
+    # visible_bounds must not be invoked either.
+    spy_calls = []
+    geom_mod  = SU_MCP::Helpers::Geometry
+    geom_mod.singleton_class.send(:alias_method, :__orig_visible_bounds, :visible_bounds)
+    geom_mod.define_singleton_method(:visible_bounds) do |model|
+      spy_calls << model
+      Sketchup::BBox.new(center: Geom::Point3d.new(0, 0, 0), diagonal: 100.0)
+    end
+    begin
+      call("view_preset" => "current", "restore_view" => false)
+      assert_empty spy_calls,
+                   "handler must NOT call visible_bounds when view_preset='current'"
+    ensure
+      geom_mod.define_singleton_method(:visible_bounds,
+                                       geom_mod.method(:__orig_visible_bounds))
+      geom_mod.singleton_class.send(:remove_method, :__orig_visible_bounds)
+    end
   end
 
   def test_zoom_extents_called_when_flag_true
@@ -1243,9 +1328,41 @@ Do NOT commit failing tests alone.
 ## Task 6: Ruby view handler — implementation + wiring
 
 **Files:**
+- Modify: `su_mcp/su_mcp/helpers/geometry.rb` (new `visible_bounds` helper)
 - Create: `su_mcp/su_mcp/handlers/view.rb`
 - Modify: `su_mcp/su_mcp/main.rb` (LOAD_ORDER)
 - Modify: `su_mcp/su_mcp/handlers/dispatch.rb` (case branch)
+
+- [ ] **Step 6.0: Add `visible_bounds` helper to `su_mcp/su_mcp/helpers/geometry.rb`**
+
+Append after the existing `circle_points` method, inside
+`module SU_MCP; module Helpers; module Geometry`:
+
+```ruby
+      # Bounding box that unions only visible top-level entities of the
+      # current model — i.e. honors `entity.hidden?` and the visibility
+      # of the entity's layer (`Sketchup::Layer#visible?`). Used by the
+      # viewport screenshot tool for `view_preset` framing so the camera
+      # frames what the user currently sees (consistent with screenshot
+      # not unhiding anything; see design §5.2 / §5.6).
+      #
+      # Returns `model.bounds` (the global bbox of all entities, hidden
+      # or not) when nothing is visible — degrade gracefully rather than
+      # produce a degenerate camera.
+      def self.visible_bounds(model)
+        bb = Geom::BoundingBox.new
+        model.entities.each do |e|
+          next if e.respond_to?(:hidden?) && e.hidden?
+          if e.respond_to?(:layer)
+            layer = e.layer
+            next if layer && layer.respond_to?(:visible?) && !layer.visible?
+          end
+          bb.add(e.bounds) if e.respond_to?(:bounds)
+        end
+        return model.bounds if bb.empty? || bb.diagonal.to_f <= 0.0
+        bb
+      end
+```
 
 - [ ] **Step 6.1: Create `su_mcp/su_mcp/handlers/view.rb`**
 
@@ -1288,8 +1405,13 @@ module SU_MCP
         "wireframe"   => { "RenderMode" => 0 },
       }.freeze
 
-      # Unit direction vectors for camera presets (eye = target + dir*distance).
-      # `up` is Z+ for elevation views, Y+ for top/bottom (otherwise camera goes singular).
+      # Direction vectors for camera presets (eye = target + dir*distance).
+      # NOTE: these vectors are NOT pre-normalized — `iso` is (1,-1,1), not
+      # (1/√3, -1/√3, 1/√3). Normalization happens at use site via
+      # `offset.length = dist` in `build_preset_camera`. Kept unnormalized for
+      # readability of intent (axis-aligned ↔ unit, iso ↔ unit cube corner).
+      # `up` is Z+ for elevation views, Y+ for top/bottom (otherwise camera
+      # goes singular when view-vector parallels world up).
       PRESET_DIR = {
         "front"  => [Geom::Vector3d.new( 0, -1,  0), Geom::Vector3d.new(0, 0, 1)],
         "back"   => [Geom::Vector3d.new( 0,  1,  0), Geom::Vector3d.new(0, 0, 1)],
@@ -1343,8 +1465,14 @@ module SU_MCP
         data = nil
         begin
           # 2. Preset — direct camera assignment (synchronous; send_action is async).
+          # `visible_bounds(model)` is used instead of `model.bounds` so the
+          # preset frames only the geometry the user currently sees — consistent
+          # with design §5.6 (screenshot captures the user-visible state and
+          # does not temporarily unhide anything). Falls back to model.bounds
+          # when nothing is visible (empty model or everything hidden).
           if view_preset != "current"
-            view.camera = build_preset_camera(view_preset, model.bounds, view.camera)
+            bb = SU_MCP::Helpers::Geometry.visible_bounds(model)
+            view.camera = build_preset_camera(view_preset, bb, view.camera)
           end
 
           # 3. Style — RenderMode write (verified writeable in SU 2026).
@@ -1399,13 +1527,24 @@ module SU_MCP
       end
 
       # Build a Sketchup::Camera for one of the named presets, framed on the
-      # model's bounding box. Falls back to a sensible default when the model
-      # is empty (bounds.diagonal == 0).
+      # given bounding box. Falls back to a sensible default when the box is
+      # empty (`diag == 0`).
+      #
+      # IMPORTANT: framing differs for perspective vs orthographic cameras.
+      # - Perspective: framing is governed by `eye-to-target distance` and `fov`.
+      #   `dist = diag * 1.5` gives a comfortable margin around the bbox.
+      # - Orthographic (parallel projection): framing is governed by
+      #   `Camera#height` (the world-space vertical extent visible in the
+      #   viewport). Copying the *current* camera's `height` here would clip
+      #   or empty-frame the model when the saved height bears no relation to
+      #   the new preset direction. We override `height` with a bbox-derived
+      #   value so `view_preset="top"` (or any other ortho preset) frames the
+      #   model regardless of where the camera was before.
       def self.build_preset_camera(preset, bounds, current_camera)
         dir, up = PRESET_DIR[preset]
         center  = bounds.center
         diag    = bounds.diagonal
-        diag    = 1000.0 if diag.nil? || diag <= 0   # fallback for empty model
+        diag    = 1000.0 if diag.nil? || diag <= 0   # fallback for empty/hidden model
         dist    = diag * 1.5
         offset  = Geom::Vector3d.new(dir.x, dir.y, dir.z); offset.length = dist
         eye     = center + offset
@@ -1414,7 +1553,9 @@ module SU_MCP
         if cam.perspective?
           cam.fov = current_camera.fov
         else
-          cam.height = current_camera.height
+          # Orthographic: frame the bbox via height. `diag * 0.6` matches the
+          # apparent scale of the perspective fallback for typical fov=35°.
+          cam.height = diag * 0.6
         end
         cam
       end
@@ -1475,15 +1616,18 @@ Expected: previous 120 runs + new view tests, all green. No regressions.
 - [ ] **Step 6.6: Commit**
 
 ```bash
-git add su_mcp/su_mcp/handlers/view.rb su_mcp/su_mcp/main.rb \
-        su_mcp/su_mcp/handlers/dispatch.rb test/test_view.rb
+git add su_mcp/su_mcp/helpers/geometry.rb su_mcp/su_mcp/handlers/view.rb \
+        su_mcp/su_mcp/main.rb su_mcp/su_mcp/handlers/dispatch.rb \
+        test/test_view.rb
 git commit -m "feat(handlers): add view handler for viewport screenshot
 
 Handlers::View.viewport_screenshot snapshots camera + rendering options,
-optionally switches view_preset via Sketchup.send_action, applies a
-rendering_options subset for style (shaded/hidden_line/wireframe), calls
-View#write_image into a tmpfile, base64-encodes the bytes, restores
-state, and returns {png_base64, width, height, preset_used, style_used}.
+optionally switches view_preset via direct view.camera = Sketchup::Camera.new(...)
+(synchronous, locale-independent — Sketchup.send_action was rejected as
+async in SU 2026, see review iter 1), applies a RenderMode-enum subset for
+style (shaded/hidden_line/wireframe), calls View#write_image into a tmpfile,
+base64-encodes the bytes, restores state, and returns
+{png_base64, width, height, preset_used, style_used}.
 
 Wired into handlers/dispatch.rb#call_handler and main.rb#LOAD_ORDER.
 Camera and RO mutations are UI state — no start_operation wrapper, so
@@ -1503,7 +1647,7 @@ Run: `wc -l examples/smoke_check.py && tail -30 examples/smoke_check.py`
 
 Identify the last step number and the cleanup section (if any).
 
-- [ ] **Step 7.2: Add the screenshot step**
+- [ ] **Step 7.2: Add the screenshot step (with renumber)**
 
 The existing `smoke_check.py` calls Ruby directly through the
 `SketchUpConnection.send_command`-based `call(conn, tool, **args)` helper
@@ -1512,23 +1656,43 @@ booted by the smoke). Match that convention. FastMCP-level `Image`
 serialization is already covered by `test_screenshot_via_mcp_dispatch`
 in `tests/test_screenshot.py`, so no live FastMCP testing is needed.
 
-Append before the cleanup section:
+The current tail of `smoke_check.py` numbers cleanup as `step = 19` and
+undo as `step = 20`. The screenshot is inserted BEFORE cleanup so it
+exercises the tool on a populated model. **Renumber while you're there:**
+screenshot becomes `step = 19`, cleanup shifts to `step = 20`, undo
+shifts to `step = 21`. Otherwise the printed step sequence will skip a
+number and the new step won't be exercised in the natural order.
+
+Insert the following block immediately before the existing `step = 19`
+(cleanup) block, then bump the cleanup `step = 19` → `step = 20` and the
+undo `step = 20` → `step = 21`:
 
 ```python
     import base64
 
-    step = 21; print(f"[{step}] get_viewport_screenshot — exercise the new tool")
+    step = 19; print(f"[{step}] get_viewport_screenshot — exercise the new tool")
     result = await call(
         conn, "get_viewport_screenshot",
         view_preset="iso", zoom_extents=True, max_size=640,
         style="default", restore_view=True,
     )
     payload = json.loads(text_of(result))
-    assert "png_base64" in payload, f"missing png_base64 in {payload!r}"
+    # Structural assertions — response shape.
+    for key in ("png_base64", "width", "height", "preset_used", "style_used"):
+        assert key in payload, f"missing {key!r} in {payload!r}"
+    assert payload["preset_used"] == "iso", f"unexpected preset_used: {payload['preset_used']!r}"
+    assert payload["style_used"] == "default", f"unexpected style_used: {payload['style_used']!r}"
+    # Dimension sanity — width/height are positive integers, both ≤ max_size=640.
+    w, h = payload["width"], payload["height"]
+    assert isinstance(w, int) and isinstance(h, int), f"non-int dimensions: {w!r}×{h!r}"
+    assert 0 < w <= 640 and 0 < h <= 640, f"dimensions out of bounds: {w}×{h}"
+    # Content sanity — must be a non-trivial PNG (a valid 1×1 PNG is ~70 bytes;
+    # require > 1024 bytes to rule out blank/empty captures).
     png = base64.b64decode(payload["png_base64"])
     assert png.startswith(b"\x89PNG\r\n\x1a\n"), \
         f"missing PNG magic header: got {png[0:8]!r}"
-    print(f"    PNG ok: {len(png)} bytes, {payload['width']}×{payload['height']}")
+    assert len(png) > 1024, f"PNG suspiciously small: {len(png)} bytes"
+    print(f"    PNG ok: {len(png)} bytes, {w}×{h}, preset={payload['preset_used']}")
 ```
 
 - [ ] **Step 7.3: Sanity check that the smoke check still parses**
@@ -1549,7 +1713,7 @@ cd su_mcp && ruby package.rb && cd ..
 
 Then run: `python examples/smoke_check.py`
 
-Expected: all 21 steps print success; final exit code 0.
+Expected: all 21 steps print success in consecutive order (1, 2, …, 19=screenshot, 20=cleanup, 21=undo); final exit code 0.
 
 If SketchUp is not available right now, mark this step as "deferred until SketchUp available" — do not block the rest of the plan on it. Document the deferral in the PR description.
 
@@ -1633,21 +1797,49 @@ Append to the end of `docs/sketchup-ruby-cookbook.md`:
 ```markdown
 ## Viewport snapshot via `View#write_image`
 
-For non-destructive screenshots, snapshot camera and the rendering-options
-keys you intend to change, mutate, write the image, then restore.
-`View#camera=` and `RenderingOptions[]=` are UI state — they don't enter
-the undo stack — so you don't need `model.start_operation`.
+For non-destructive screenshots, deep-copy the camera and snapshot the
+rendering-options keys you intend to change, mutate, write the image,
+then restore. `View#camera=` and `RenderingOptions[]=` are UI state —
+they don't enter the undo stack — so you don't need `model.start_operation`.
+
+**Important notes for SketchUp 2026** (verified empirically):
+
+- `Sketchup.send_action("viewIso:")` is **asynchronous** — the camera does
+  NOT change before the call returns. Use direct `view.camera =
+  Sketchup::Camera.new(eye, target, up)` for synchronous, locale-independent
+  preset switching.
+- The boolean rendering-options keys `DisplayShaded`, `DrawEdges`, `DrawFaces`
+  are **WRITE-REJECTED** (`ArgumentError`). For switching rendering style use
+  the `RenderMode` integer enum (`0` Wireframe / `1` Hidden Line / `2` Shaded /
+  `3` Textured Shaded / `4` Monochrome / `5` Sketchy / `6` X-Ray).
 
 ```ruby
-view = Sketchup.active_model.active_view
+view  = Sketchup.active_model.active_view
 model = view.model
 
-snap_camera = view.camera                                  # snapshot
-ro_keys     = ["DrawEdges", "DrawFaces"]
-snap_ro     = ro_keys.map { |k| [k, model.rendering_options[k]] }.to_h
+# --- snapshot (deep copy — protects against future API changes that might
+# return live references; iter-1 verified `view.camera` returns a fresh
+# wrapper today, but the deep copy is defence-in-depth) ---
+c = view.camera
+snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
+snap_camera.perspective = c.perspective?
+if c.perspective?
+  snap_camera.fov = c.fov
+else
+  snap_camera.height = c.height
+end
+ro_keys = ["RenderMode"]
+snap_ro = ro_keys.map { |k| [k, model.rendering_options[k]] }.to_h
 
-Sketchup.send_action("viewIso:")                           # mutate
-model.rendering_options["DrawEdges"] = true
+# --- mutate (direct camera assignment + RenderMode enum) ---
+bb     = model.bounds
+center = bb.center
+dist   = (bb.diagonal.zero? ? 1000.0 : bb.diagonal) * 1.5
+offset = Geom::Vector3d.new(1, -1, 1)
+offset.length = dist
+eye    = center + offset
+view.camera = Sketchup::Camera.new(eye, center, Geom::Vector3d.new(0, 0, 1))
+model.rendering_options["RenderMode"] = 2  # 2 = Shaded
 view.zoom_extents
 
 require "tempfile"
@@ -1657,7 +1849,7 @@ Tempfile.create(["snap_", ".png"]) do |tmp|
     filename: tmp.path,
     width: 800, height: 450,
     antialias: true,
-    compression: 1.0,             # max compression — smaller bytes on the wire
+    compression: 1.0,             # PNG is always lossless; 1.0 = strongest compression
     transparent: false,
   )
   raise "write_image failed" unless ok
@@ -1666,7 +1858,8 @@ Tempfile.create(["snap_", ".png"]) do |tmp|
   # ... use bytes (Base64.strict_encode64 for transport) ...
 end                                 # Tempfile auto-deletes here
 
-view.camera = snap_camera           # restore
+# --- restore ---
+view.camera = snap_camera
 snap_ro.each { |k, v| model.rendering_options[k] = v }
 ```
 

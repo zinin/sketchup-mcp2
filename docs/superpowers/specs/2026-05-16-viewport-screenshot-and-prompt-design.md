@@ -159,7 +159,7 @@ Validation:
 |---|---|
 | `max_size` | Largest side of the returned PNG. Aspect ratio is taken from `view.vpwidth / view.vpheight`; the smaller side is scaled proportionally and rounded. |
 | `view_preset="current"` | Camera is not modified. |
-| `view_preset=<other>` | Camera is set **directly** via `view.camera = Sketchup::Camera.new(eye, target, up)`. Eye/target/up are computed deterministically from `model.bounds.center` and a preset-specific unit direction vector; distance = `bb.diagonal * 1.5` (extents-friendly framing). `Sketchup.send_action("view#{Preset}:")` was rejected — empirically verified to be **asynchronous** in SketchUp 2026 (camera does not change before the call returns), which would silently break preset + restore semantics. The deterministic-camera approach guarantees sync, locale-independence, and stub-level testability at the cost of a slight visual difference from SketchUp's native "View → Standard Views" menu (≤ a few degrees of elevation in some presets — acceptable for a verification screenshot). |
+| `view_preset=<other>` | Camera is set **directly** via `view.camera = Sketchup::Camera.new(eye, target, up)`. Eye/target/up are computed deterministically from `Helpers::Geometry.visible_bounds(model)` (NOT `model.bounds` — preset framing respects hidden geometry/tags so the screenshot matches what the user currently sees; falls back to `model.bounds` only when nothing is visible) and a preset-specific direction vector from `PRESET_DIR`; distance = `bb.diagonal * 1.5` (extents-friendly framing). For **orthographic** (parallel projection) current cameras, the new camera's `height` is also bbox-derived (`diag * 0.6`) — copying the current camera's `height` would clip or empty-frame the model under a different preset direction. `Sketchup.send_action("view#{Preset}:")` was rejected — empirically verified to be **asynchronous** in SketchUp 2026 (camera does not change before the call returns), which would silently break preset + restore semantics. The deterministic-camera approach guarantees sync, locale-independence, and stub-level testability at the cost of a slight visual difference from SketchUp's native "View → Standard Views" menu (≤ a few degrees of elevation in some presets — acceptable for a verification screenshot). |
 | `zoom_extents=true` | `view.zoom_extents` is called after the (optional) preset change and style change. |
 | `style="default"` | Rendering options are not modified. |
 | `style=<other>` | A small set of `model.rendering_options` keys is modified directly. We do **not** switch `model.styles.selected_style` (that is locale-dependent and pollutes the undo stack). |
@@ -190,7 +190,7 @@ Working write-able keys observed: `RenderMode` (Integer enum), `DrawHidden`
 
 | `style` | Keys set |
 |---|---|
-| `shaded` | `RenderMode = 2` (shaded, no textures). Set `Texture = true` if the user has textured materials and wants them visible — see Open Decisions §11 ("Default shaded variant"). |
+| `shaded` | `RenderMode = 2` (shaded, no textures). `Texture` is intentionally left untouched — see Open Decisions §11 ("Default shaded variant"). |
 | `hidden_line` | `RenderMode = 1` (hidden line). Optionally set `DrawHidden = true` to also draw hidden geometry — for now we do not (a clean hidden-line is what users expect). |
 | `wireframe` | `RenderMode = 0`. No additional toggles needed; wireframe mode handles faces correctly on its own. |
 
@@ -419,9 +419,14 @@ Follow this strategy to be effective and avoid common pitfalls.
   as a unit.
 
 # 4. After every mutation — verify
-- Tools that create or modify entities return {id, name, type, bbox_mm}.
-  Read bbox_mm to confirm the result matches the intent before the
-  next step.
+- Geometry, material, boolean, joinery, and edge tools that create or
+  modify a single entity return {id, name, type, bbox_mm}. When bbox_mm
+  is returned, read it to confirm the result matches the intent before
+  the next step (and to relocate the entity if its id becomes stale
+  after destructive operations like boolean_operation).
+- Other tools — delete_component, create_layer, undo, list/find
+  queries, get_model_info, get_selection — have their own response
+  shapes; see the tool docs.
 - For visual confirmation across multiple parts:
   get_viewport_screenshot(view_preset="iso", zoom_extents=true).
 
@@ -540,7 +545,10 @@ start of a chat. The server never injects it automatically.
 | `test_rendering_options_restored_after_write_image_failure` | Restore runs even when `write_image` returns false (outer `ensure`). |
 | `test_rendering_options_not_restored_when_restore_view_false` | Negative case: with `style="wireframe", restore_view=false`, RO keys stay mutated. |
 | `test_no_ro_touched_when_style_default` | Spy on `model.rendering_options[]=`; with `style="default", restore_view=true`, no RO key is written. |
-| `test_send_action_called_for_preset` | Spying on `Sketchup.send_action`, `view_preset="iso"` triggers exactly one `"viewIso:"`. |
+| `test_camera_assigned_for_preset` | `view_preset="iso"` triggers exactly one direct `view.camera=` assignment with deterministic eye/target/up (computed from `Helpers::Geometry.visible_bounds(model)` and `PRESET_DIR["iso"]`). Spy verifies `Sketchup.send_action` is NOT called. |
+| `test_camera_assigned_for_preset_orthographic` | When current camera is parallel projection, `view.camera.height` must be bbox-derived (not copied from current camera) — otherwise `view_preset="top"` would clip the model. |
+| `test_preset_camera_uses_visible_bounds` | Preset camera is framed on `Helpers::Geometry.visible_bounds(model)`, NOT `model.bounds`. Verified via method spy on `visible_bounds` (avoids stubbing a full entities/group graph). |
+| `test_visible_bounds_not_called_for_current_preset` | Negative case: `view_preset="current"` must NOT invoke `visible_bounds` — no camera mutation, no framing logic. |
 | `test_zoom_extents_called_when_flag` | `view.zoom_extents` is called only when `zoom_extents=true`. |
 | `test_zoom_extents_failure_does_not_propagate` | Stub `zoom_extents` to raise; handler still returns a valid response (logs the failure). |
 | `test_write_image_failure_raises` | Stubbed `view.write_image -> false` → `Core::StructuredError`. |
@@ -644,6 +652,7 @@ post-release:
 | Ruby handler file name | `handlers/view.rb` | `handlers/screenshot.rb` |
 | Include `monochrome` style | No (YAGNI) | Yes if needed during live test |
 | Final `rendering_options` key set per style | per §5.3 table — to be empirically confirmed against SketchUp 2026 during TDD before writing the production handler (see §13 acceptance criteria) | Adjustments expected; major divergence escalates to a follow-up review iteration |
+| Default shaded variant | `RenderMode = 2` only (lighting on flat colors, `Texture` left untouched — defaults to whatever the model currently uses). Reason: keeps the screenshot fast and focused on form for verification purposes. | Set `Texture = true` for textured material visibility — re-add later as an explicit parameter (e.g. `style="shaded_textured"` mapping to `RenderMode = 3`) if user demand emerges. |
 
 Resolved during review iter 1:
 - Version after release: **`0.1.0`** (see §9 step 6 for rationale).
@@ -691,6 +700,20 @@ Resolved during review iter 1:
   Claude's behavior. Mitigation: `test_prompt_anchor_phrases` (word-
   level) AND `test_prompt_required_sections` (section-level) tests
   in §7.1.
+- **SketchUp native modal dialogs**: SketchUp may surface C++-level modal
+  dialogs in edge cases — e.g. an empty-model warning on some versions
+  triggered by `view.zoom_extents`, or a low-memory warning from
+  `write_image` at large `max_size`. These dialogs block the SketchUp UI
+  thread until the **user manually dismisses them**; the Ruby `rescue
+  StandardError` cannot intercept them. The Python side will hit
+  `SKETCHUP_MCP_TIMEOUT` (60 s default) and surface a timeout error.
+  Mitigation: documented as a known limitation — the screenshot tool
+  must not be invoked while SketchUp is in a state likely to raise a
+  native modal (e.g. completely empty model at boot, or active
+  long-running task). For the empty-model case specifically, the inner
+  `begin/rescue` around `view.zoom_extents` handles the Ruby-level
+  exception variant; native-dialog escape remains an environmental
+  responsibility.
 
 ## 13. Acceptance criteria
 
