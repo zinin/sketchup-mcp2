@@ -76,47 +76,66 @@ the user standpoint they are "what's new in 0.1.0".
 ```
 src/sketchup_mcp/
   compat.py             NEW — PYTHON_VERSION, MIN_RUBY, MAX_RUBY,
-                        check_ruby_version(), error-message strings,
-                        IncompatibleVersionError import.
-  connection.py         MODIFY — every outbound payload gets
-                        client_version; every inbound response triggers
-                        check_ruby_version(server_version) (no cache —
-                        run on every response per design discussion).
-                        Bypass: get_version path tolerates mismatch.
-  tools.py              MODIFY — +1 wrapper get_version (always returns
-                        payload, never raises, surfaces compatible=bool
-                        + descriptive error).
+                        check_ruby_version(), strict regex parser,
+                        canonical error messages (each ends with
+                        "Call `get_version`" hint).
+  connection.py         MODIFY — outbound: client_version on every
+                        request; inbound: dict-assert + name-based
+                        bypass for "get_version", check_ruby_version,
+                        -32001 promoted to IncompatibleVersionError;
+                        _RETRY_SAFE_TOOLS gains "get_version".
+  tools.py              MODIFY — +1 wrapper get_version returning
+                        JSON string (always succeeds — catches
+                        ConnectionError and SketchUpError; two-way
+                        compat verdict).
   errors.py             MODIFY — +1 class IncompatibleVersionError
                         (subclass of SketchUpError, JSON-RPC code -32001).
 
 su_mcp/su_mcp/
-  core/compat.rb        NEW — RUBY_VERSION, MIN_PYTHON, MAX_PYTHON,
-                        check_python_version, error-message strings.
-  core/server.rb        MODIFY — read client_version from every request
-                        (skip check for method "get_version"); inject
-                        server_version into every response envelope
-                        (both success and error paths).
+  core/compat.rb        NEW — RUBY_VERSION (= plugin version), MIN_PYTHON,
+                        MAX_PYTHON, check_python_version, strict parser,
+                        canonical error messages.
+  core/server.rb        MODIFY — encode_response_body injects
+                        server_version BOTH in the happy path AND in
+                        the JSON-generator-error fallback (single
+                        choke point covers every emitted envelope).
   handlers/system.rb    NEW — get_version handler.
-  handlers/dispatch.rb  MODIFY — one new `when "get_version"` branch.
+  handlers/dispatch.rb  MODIFY — capture request_id + is_notification
+                        BEFORE compat check; check_python_version
+                        (bypass: method=='tools/call' AND
+                        params.name=='get_version'); on -32001 for a
+                        notification, log WARN and return nil (no
+                        response); new `when "get_version"` route.
   main.rb               MODIFY — LOAD_ORDER adds `core/compat` (before
                         `core/server`) and `handlers/system` (after
                         `handlers/eval`).
 
 tests/
-  test_compat.py            NEW — version parsing + range check tests.
+  conftest.py               MODIFY — `encode_response()` injects
+                            server_version=compat.MAX_RUBY by default
+                            so existing test_connection.py stays green.
+  test_compat.py            NEW — version parsing (incl. strict-shape
+                            negatives) + range check tests + invariant
+                            tests.
   test_version_handshake.py NEW — client_version outbound, server_version
-                            inbound, bypass for get_version, missing-
-                            version-field treated as pre-0.1.0.
+                            inbound, name-based bypass, missing-field
+                            treated as pre-0.1.0, -32001 → IVE remap,
+                            get_version in _RETRY_SAFE_TOOLS.
   test_version_tool.py      NEW — MCP tool registration, compatible /
-                            incompatible payload shape, bypass works.
+                            incompatible payload shape, bypass works on
+                            unknown-tool error, two-way drift detection.
 
 test/
-  test_compat.rb        NEW — version parsing + check_python_version.
-  test_server.rb        NEW (or EXTEND existing dispatch test) —
-                        compatible/incompatible client_version paths,
-                        get_version bypass, server_version emitted on
-                        every response.
-  test_system.rb        NEW — get_version handler returns expected hash.
+  test_compat.rb        NEW — version parsing + check_python_version
+                        + invariant tests.
+  test_server_compat.rb NEW — REAL `Dispatch.handle` + REAL
+                        `Core::Server` with captured-write fake socket
+                        (no method-overriding double). Covers
+                        client_version check, request_id preservation,
+                        notification suppression, server_version in
+                        success/error/fallback paths.
+  test_system.rb        NEW — get_version handler returns expected hash;
+                        dispatch routes `tools/call`/`get_version`.
 
 examples/
   smoke_check.py        MODIFY — +1 step (22): call get_version, assert
@@ -140,15 +159,27 @@ unchanged. Only the JSON-RPC envelope picks up two new optional fields.
 
 ### Request
 
+Note: in this project Python always sends `method: "tools/call"` with
+the bare tool name in `params.name` — the JSON-RPC `method` is never
+the tool name. The example below mirrors what the Python side actually
+emits.
+
 ```json
 {
   "jsonrpc": "2.0",
   "id": 42,
-  "method": "get_model_info",
-  "params": {},
+  "method": "tools/call",
+  "params": {
+    "name": "get_model_info",
+    "arguments": {}
+  },
   "client_version": "0.1.0"
 }
 ```
+
+The `client_version` field is ~25 bytes added to every request and
+counts inside the existing 64 MiB framing cap; in practice this is
+negligible.
 
 ### Response (success)
 
@@ -206,12 +237,21 @@ MIN_RUBY = "0.1.0"
 MAX_RUBY = "0.1.0"
 
 
+_PART_RE = __import__("re").compile(r"\A\d+\Z")
+
+
 def _parse(v: str) -> tuple[int, int, int]:
-    """Parse 'X.Y.Z' → (X, Y, Z). Raise ValueError on anything else."""
+    """Parse 'X.Y.Z' → (X, Y, Z). Raise ValueError on anything else.
+
+    Strict: each component must match `\\A\\d+\\Z` (no whitespace, no
+    sign, no underscores). int() alone would accept "+1", " 1", etc.
+    """
+    if not isinstance(v, str):
+        raise ValueError(f"version must be a string, got {type(v).__name__}")
     parts = v.split(".")
-    if len(parts) != 3:
-        raise ValueError(f"version must be 'X.Y.Z', got {v!r}")
-    return tuple(int(p) for p in parts)  # int() raises ValueError on non-digit
+    if len(parts) != 3 or not all(_PART_RE.match(p) for p in parts):
+        raise ValueError(f"version must be 'X.Y.Z' (numeric), got {v!r}")
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def check_ruby_version(server_version: str | None) -> None:
@@ -236,22 +276,25 @@ def _msg_ruby_too_old(rv: str) -> str:
     return (
         f"SketchUp plugin v{rv} is too old for sketchup-mcp2 v{PYTHON_VERSION} "
         f"(requires v{MIN_RUBY}..v{MAX_RUBY}). "
-        f"Reinstall su_mcp_v{MAX_RUBY}.rbz from the GitHub release."
+        f"Reinstall su_mcp_v{MAX_RUBY}.rbz from the GitHub release. "
+        f"Call `get_version` to inspect handshake state."
     )
 
 
 def _msg_ruby_too_new(rv: str) -> str:
     return (
         f"SketchUp plugin v{rv} is newer than sketchup-mcp2 v{PYTHON_VERSION} "
-        f"supports (max v{MAX_RUBY}). Run: "
-        f"uv pip install --upgrade sketchup-mcp2"
+        f"supports (max v{MAX_RUBY}). "
+        f"Run: uv pip install --upgrade sketchup-mcp2. "
+        f"Call `get_version` to inspect handshake state."
     )
 
 
 def _msg_ruby_missing() -> str:
     return (
         f"SketchUp plugin pre-dates version-compat checking. "
-        f"Reinstall su_mcp_v{MAX_RUBY}.rbz from the GitHub release."
+        f"Reinstall su_mcp_v{MAX_RUBY}.rbz from the GitHub release. "
+        f"Call `get_version` to inspect handshake state."
     )
 ```
 
@@ -271,65 +314,139 @@ class IncompatibleVersionError(SketchUpError):
 
 ### 7.3 `src/sketchup_mcp/connection.py` (MODIFY)
 
-Two surgical changes inside the existing send/recv logic — exact patch
-locations identified during implementation, but the shape is:
+Two surgical changes inside `_send_once`:
 
 ```python
 from sketchup_mcp import compat
 from sketchup_mcp.errors import IncompatibleVersionError
 
-# On outbound:
-payload = {
+# On outbound — every request carries client_version:
+request = {
     "jsonrpc": "2.0",
-    "id": next_id(),
-    "method": tool_name,
-    "params": params,
+    "method": "tools/call",
+    "params": {"name": name, "arguments": args},
+    "id": rid,
     "client_version": compat.PYTHON_VERSION,   # ← NEW
 }
 
-# On inbound (after JSON parse, before returning to caller):
-server_version = response.get("server_version")
-if not skip_version_check:
+# On inbound — after json.loads + id-match check, BEFORE the `error`
+# extraction. Name-based bypass for the diagnostic tool:
+assert isinstance(response, dict), "malformed JSON-RPC response"
+if name != "get_version":
+    server_version = response.get("server_version")
     compat.check_ruby_version(server_version)   # raises on mismatch
+
+# Asymmetric-error remapping: when Ruby sends back -32001 (its own
+# version-mismatch verdict), promote it from generic SketchUpError
+# to IncompatibleVersionError so callers can catch a single class
+# regardless of which side detected the mismatch:
+if "error" in response and response["error"].get("code") == -32001:
+    raise IncompatibleVersionError(response["error"]["message"])
 ```
 
-`skip_version_check` is a new keyword on the internal `_raw_call` (default
-`False`). The only caller that sets it to `True` is the `get_version`
-tool wrapper — see §7.4. State on the `SketchUpConnection` instance: no
-new fields, no cache (per design discussion).
+Bypass policy: `_send_once` checks the bare tool name `name`
+(parameter of `send_command(name, args)`) against `"get_version"`. This
+is the only caller path — `_raw_call` always routes through
+`_send_once`. If a future code path bypasses `_raw_call` and posts
+directly to the socket, the rule is: **route through `_raw_call` so
+handshake logic remains consistent**.
+
+State on the `SketchUpConnection` instance: no new fields, no cache
+(per design discussion). The existing `asyncio.Lock` continues to
+serialize concurrent callers, so two awaiters seeing a mismatch will
+each get an identical `IncompatibleVersionError` instead of racing.
+
+Add `"get_version"` to the `_RETRY_SAFE_TOOLS` frozenset — it is the
+most read-only tool in the codebase and the first thing users call
+when diagnosing handshake state; a stale-socket on cold start should
+auto-retry instead of bubbling `_StaleSocketError`.
 
 ### 7.4 `src/sketchup_mcp/tools.py` (MODIFY)
 
 ```python
 @mcp.tool()
-async def get_version(*, ctx: Context | None = None) -> dict:
+async def get_version(ctx: Context) -> str:
     """Return Python + Ruby versions and the compatibility verdict.
 
-    Always succeeds — on mismatch the result has compatible=false and
-    error=<message>, so the LLM / user can see the problem instead of
-    getting a raised error. Use this as a diagnostic when ordinary
-    tools fail with IncompatibleVersionError."""
-    raw = await _raw_call(ctx, "get_version", skip_version_check=True)
-    # raw["content"][0]["text"] is JSON with the Ruby-side payload:
-    #   { ruby_version, min_compatible_python, max_compatible_python }
+    Always succeeds — on mismatch (or any Ruby-side error) the result
+    has compatible=false and error=<message>, so the LLM / user can
+    see the problem instead of getting a raised exception. Use this
+    as a diagnostic when ordinary tools fail with IncompatibleVersionError.
+    """
+    try:
+        raw = await _raw_call(ctx, "get_version")
+    except ConnectionError as e:
+        return json.dumps({
+            "python_version": compat.PYTHON_VERSION,
+            "ruby_version": None,
+            "min_compatible_ruby": compat.MIN_RUBY,
+            "max_compatible_ruby": compat.MAX_RUBY,
+            "compatible": False,
+            "error": f"SketchUp not running or extension not started: {e}",
+        })
+    except SketchUpError as e:
+        # Covers old Ruby returning -32601 "unknown tool: get_version",
+        # any other JSON-RPC error envelope, etc.
+        return json.dumps({
+            "python_version": compat.PYTHON_VERSION,
+            "ruby_version": None,
+            "min_compatible_ruby": compat.MIN_RUBY,
+            "max_compatible_ruby": compat.MAX_RUBY,
+            "compatible": False,
+            "error": str(e),
+        })
+
     ruby_payload = json.loads(raw["content"][0]["text"])
     ruby_version = ruby_payload.get("ruby_version")
+    ruby_min_python = ruby_payload.get("min_compatible_python")
+    ruby_max_python = ruby_payload.get("max_compatible_python")
+
+    # Two-way compatibility — both sides' advertised ranges must agree:
+    #   (a) Python's local table accepts the Ruby version reported;
+    #   (b) Ruby's advertised [min,max] for Python accepts PYTHON_VERSION.
+    # This catches the rare "tables drifted in opposite directions" case.
     try:
         compat.check_ruby_version(ruby_version)
-        compatible = True
-        error_msg = None
+        python_accepts_ruby = True
+        py_error = None
     except IncompatibleVersionError as e:
-        compatible = False
-        error_msg = str(e)
-    return {
+        python_accepts_ruby = False
+        py_error = str(e)
+
+    try:
+        ruby_accepts_python = (
+            ruby_min_python and ruby_max_python and
+            compat._parse(ruby_min_python)
+            <= compat._parse(compat.PYTHON_VERSION)
+            <= compat._parse(ruby_max_python)
+        )
+    except ValueError:
+        ruby_accepts_python = False
+
+    compatible = bool(python_accepts_ruby and ruby_accepts_python)
+    error_msg = py_error if py_error else (
+        None if compatible else
+        f"SketchUp plugin advertises Python compatibility "
+        f"{ruby_min_python}..{ruby_max_python}, which excludes "
+        f"v{compat.PYTHON_VERSION}."
+    )
+
+    return json.dumps({
         "python_version": compat.PYTHON_VERSION,
         "ruby_version": ruby_version,
         "min_compatible_ruby": compat.MIN_RUBY,
         "max_compatible_ruby": compat.MAX_RUBY,
+        "ruby_min_compatible_python": ruby_min_python,
+        "ruby_max_compatible_python": ruby_max_python,
         "compatible": compatible,
         "error": error_msg,
-    }
+    })
 ```
+
+Returns a JSON string (consistent with every other typed tool in
+`tools.py` that returns formatted text). Bypass: `_send_once` skips
+the inbound compat check when `name == "get_version"` (see §7.3) — no
+`skip_version_check` keyword needed.
 
 The "Ruby-side payload" is what `Handlers::System.get_version` returns
 (§8.3). FastMCP serializes the dict to JSON inside the standard text
@@ -394,33 +511,62 @@ module SU_MCP
 end
 ```
 
-### 8.2 `su_mcp/su_mcp/core/server.rb` (MODIFY)
+### 8.2 Server-side check + injection
 
-In the per-request handling block (exact site located during
-implementation):
+The version check happens inside `handlers/dispatch.rb::handle` (not
+`core/server.rb`) so it can reuse the existing structured-error
+rescue path. Two key wire-level facts shape the bypass logic:
+
+1. Python always sends `method: "tools/call"` — the tool name lives
+   in `params.name`. A bypass condition that compares `method` against
+   `"get_version"` would NEVER match.
+2. `request_id` and `is_notification` MUST be captured **before** the
+   compat check, so that a `-32001` rescue can build a properly-id'd
+   error envelope and suppress responses for notifications (no `id`).
 
 ```ruby
-method = req["method"]
-client_version = req["client_version"]
+# su_mcp/su_mcp/handlers/dispatch.rb — inside Dispatch.handle, AFTER
+# validate_envelope!, BEFORE any handler dispatch.
+request_id = request["id"]
+is_notification = !request.key?("id")
+method = request["method"]
 
-begin
-  # get_version is the diagnostic escape hatch — never blocked.
-  if method != "get_version"
-    SU_MCP::Core::Compat.check_python_version(client_version)
-  end
-  result = SU_MCP::Handlers::Dispatch.call(method, req["params"])
-  response = { "jsonrpc" => "2.0", "id" => req["id"], "result" => result }
-rescue SU_MCP::Core::StructuredError => e
-  response = {
-    "jsonrpc" => "2.0",
-    "id" => req["id"],
-    "error" => { "code" => e.code, "message" => e.message },
-  }
+# get_version is the diagnostic bypass — always allowed even on mismatch
+# so users can still inspect versions for debugging. The check looks at
+# tools/call + params.name because that's the actual wire form.
+is_get_version_call =
+  method == "tools/call" &&
+  request["params"].is_a?(Hash) &&
+  request.dig("params", "name") == "get_version"
+
+unless is_get_version_call
+  Core::Compat.check_python_version(request["client_version"])
 end
 
-# EVERY response — success or error — carries server_version.
-response["server_version"] = SU_MCP::Core::Compat::RUBY_VERSION
-write_response(response)
+# ... existing dispatch code (case-when on method) continues here ...
+```
+
+If `check_python_version` raises `StructuredError(-32001)`:
+- For a regular request the existing `rescue Core::StructuredError`
+  builds a `-32001` error envelope with the correct `request_id`.
+- For a notification (`is_notification == true`) the response is
+  suppressed (no JSON-RPC reply per spec), but the mismatch is logged
+  at WARN level so operators can still see it.
+
+### 8.2.1 `server_version` injection
+
+Inject `server_version` inside `core/server.rb::encode_response_body`
+**after** the fallback hash is built (not in `write_response`). This
+guarantees that **every** emitted envelope carries `server_version` —
+success, structured-error from dispatch, transport-error, and the
+encoding-fallback envelope produced when `JSON.generate` fails.
+
+```ruby
+# su_mcp/su_mcp/core/server.rb — inside encode_response_body, just
+# before each JSON.generate call (both the happy path and the rescue
+# fallback path):
+response["server_version"] = Core::Compat::RUBY_VERSION if response.is_a?(Hash)
+JSON.generate(response)
 ```
 
 ### 8.3 `su_mcp/su_mcp/handlers/system.rb` (NEW)
@@ -471,8 +617,9 @@ when "get_version"
 | `test_check_ruby_too_old_raises` | `"0.0.3"` with `MIN="0.1.0"` → `IncompatibleVersionError` with "reinstall" in message |
 | `test_check_ruby_too_new_raises` | `"0.2.0"` with `MAX="0.1.0"` → raise with "uv pip install --upgrade" in message |
 | `test_check_ruby_none_raises` | `None` → raise with "pre-dates" in message |
-| `test_check_ruby_unparseable_raises` | `"v1"`, `"0.1.0-beta"` → raise with "unparseable" in message |
+| `test_check_ruby_unparseable_raises` | `"v1"`, `"0.1.0-beta"`, `" 0.1.0"`, `"0.1.0+"`, `"1_0.0.0"` → raise with "unparseable" |
 | `test_min_le_max_invariant` | sanity: `_parse(MIN_RUBY) <= _parse(MAX_RUBY)` |
+| `test_max_ruby_matches_python_version` | `_parse(MAX_RUBY) == _parse(PYTHON_VERSION)` (release-time forgot-to-bump catcher) |
 
 **`tests/test_version_handshake.py`** (NEW)
 
@@ -483,7 +630,9 @@ when "get_version"
 | `test_incompatible_server_version_raises` | mock response with `server_version="0.0.3"` (MIN="0.1.0") → `IncompatibleVersionError` |
 | `test_missing_server_version_raises` | mock response without `server_version` → raise (treated as pre-0.1.0) |
 | `test_check_runs_every_response` | spy: two successive calls each invoke `check_ruby_version` (no cache) |
-| `test_get_version_bypass_returns_payload_on_mismatch` | call `_raw_call(..., skip_version_check=True)` with incompatible mock response → data returned, no raise |
+| `test_get_version_bypass_returns_payload_on_mismatch` | call `send_command("get_version", {})` with incompatible mock response → data returned, no raise (name-based bypass) |
+| `test_minus_32001_promoted_to_incompatible_version_error` | mock Ruby response with `error.code = -32001` → caller catches `IncompatibleVersionError` not generic `SketchUpError` |
+| `test_get_version_in_retry_safe_tools` | `"get_version" in _RETRY_SAFE_TOOLS` |
 
 **`tests/test_version_tool.py`** (NEW)
 
@@ -493,6 +642,8 @@ when "get_version"
 | `test_get_version_compatible_payload` | mock Ruby `ruby_version=MAX_RUBY` → result has `compatible=true, error=null`, plus python/ruby/min/max fields |
 | `test_get_version_incompatible_payload` | mock Ruby `ruby_version="0.0.3"` → result has `compatible=false, error` containing the canonical too-old message; **no raise** |
 | `test_get_version_works_when_other_tools_blocked` | env where ordinary tools raise `IncompatibleVersionError`; `get_version` still returns the payload (bypass) |
+| `test_get_version_returns_payload_on_unknown_tool_error` | mock Ruby returning `-32601 "unknown tool"` (old plugin) → result has `compatible=false, ruby_version=null, error` containing the message |
+| `test_two_way_compat_drift_detected` | mock Ruby payload where `min_compatible_python > PYTHON_VERSION` → `compatible=false` even if Python's local table accepts ruby_version |
 
 ### 9.2 Ruby (minitest)
 
@@ -506,18 +657,21 @@ when "get_version"
 | `test_check_python_too_old_raises` | `"0.0.3"` → `StructuredError(-32001)` with "upgrade" hint |
 | `test_check_python_too_new_raises` | `"0.2.0"` → raise with "reinstall" hint |
 | `test_check_python_nil_raises` | `nil` → raise with "pre-dates" message |
-| `test_check_python_unparseable_raises` | `"v1"` → raise with "unparseable" |
+| `test_check_python_unparseable_raises` | `"v1"`, `" 1.0.0"`, `"1_0.0.0"`, `"+1.0.0"` → raise with "unparseable" |
 | `test_min_le_max_invariant` | `parse(MIN_PYTHON) <= parse(MAX_PYTHON)` |
+| `test_max_python_matches_ruby_version` | `parse(MAX_PYTHON) == parse(RUBY_VERSION)` (release-time forgot-to-bump catcher) |
 
-**`test/test_server.rb`** (NEW or EXTEND)
+**`test/test_server_compat.rb`** (NEW) — uses real `Dispatch.handle` + real `Core::Server` with a captured-write fake socket (no test double that re-implements `write_response`):
 
 | Test | Asserts |
 |---|---|
-| `test_request_with_valid_client_version_dispatches` | mocked request with `client_version=MIN_PYTHON`, method `get_model_info` → handler called, success response |
-| `test_request_with_incompatible_client_version_returns_error` | `client_version="0.0.3"`, method `get_model_info` → response has `error.code == -32001`, handler NOT called |
-| `test_get_version_bypasses_client_check` | `client_version="0.0.3"`, method `get_version` → handler called, success response (diagnostic path works on mismatched setups) |
-| `test_response_carries_server_version` | every success response has `server_version == RUBY_VERSION` |
-| `test_error_response_also_carries_server_version` | error response (e.g. from incompatible client_version, or from a handler raising `StructuredError`) also has `server_version` |
+| `test_request_with_valid_client_version_dispatches` | mocked `tools/call` request for `get_version` with `client_version=MIN_PYTHON` → handler called, success response |
+| `test_request_with_incompatible_client_version_returns_error_with_id` | `client_version="0.0.0"`, `tools/call`/`get_model_info`, id=42 → response has `error.code == -32001`, **`id == 42`** (regression for the `request_id = nil` bug), handler NOT called |
+| `test_get_version_bypasses_client_check` | `client_version="0.0.0"`, `tools/call`/`get_version` → handler called, success response |
+| `test_response_carries_server_version` | every success response has `server_version == RUBY_VERSION` (asserts via real `encode_response_body`, not a double) |
+| `test_error_response_also_carries_server_version` | error response (incompatible client_version) also has `server_version` |
+| `test_fallback_envelope_carries_server_version` | stub `JSON.generate` to raise `JSON::GeneratorError` once → the fallback envelope from `encode_response_body` rescue clause **still carries** `server_version` |
+| `test_notification_with_mismatch_silently_dropped` | request without `id` and `client_version="0.0.0"` → `Dispatch.handle` returns `nil`, no response is written, mismatch logged at WARN level |
 
 **`test/test_system.rb`** (NEW)
 
@@ -542,11 +696,19 @@ print(f"versions: python={data['python_version']} ruby={data['ruby_version']}")
 
 1. `test_compat.py` (red) → `compat.py` (green).
 2. `test_compat.rb` (red) → `core/compat.rb` (green).
-3. `test_server.rb` (red) → patch `core/server.rb` request loop (green).
-4. `test_version_handshake.py` + `test_system.rb` (red) →
-   `handlers/system.rb` + `connection.py` updates (green).
-5. `test_version_tool.py` (red) → `tools.py::get_version` (green).
-6. Update `examples/smoke_check.py` step 22; run manually against live SU.
+3. `handlers/system.rb` + `dispatch.rb` route + `test_system.rb` (red→green) —
+   created BEFORE the server-compat tests so `test_server_compat.rb` can
+   exercise the real `tools/call`/`get_version` path with the real handler.
+4. `test_server_compat.rb` (red) → patch `dispatch.rb` (client_version
+   check after `request_id` capture) + `core/server.rb` injection (green).
+5. Update `tests/conftest.py::encode_response()` helper to embed
+   `server_version=compat.MAX_RUBY` by default; this keeps existing
+   `tests/test_connection.py` and friends green without touching every test.
+6. `test_version_handshake.py` (red) → `connection.py` updates
+   (outbound `client_version`, inbound check, -32001 remap,
+   `_RETRY_SAFE_TOOLS` entry) (green).
+7. `test_version_tool.py` (red) → `tools.py::get_version` (green).
+8. Update `examples/smoke_check.py` step 22; run manually against live SU.
 
 ## 10. Documentation updates
 
@@ -554,7 +716,8 @@ print(f"versions: python={data['python_version']} ruby={data['ruby_version']}")
   `compat.py` and `core/compat.rb`). New rule appended: "MAX_* keys
   default to the new release; only bump MIN_* on a release that breaks
   wire/handler contract with the previous version. The pytest sanity
-  test `test_min_le_max_invariant` will catch typos."
+  tests `test_min_le_max_invariant`, `test_max_ruby_matches_python_version`
+  and the Ruby twins catch typos and forgotten bumps."
 - `CLAUDE.md`:
   - **Introspection** row in Tool categories gains `get_version`.
   - **Non-Obvious Constraints**: add bullet on per-message
@@ -590,6 +753,7 @@ viewport-screenshot. End-to-end pipeline:
 |---|---|
 | Plugin auto-update from a manifest URL | Significant trust-store + signing infrastructure; not justified by current install base. |
 | Compat range stored in `extension.json` | Yet another file to bump in sync; would also require runtime JSON-parse from inside the Ruby plugin on every connect. `compat.rb` constants are simpler. |
+| Single shared `compat.json` file read by both sides at startup | Tempting (eliminates duplication risk between Python and Ruby tables), but requires runtime JSON-parse from inside SketchUp's Ruby on every connect; the path-resolution between PyPI-installed Python and `.rbz`-installed Ruby is awkward. Two tables + 7-place release bump checklist + three invariant tests give comparable safety with less infrastructure. |
 | Soft-fail / warning-only mode | Explicitly rejected during brainstorming — hard-fail with reinstall hint is the safe default; warning-only invites silent breakage. |
 | Cache the first compatible verdict on the connection | Per design discussion: check on every response. The cost is microseconds and protects against unlikely-but-real mid-session switch. |
 | PEP 440 / semver_spec dependency | Tuple compare on `X.Y.Z` is sufficient; avoids pulling in another package. |
@@ -603,7 +767,8 @@ viewport-screenshot. End-to-end pipeline:
 | When the check runs | **Every response** carries `server_version`; **every request** carries `client_version`. Both sides verify on every message. |
 | Behavior on mismatch | **Hard fail**, blocking all tools. `get_version` is the only exception (diagnostic bypass). |
 | Table shape | **(MIN, MAX) range** — two constants per side. Holes inside the range are not expressible; per-release bumps just move MAX. |
-| Where in `get_version` payload `compatible` is computed | **Python side** — Ruby returns raw `ruby_version`/`min`/`max`, Python compares with its own table and emits the verdict. Avoids duplicating compat logic in runtime. |
+| Where in `get_version` payload `compatible` is computed | **Python side, two-way check** — Ruby returns raw `ruby_version` + advertised `min_compatible_python` / `max_compatible_python`; Python computes `compatible = python_accepts_ruby AND ruby_accepts_python_via_advertised_range`. Catches the "tables drifted in opposite directions" edge case. |
+| MIN/MAX range maintenance policy | **`MAX_*` always tracks the latest release; `MIN_*` only moves when this release breaks wire/handler contract with the previous counterpart.** Same-version `MIN=MAX` is exact-match (initial state during development); release-time bump only moves MAX unless explicitly breaking. Sanity test `test_min_le_max_invariant` + `test_max_*_matches_*_version` invariant tests catch typos. |
 | Cache vs always-check | **Always-check** on every response. Microseconds of cost, catches mid-session re-route. |
 | Test file placement | **Separate `tests/test_version_handshake.py`** — keeps `test_connection.py` focused on transport. |
 | Where the Ruby runtime version constant lives | **In `core/compat.rb`** (option A1 from brainstorming) — single hard-coded constant; no extra `version.rb` until a second consumer appears (YAGNI). |
@@ -662,8 +827,10 @@ The work is complete when:
       `test_version_handshake.py`.
 - [ ] When `client_version` is outside `[MIN_PYTHON, MAX_PYTHON]` (or
       missing), Ruby returns a JSON-RPC error with code `-32001` for
-      every method **except** `get_version`. Verified by
-      `test_server.rb`.
+      every regular request **except** `tools/call` for `get_version`.
+      For **notifications** (no `id`) the mismatch is logged at WARN
+      and no response is sent (per JSON-RPC 2.0). Verified by
+      `test_server_compat.rb`.
 - [ ] `get_version` returns a payload with `compatible: bool` and a
       descriptive `error: string | null` field on every call regardless
       of mismatch state. Verified by `test_version_tool.py`.
