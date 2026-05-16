@@ -401,7 +401,7 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
     monkeypatch.setattr(conn_module, "_connection", None)
 
 
-def test_get_viewport_screenshot_is_retry_safe():
+async def test_get_viewport_screenshot_is_retry_safe():
     """get_viewport_screenshot is read-only (no document state changes
     in either restore_view mode); regression guard against accidental
     removal from the retry whitelist."""

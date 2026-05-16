@@ -25,6 +25,11 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     Returns the raw MCP-shaped result dict
     (``{"content": [...], "isError": False}``).
 
+    ``tool_name`` is positional-only (PEP 570) so wrappers can forward
+    user kwargs containing a ``name`` key via ``**args`` without
+    colliding with this parameter — see ``find_components`` /
+    ``create_layer`` callers below for the pattern.
+
     Does **not** translate :class:`ConnectionError` to anything — that
     is each caller's responsibility, since callers have divergent
     strategies for unavailable-server (string-returning tools surface a

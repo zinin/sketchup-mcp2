@@ -3,8 +3,9 @@
 Validation tests go through FastMCP's full dispatch path
 (`mcp.call_tool`), not via a non-existent `.fn` attribute or direct
 function call — that's the only way Pydantic validation actually runs.
-Mime-type assertions use the public `img.format` constructor argument
-rather than the private `img._mime_type` attribute.
+Mime-type assertions use the public ``to_image_content()`` method on
+FastMCP's ``Image`` (it does not expose ``format`` or ``_mime_type``
+as a public attribute).
 """
 import base64
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -77,7 +78,7 @@ async def test_screenshot_minimal_payload():
     }
 
 
-async def test_screenshot_max_size_clamps():
+async def test_screenshot_max_size_rejects_out_of_range():
     """max_size below 64 or above 4096 is rejected by FastMCP/Pydantic
     validation — exercised through the dispatcher (``mcp.call_tool``)
     because that's where validation lives."""
@@ -170,3 +171,20 @@ async def test_screenshot_propagates_ruby_error():
         from sketchup_mcp.tools import get_viewport_screenshot
         with pytest.raises(SketchUpError):
             await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
+
+
+async def test_screenshot_connection_error_becomes_sketchuperror():
+    """Design §5.8 contract: ConnectionError from the transport layer is
+    re-raised as ``SketchUpError(-32000, …)``, NOT silently swallowed and
+    NOT converted to the legacy ``"SketchUp not running…"`` string used
+    by the 22 text-returning tools. Locks in the asymmetric error-handling
+    decision so it cannot regress without a test failure."""
+    with patch(
+        "sketchup_mcp.tools.get_connection",
+        AsyncMock(side_effect=ConnectionError("refused")),
+    ):
+        from sketchup_mcp.tools import get_viewport_screenshot
+        with pytest.raises(SketchUpError) as exc_info:
+            await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
+    assert exc_info.value.code == -32000
+    assert "SketchUp not running" in str(exc_info.value)
