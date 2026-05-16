@@ -69,9 +69,9 @@ src/sketchup_mcp/
                         (next to existing `import sketchup_mcp.tools` at app.py:51)
 
 su_mcp/su_mcp/
-  main.rb               +1 require "handlers/view"
-  core/dispatch.rb      +1 branch "get_viewport_screenshot" -> Handlers::View
-  handlers/view.rb      NEW — viewport_screenshot handler
+  main.rb                 +1 entry "handlers/view" in LOAD_ORDER
+  handlers/dispatch.rb    +1 branch "get_viewport_screenshot" -> Handlers::View
+  handlers/view.rb        NEW — viewport_screenshot handler
 
 test/
   test_view.rb          NEW — Ruby unit tests
@@ -174,7 +174,7 @@ during TDD; up to 2-3 minor adjustments are expected.
    ok  = view.write_image(filename: tmp, width: w, height: h,
                           antialias: true, compression: 0.9,
                           transparent: false)
-   raise MCPError if !ok
+   raise Core::StructuredError.new(-32000, "...") if !ok
 6. data = File.binread(tmp)  # in `ensure`: File.delete(tmp) if File.exist?
 7. (if restore_view) view.camera = snapshot_cam;
                      snapshot_ro.each { |k,v| ro[k] = v }
@@ -205,8 +205,9 @@ not polluted by screenshots.
 
 - **Empty model**: `view.zoom_extents` produces SketchUp's default
   frame. The screenshot is a blue background — acceptable.
-- **`write_image` returns false**: handler raises `MCPError("viewport
-  write_image failed")`. Python propagates as `SketchUpError`.
+- **`write_image` returns false**: handler raises
+  `Core::StructuredError.new(-32000, "viewport write_image failed")`.
+  Python propagates as `SketchUpError`.
 - **Extreme aspect ratios** (e.g. 5000×100): scaled down so both sides
   fit the max_size budget. No special handling.
 - **Open SketchUp modal dialog**: `write_image` may fail; we surface
@@ -251,9 +252,10 @@ existing `import sketchup_mcp.tools` (currently at `app.py:51`):
 import sketchup_mcp.prompts  # noqa: E402, F401  — register prompts
 ```
 
-No Ruby-side changes. The dead `prompts/list` branch in
-`su_mcp/su_mcp/core/dispatch.rb` is left as-is for now; FastMCP serves
-prompts from the Python side and never forwards `prompts/*` to Ruby.
+No Ruby-side changes for the prompt itself. The dead `prompts/list`
+branch in `su_mcp/su_mcp/handlers/dispatch.rb` is left as-is for now;
+FastMCP serves prompts from the Python side and never forwards
+`prompts/*` to Ruby.
 
 ### 6.2 Prompt content (draft, English)
 
@@ -360,15 +362,15 @@ start of a chat. The server never injects it automatically.
 | Test | Asserts |
 |---|---|
 | `test_dispatch_routes_to_view_handler` | JSON-RPC dispatches to `Handlers::View.viewport_screenshot`. |
-| `test_invalid_view_preset_raises` | `view_preset="weird"` → `MCPError`. |
-| `test_invalid_style_raises` | `style="cartoon"` → `MCPError`. |
-| `test_invalid_max_size_raises` | `max_size=10` or `99999` → `MCPError`. |
+| `test_invalid_view_preset_raises` | `view_preset="weird"` → `Core::StructuredError`. |
+| `test_invalid_style_raises` | `style="cartoon"` → `Core::StructuredError`. |
+| `test_invalid_max_size_raises` | `max_size=10` or `99999` → `Core::StructuredError`. |
 | `test_camera_restored_when_flag_true` | After `restore_view=true, view_preset="top"`, final `view.camera` equals the snapshot. |
 | `test_camera_not_restored_when_flag_false` | After `restore_view=false`, final camera differs from snapshot. |
 | `test_rendering_options_restored` | With `style="wireframe", restore_view=true`, RO keys return to snapshot. |
 | `test_send_action_called_for_preset` | Spying on `Sketchup.send_action`, `view_preset="iso"` triggers exactly one `"viewIso:"`. |
 | `test_zoom_extents_called_when_flag` | `view.zoom_extents` is called only when `zoom_extents=true`. |
-| `test_write_image_failure_raises` | Stubbed `view.write_image -> false` → `MCPError`. |
+| `test_write_image_failure_raises` | Stubbed `view.write_image -> false` → `Core::StructuredError`. |
 | `test_tempfile_deleted_on_success` | After a successful call, the tmp file does not exist. |
 | `test_tempfile_deleted_on_failure` | When `write_image` raises, the tmp file is still cleaned up (ensure block). |
 | `test_response_structure` | Success response shape: `{png_base64, width, height, preset_used, style_used}`. |
