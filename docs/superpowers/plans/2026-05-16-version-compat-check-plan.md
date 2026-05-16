@@ -13,7 +13,7 @@
 - Wire-level bypass uses `method == "tools/call" && params.name == "get_version"` (matches the actual protocol), not the simplified `method != "get_version"` pseudocode that appeared in design §8.2 v0.
 - `get_version` tool catches both `ConnectionError` AND `SketchUpError` (the latter covers old-Ruby `-32601 "unknown tool"`).
 - `get_version` added to `_RETRY_SAFE_TOOLS` so cold-start stale-socket auto-retries instead of bubbling.
-- Compat verdict is TWO-WAY: Python's table accepts ruby_version AND Ruby's advertised range accepts PYTHON_VERSION. Catches table-drift.
+- Compat verdict is TWO-WAY: Python's table accepts ruby_version AND Ruby's advertised range accepts CLIENT_VERSION. Catches table-drift.
 - Python `_send_once` promotes inbound `error.code == -32001` to `IncompatibleVersionError` (instead of generic `SketchUpError`) so callers see the same class regardless of which side detected the mismatch.
 - `tests/conftest.py::encode_response()` updated to inject `server_version` by default so existing `test_connection.py` stays green; a separate negative-case test exercises missing-field semantics.
 - `test/test_server_compat.rb` uses the REAL `Dispatch.handle` + REAL `Core::Server` (with a captured-write fake socket) instead of overriding `write_response` with a hand-written copy — production code is actually exercised.
@@ -26,7 +26,7 @@
 **Branch (already on it):** `feature/viewport-screenshot-and-prompt` — version-compat bundles into the same 0.1.0 release as viewport-screenshot.
 
 **Version state at implementation time vs at release time:**
-- During implementation, `__version__` in `src/sketchup_mcp/__init__.py` is `"0.0.3"`; tests and the live smoke check run against that. Accordingly, `MIN_RUBY`, `MAX_RUBY`, `RUBY_VERSION`, `MIN_PYTHON`, `MAX_PYTHON` are all set to `"0.0.3"` initially. This keeps the matched-pair "compatible=true" invariant during development.
+- During implementation, `__version__` in `src/sketchup_mcp/__init__.py` is `"0.0.3"`; tests and the live smoke check run against that. Accordingly, `MIN_RUBY`, `MAX_RUBY`, `SERVER_VERSION`, `MIN_PYTHON`, `MAX_PYTHON` are all set to `"0.0.3"` initially. This keeps the matched-pair "compatible=true" invariant during development.
 - At release time, a separate session bumps all seven version strings to `"0.1.0"` per `docs/release.md` §1 (which Task 9 extends from 5 → 7 places).
 
 ---
@@ -37,11 +37,11 @@
 
 | Path | Responsibility |
 |---|---|
-| `src/sketchup_mcp/compat.py` | Single source of truth for Python↔Ruby compatibility: PYTHON_VERSION (imported from `__init__.py`), MIN_RUBY, MAX_RUBY, `_parse`, `check_ruby_version`, canonical error-message strings. |
+| `src/sketchup_mcp/compat.py` | Single source of truth for Python↔Ruby compatibility: CLIENT_VERSION (imported from `__init__.py`), MIN_RUBY, MAX_RUBY, `_parse`, `check_ruby_version`, canonical error-message strings. |
 | `tests/test_compat.py` | Unit tests for `_parse`, `check_ruby_version`, MIN ≤ MAX sanity. |
 | `tests/test_version_handshake.py` | Tests for outbound `client_version` injection, inbound `server_version` check on every response, get_version bypass. |
 | `tests/test_version_tool.py` | Tests for `get_version` MCP tool: registration, compatible/incompatible payload shape, bypass works on mismatch. |
-| `su_mcp/su_mcp/core/compat.rb` | Ruby mirror — RUBY_VERSION, MIN_PYTHON, MAX_PYTHON, `parse`, `check_python_version`, canonical error-message strings. |
+| `su_mcp/su_mcp/core/compat.rb` | Ruby mirror — SERVER_VERSION, MIN_PYTHON, MAX_PYTHON, `parse`, `check_python_version`, canonical error-message strings. |
 | `su_mcp/su_mcp/handlers/system.rb` | `Handlers::System.get_version(_params)` — returns the Ruby-side compat metadata payload. |
 | `test/test_compat.rb` | Symmetric to `test_compat.py`. |
 | `test/test_server_compat.rb` | Tests for incoming `client_version` check (dispatch bypass for get_version), outgoing `server_version` injection on success/error/JSON-generator-fallback, `request_id` preserved on -32001, notification-with-mismatch silently dropped. Uses REAL `Dispatch.handle` + REAL `Core::Server` (no method-overriding double). |
@@ -52,10 +52,10 @@
 | Path | Change |
 |---|---|
 | `src/sketchup_mcp/errors.py` | +1 class `IncompatibleVersionError(SketchUpError)` with JSON-RPC code `-32001`. |
-| `src/sketchup_mcp/connection.py` | In `_send_once`: (a) outbound payload gets `"client_version": compat.PYTHON_VERSION`; (b) after JSON parse, `assert isinstance(response, dict)`; (c) if `name != "get_version"`, call `compat.check_ruby_version(response.get("server_version"))`; (d) if response carries `error.code == -32001`, promote to `IncompatibleVersionError`. Also: add `"get_version"` to `_RETRY_SAFE_TOOLS` frozenset. |
+| `src/sketchup_mcp/connection.py` | In `_send_once`: (a) outbound payload gets `"client_version": compat.CLIENT_VERSION`; (b) after JSON parse, `assert isinstance(response, dict)`; (c) if `name != "get_version"`, call `compat.check_ruby_version(response.get("server_version"))`; (d) if response carries `error.code == -32001`, promote to `IncompatibleVersionError`. Also: add `"get_version"` to `_RETRY_SAFE_TOOLS` frozenset. |
 | `src/sketchup_mcp/tools.py` | +1 `@mcp.tool()` async function `get_version` that catches both `ConnectionError` AND `SketchUpError`, parses the Ruby payload, computes two-way `compatible` Python-side, returns JSON string. |
 | `tests/conftest.py` | `encode_response()` helper injects `server_version=compat.MAX_RUBY` by default so existing `test_connection.py` mock responses don't trip the new inbound check; explicit `server_version=None` available for negative-case tests. |
-| `su_mcp/su_mcp/core/server.rb` | `encode_response_body` injects `response["server_version"] = Core::Compat::RUBY_VERSION` for both the happy path AND the JSON-generator-error fallback envelope (single choke point). |
+| `su_mcp/su_mcp/core/server.rb` | `encode_response_body` injects `response["server_version"] = Core::Compat::SERVER_VERSION` for both the happy path AND the JSON-generator-error fallback envelope (single choke point). |
 | `su_mcp/su_mcp/handlers/dispatch.rb` | In `handle`: capture `request_id = request["id"]` and `is_notification = !request.key?("id")` BEFORE the version check; then `Core::Compat.check_python_version(request["client_version"])` UNLESS the call is `tools/call` for `params.name == "get_version"`. The existing `rescue Core::StructuredError` already handles -32001 with the right id; for notifications the rescue must return `nil` (suppress response). Also: new `when "get_version"` branch in `call_handler`. |
 | `su_mcp/su_mcp/main.rb` | `LOAD_ORDER` gains `core/compat` (after `core/errors`) and `handlers/system` (after `handlers/eval`). |
 | `examples/smoke_check.py` | +1 step (22) calling `get_version`, asserting `compatible=true`. |
@@ -222,13 +222,13 @@ def test_min_le_max_invariant():
 
 def test_max_ruby_matches_python_version():
     """Release-time forgot-to-bump catcher: when releasing N, MAX_RUBY == N."""
-    assert compat._parse(compat.MAX_RUBY) == compat._parse(compat.PYTHON_VERSION)
+    assert compat._parse(compat.MAX_RUBY) == compat._parse(compat.CLIENT_VERSION)
 
 
 def test_python_version_is_imported_from_init():
-    """compat.PYTHON_VERSION must mirror the package version."""
+    """compat.CLIENT_VERSION must mirror the package version."""
     from sketchup_mcp import __version__
-    assert compat.PYTHON_VERSION == __version__
+    assert compat.CLIENT_VERSION == __version__
 ```
 
 - [ ] **Step 2.2: Run tests to verify they fail**
@@ -250,10 +250,10 @@ from __future__ import annotations
 
 import re
 
-from sketchup_mcp import __version__ as PYTHON_VERSION
+from sketchup_mcp import __version__ as CLIENT_VERSION
 from sketchup_mcp.errors import IncompatibleVersionError
 
-# Bumped together with PYTHON_VERSION at release time. See docs/release.md.
+# Bumped together with CLIENT_VERSION at release time. See docs/release.md.
 # Policy: MAX_* tracks the new release; MIN_* moves only on a release
 # that breaks wire/handler contract with the previous counterpart.
 # Initial dev state: MIN == MAX (exact match) — bumped together at 0.1.0.
@@ -298,7 +298,7 @@ def check_ruby_version(server_version: str | None) -> None:
 
 def _msg_ruby_too_old(rv: str) -> str:
     return (
-        f"SketchUp plugin v{rv} is too old for sketchup-mcp2 v{PYTHON_VERSION} "
+        f"SketchUp plugin v{rv} is too old for sketchup-mcp2 v{CLIENT_VERSION} "
         f"(requires v{MIN_RUBY}..v{MAX_RUBY}). "
         f"Reinstall su_mcp_v{MAX_RUBY}.rbz from the GitHub release. "
         f"Call `get_version` to inspect handshake state."
@@ -307,7 +307,7 @@ def _msg_ruby_too_old(rv: str) -> str:
 
 def _msg_ruby_too_new(rv: str) -> str:
     return (
-        f"SketchUp plugin v{rv} is newer than sketchup-mcp2 v{PYTHON_VERSION} "
+        f"SketchUp plugin v{rv} is newer than sketchup-mcp2 v{CLIENT_VERSION} "
         f"supports (max v{MAX_RUBY}). "
         f"Run: uv pip install --upgrade sketchup-mcp2. "
         f"Call `get_version` to inspect handshake state."
@@ -338,7 +338,7 @@ Expected: 81 baseline + ~20 new = **~101 passed**, 0 failed, 0 skipped. (Other t
 git add tests/test_compat.py src/sketchup_mcp/compat.py
 git commit -m "feat(compat): add Python-side version compatibility module
 
-* New compat.py: PYTHON_VERSION (from __init__), MIN_RUBY/MAX_RUBY range,
+* New compat.py: CLIENT_VERSION (from __init__), MIN_RUBY/MAX_RUBY range,
   check_ruby_version() raising IncompatibleVersionError with reinstall/
   upgrade hints.
 * Initial MIN/MAX = '0.0.3' (current __version__); bumped at release time
@@ -472,13 +472,13 @@ class TestCompat < Minitest::Test
       "MIN_PYTHON (#{min}) must be <= MAX_PYTHON (#{max})"
   end
 
-  def test_max_python_matches_ruby_version
+  def test_max_python_matches_server_version
     # Release-time forgot-to-bump catcher: when releasing version N,
-    # MAX_PYTHON == N == plugin RUBY_VERSION.
+    # MAX_PYTHON == N == plugin SERVER_VERSION.
     max = SU_MCP::Core::Compat.parse(SU_MCP::Core::Compat::MAX_PYTHON)
-    rv  = SU_MCP::Core::Compat.parse(SU_MCP::Core::Compat::RUBY_VERSION)
-    assert_equal rv, max,
-      "MAX_PYTHON (#{max}) must match plugin RUBY_VERSION (#{rv})"
+    sv  = SU_MCP::Core::Compat.parse(SU_MCP::Core::Compat::SERVER_VERSION)
+    assert_equal sv, max,
+      "MAX_PYTHON (#{max}) must match plugin SERVER_VERSION (#{sv})"
   end
 end
 ```
@@ -499,11 +499,10 @@ Create `su_mcp/su_mcp/core/compat.rb`:
 module SU_MCP
   module Core
     module Compat
-      # NOTE: `RUBY_VERSION` here is the SketchUp PLUGIN version, not the
-      # interpreter version (`::RUBY_VERSION`). Inside this module a bare
-      # `RUBY_VERSION` resolves to the constant below. If you need the
-      # interpreter version inside Compat, use `::RUBY_VERSION` explicitly.
-      RUBY_VERSION = "0.0.3"   # ← plugin version, bumped at release time
+      # SERVER_VERSION mirrors the wire-field `server_version` and avoids
+      # shadowing Ruby's global `::RUBY_VERSION` (the interpreter version).
+      # This is the SketchUp PLUGIN version, bumped at release time.
+      SERVER_VERSION = "0.0.3"
       MIN_PYTHON   = "0.0.3"
       MAX_PYTHON   = "0.0.3"
 
@@ -550,14 +549,14 @@ module SU_MCP
       end
 
       def self.msg_python_too_old(cv)
-        "sketchup-mcp2 v#{cv} is too old for SketchUp plugin v#{RUBY_VERSION} " \
+        "sketchup-mcp2 v#{cv} is too old for SketchUp plugin v#{SERVER_VERSION} " \
         "(requires v#{MIN_PYTHON}..v#{MAX_PYTHON}). " \
         "Run: uv pip install --upgrade sketchup-mcp2. " \
         "Call `get_version` to inspect handshake state."
       end
 
       def self.msg_python_too_new(cv)
-        "sketchup-mcp2 v#{cv} is newer than SketchUp plugin v#{RUBY_VERSION} " \
+        "sketchup-mcp2 v#{cv} is newer than SketchUp plugin v#{SERVER_VERSION} " \
         "supports (max v#{MAX_PYTHON}). " \
         "Reinstall su_mcp_v#{MAX_PYTHON}.rbz from the GitHub release. " \
         "Call `get_version` to inspect handshake state."
@@ -603,7 +602,7 @@ Expected: prior baseline + new tests, **0 failures, 0 errors, 0 skips**.
 git add test/test_compat.rb su_mcp/su_mcp/core/compat.rb su_mcp/su_mcp/main.rb
 git commit -m "feat(compat): add Ruby-side version compatibility module
 
-* New core/compat.rb mirrors src/sketchup_mcp/compat.py: RUBY_VERSION,
+* New core/compat.rb mirrors src/sketchup_mcp/compat.py: SERVER_VERSION,
   MIN_PYTHON/MAX_PYTHON range, check_python_version raising
   StructuredError(-32001) with upgrade/reinstall hints.
 * Initial values all '0.0.3' (current state); bumped to '0.1.0' at
@@ -648,14 +647,14 @@ class TestSystem < Minitest::Test
   def test_get_version_returns_compat_metadata
     result = SU_MCP::Handlers::System.get_version(nil)
     assert_kind_of Hash, result
-    assert_equal SU_MCP::Core::Compat::RUBY_VERSION,    result[:ruby_version]
+    assert_equal SU_MCP::Core::Compat::SERVER_VERSION,    result[:ruby_version]
     assert_equal SU_MCP::Core::Compat::MIN_PYTHON,      result[:min_compatible_python]
     assert_equal SU_MCP::Core::Compat::MAX_PYTHON,      result[:max_compatible_python]
   end
 
   def test_get_version_ignores_params
     result = SU_MCP::Handlers::System.get_version({ "foo" => "bar" })
-    assert_equal SU_MCP::Core::Compat::RUBY_VERSION, result[:ruby_version]
+    assert_equal SU_MCP::Core::Compat::SERVER_VERSION, result[:ruby_version]
   end
 
   def test_dispatch_routes_get_version_to_system
@@ -670,7 +669,7 @@ class TestSystem < Minitest::Test
     refute_nil resp["result"]
     text = resp["result"]["content"][0]["text"]
     payload = JSON.parse(text)
-    assert_equal SU_MCP::Core::Compat::RUBY_VERSION, payload["ruby_version"]
+    assert_equal SU_MCP::Core::Compat::SERVER_VERSION, payload["ruby_version"]
   end
 end
 ```
@@ -690,7 +689,7 @@ module SU_MCP
       # `get_version` (Python wrapper computes the `compatible` flag).
       def self.get_version(_params)
         {
-          ruby_version:           SU_MCP::Core::Compat::RUBY_VERSION,
+          ruby_version:           SU_MCP::Core::Compat::SERVER_VERSION,
           min_compatible_python:  SU_MCP::Core::Compat::MIN_PYTHON,
           max_compatible_python:  SU_MCP::Core::Compat::MAX_PYTHON,
         }
@@ -856,7 +855,7 @@ class TestServerCompat < Minitest::Test
   def test_encode_response_body_injects_server_version_on_success
     body = encode({ "jsonrpc" => "2.0", "id" => 1, "result" => { "k" => "v" } })
     payload = JSON.parse(body)
-    assert_equal SU_MCP::Core::Compat::RUBY_VERSION, payload["server_version"]
+    assert_equal SU_MCP::Core::Compat::SERVER_VERSION, payload["server_version"]
   end
 
   def test_encode_response_body_injects_server_version_on_error
@@ -865,7 +864,7 @@ class TestServerCompat < Minitest::Test
       "error" => { "code" => -32000, "message" => "boom", "data" => {} },
     })
     payload = JSON.parse(body)
-    assert_equal SU_MCP::Core::Compat::RUBY_VERSION, payload["server_version"]
+    assert_equal SU_MCP::Core::Compat::SERVER_VERSION, payload["server_version"]
     assert_equal(-32000, payload["error"]["code"])
   end
 
@@ -879,7 +878,7 @@ class TestServerCompat < Minitest::Test
     }
     body = server.send(:encode_response_body, bad_response)
     payload = JSON.parse(body)
-    assert_equal SU_MCP::Core::Compat::RUBY_VERSION, payload["server_version"],
+    assert_equal SU_MCP::Core::Compat::SERVER_VERSION, payload["server_version"],
       "fallback envelope must carry server_version"
     assert payload.key?("error"), "fallback must be an error envelope"
   end
@@ -939,7 +938,7 @@ Open `su_mcp/su_mcp/core/server.rb`. The injection moves from `write_response` (
 
 ```ruby
 def encode_response_body(response)
-  response["server_version"] = Core::Compat::RUBY_VERSION if response.is_a?(Hash)
+  response["server_version"] = Core::Compat::SERVER_VERSION if response.is_a?(Hash)
   JSON.generate(response)
 rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
   Logger.log_error("server.encode", e)
@@ -950,7 +949,7 @@ rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
     { "exception" => e.class.name },
     rid,
   )
-  fallback["server_version"] = Core::Compat::RUBY_VERSION  # also on fallback
+  fallback["server_version"] = Core::Compat::SERVER_VERSION  # also on fallback
   JSON.generate(fallback)
 end
 ```
@@ -973,7 +972,7 @@ git commit -m "feat(handshake): check client_version in dispatch, inject server_
   so -32001 preserves the real id; notifications with mismatch return nil.
   Bypass logic uses method=='tools/call' && params.name=='get_version'
   (matches actual wire form, not the simplified design pseudocode).
-* server.rb::encode_response_body: inject Core::Compat::RUBY_VERSION on
+* server.rb::encode_response_body: inject Core::Compat::SERVER_VERSION on
   BOTH the happy path and the JSON-generator-error fallback envelope —
   single choke point covers every emitted response.
 * test_server_compat.rb uses REAL Dispatch.handle + REAL Core::Server
@@ -1062,7 +1061,7 @@ async def test_outbound_payload_carries_client_version():
     conn._writer, captured = _capturing_writer()
     await conn.send_command("get_model_info", {})
     payload = _decode_request(captured[0])
-    assert payload["client_version"] == compat.PYTHON_VERSION
+    assert payload["client_version"] == compat.CLIENT_VERSION
     assert payload["method"] == "tools/call"
     assert payload["params"] == {"name": "get_model_info", "arguments": {}}
 
@@ -1226,7 +1225,7 @@ request = {
     "method": "tools/call",
     "params": {"name": name, "arguments": args},
     "id": rid,
-    "client_version": compat.PYTHON_VERSION,
+    "client_version": compat.CLIENT_VERSION,
 }
 ```
 
@@ -1287,7 +1286,7 @@ git add tests/test_version_handshake.py src/sketchup_mcp/connection.py
 git commit -m "feat(handshake): wire client_version outbound + server_version check inbound
 
 * _send_once outbound: every JSON-RPC request gains client_version=
-  compat.PYTHON_VERSION.
+  compat.CLIENT_VERSION.
 * _send_once inbound: after id-match, if name != 'get_version', call
   compat.check_ruby_version(response['server_version']) — raises
   IncompatibleVersionError on absent/out-of-range plugin.
@@ -1354,7 +1353,7 @@ async def test_get_version_compatible_payload(monkeypatch):
     # result is a list of content blocks; text content carries our JSON.
     text = result[0].text if hasattr(result[0], "text") else result[0]["text"]
     payload = json.loads(text)
-    assert payload["python_version"] == compat.PYTHON_VERSION
+    assert payload["python_version"] == compat.CLIENT_VERSION
     assert payload["ruby_version"] == compat.MAX_RUBY
     assert payload["compatible"] is True
     assert payload["error"] is None
@@ -1407,7 +1406,7 @@ async def test_get_version_handles_connection_error(monkeypatch):
     result = await mcp.call_tool("get_version", {})
     text = result[0].text if hasattr(result[0], "text") else result[0]["text"]
     payload = json.loads(text)
-    assert payload["python_version"] == compat.PYTHON_VERSION
+    assert payload["python_version"] == compat.CLIENT_VERSION
     assert payload["ruby_version"] is None
     assert payload["compatible"] is False
     assert "not running" in payload["error"].lower() or "connect" in payload["error"].lower()
@@ -1444,7 +1443,7 @@ async def get_version(ctx: Context) -> str:
     """
     def _payload(ruby_version, ruby_min, ruby_max, compatible, error_msg):
         return json.dumps({
-            "python_version": compat.PYTHON_VERSION,
+            "python_version": compat.CLIENT_VERSION,
             "ruby_version": ruby_version,
             "min_compatible_ruby": compat.MIN_RUBY,
             "max_compatible_ruby": compat.MAX_RUBY,
@@ -1484,7 +1483,7 @@ async def get_version(ctx: Context) -> str:
         ruby_accepts_python = bool(
             ruby_min and ruby_max and
             compat._parse(ruby_min)
-            <= compat._parse(compat.PYTHON_VERSION)
+            <= compat._parse(compat.CLIENT_VERSION)
             <= compat._parse(ruby_max)
         )
     except ValueError:
@@ -1496,7 +1495,7 @@ async def get_version(ctx: Context) -> str:
     elif not ruby_accepts_python:
         error_msg = (
             f"SketchUp plugin advertises Python compatibility "
-            f"{ruby_min}..{ruby_max}, which excludes v{compat.PYTHON_VERSION}."
+            f"{ruby_min}..{ruby_max}, which excludes v{compat.CLIENT_VERSION}."
         )
     else:
         error_msg = None
@@ -1598,16 +1597,16 @@ with:
 - `su_mcp/extension.json` — `"version": "X.Y.Z"`
 - `su_mcp/package.rb` — `VERSION = 'X.Y.Z'`
 - `su_mcp/su_mcp.rb` — `ext.version = 'X.Y.Z'`
-- `su_mcp/su_mcp/core/compat.rb` — `RUBY_VERSION = "X.Y.Z"` and `MAX_PYTHON = "X.Y.Z"` (and `MIN_PYTHON` only if this release breaks wire/handler contract with the previous Python client)
+- `su_mcp/su_mcp/core/compat.rb` — `SERVER_VERSION = "X.Y.Z"` and `MAX_PYTHON = "X.Y.Z"` (and `MIN_PYTHON` only if this release breaks wire/handler contract with the previous Python client)
 
 **MIN/MAX policy:** default to bumping only `MAX_*` to the new release;
 keep `MIN_*` pointing to the oldest counterpart still supported. Three
 invariant tests defend against typos and forgotten bumps:
 * `test_min_le_max_invariant` (Python + Ruby) — range cannot be empty.
 * `test_max_ruby_matches_python_version` (Python) — Python's view of
-  Ruby max must equal current `PYTHON_VERSION` at release time.
+  Ruby max must equal current `CLIENT_VERSION` at release time.
 * `test_max_python_matches_ruby_version` (Ruby) — Ruby's view of Python
-  max must equal plugin `RUBY_VERSION` at release time.
+  max must equal plugin `SERVER_VERSION` at release time.
 ```
 
 - [ ] **Step 9.2: Commit**
@@ -1825,7 +1824,7 @@ in a separate session per global CLAUDE.md rule).
 
 - [x] **Type consistency**:
   - Tool name `get_version` everywhere (Python `@mcp.tool` name, Ruby dispatch case, Ruby handler method, test assertions, smoke step).
-  - Constants `MIN_RUBY`, `MAX_RUBY`, `MIN_PYTHON`, `MAX_PYTHON`, `PYTHON_VERSION`, `RUBY_VERSION` spelled identically across compat.py, compat.rb, tests, and design doc.
+  - Constants `MIN_RUBY`, `MAX_RUBY`, `MIN_PYTHON`, `MAX_PYTHON`, `CLIENT_VERSION`, `SERVER_VERSION` spelled identically across compat.py, compat.rb, tests, and design doc.
   - Exception name `IncompatibleVersionError` consistent (Python class + Ruby StructuredError mapping via code `-32001`).
   - JSON envelope field names (`client_version`, `server_version`) match between Ruby producers and Python consumers and vice versa.
 
