@@ -420,21 +420,6 @@ right_door = model.entities.add_instance(door_def,
   Geom::Transformation.new(Geom::Point3d.new(600/MM, 400/MM, 0)))
 ```
 
-## Common pitfalls
-
-| Mistake | Fix |
-|---|---|
-| `model.entities.find_entity_by_id(id)` | Use `model.find_entity_by_id(id)` |
-| Passing mm values to API without conversion | Divide by 25.4 |
-| Reading API coords as mm without conversion | Multiply by 25.4 |
-| `bounds1 + bounds2` | Manually collect min/max across groups |
-| No `start_operation` wrapper | Changes can't be undone; always wrap edits |
-| `face.pushpull(h/MM)` assuming +Z direction | Check `face.normal.z` sign first (see `make_box` helper) |
-| `vertex.position` assumed to be world space | Multiply by `grp.transformation` to get world coords |
-| `bounds` of nested sub-group assumed to be world space | Bounds of sub-group are in parent's local space; apply parent's transformation if needed |
-| `A.subtract(B)` expecting `A - B` | `Group#subtract` is reversed: returns `B - A`. Call `tool.subtract(target)` to get «target - tool» |
-| `Sketchup::Model#undo` | Doesn't exist — use `Sketchup.send_action("editUndo:")` |
-
 ## Viewport snapshot via `View#write_image`
 
 For non-destructive screenshots, deep-copy the camera and snapshot the
@@ -442,7 +427,7 @@ rendering-options keys you intend to change, mutate, write the image,
 then restore. `View#camera=` and `RenderingOptions[]=` are UI state —
 they don't enter the undo stack — so you don't need `model.start_operation`.
 
-**Important notes for SketchUp 2026** (verified empirically):
+**Two non-obvious behaviors** (last verified against SketchUp 2026):
 
 - `Sketchup.send_action("viewIso:")` is **asynchronous** — the camera does
   NOT change before the call returns. Use direct `view.camera =
@@ -458,7 +443,7 @@ view  = Sketchup.active_model.active_view
 model = view.model
 
 # --- snapshot (deep copy — protects against future API changes that might
-# return live references; iter-1 verified `view.camera` returns a fresh
+# return live references; empirically `view.camera` returns a fresh
 # wrapper today, but the deep copy is defence-in-depth) ---
 c = view.camera
 snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
@@ -474,13 +459,16 @@ snap_ro = ro_keys.map { |k| [k, model.rendering_options[k]] }.to_h
 # --- mutate (direct camera assignment + RenderMode enum) ---
 bb     = model.bounds
 center = bb.center
-dist   = (bb.diagonal.zero? ? 1000.0 : bb.diagonal) * 1.5
+diag   = bb.diagonal
+dist   = (diag.nil? || diag.to_f <= 0 ? 1000.0 : diag.to_f) * 1.5
 offset = Geom::Vector3d.new(1, -1, 1)
 offset.length = dist
 eye    = center + offset
-view.camera = Sketchup::Camera.new(eye, center, Geom::Vector3d.new(0, 0, 1))
+new_cam = Sketchup::Camera.new(eye, center, Geom::Vector3d.new(0, 0, 1))
+new_cam.perspective = c.perspective?   # don't silently flip ortho→perspective
+view.camera = new_cam
 model.rendering_options["RenderMode"] = 2  # 2 = Shaded
-view.zoom_extents
+view.zoom_extents                              # fine-tune framing after the rough preset
 
 require "tempfile"
 Tempfile.create(["snap_", ".png"]) do |tmp|
@@ -489,13 +477,14 @@ Tempfile.create(["snap_", ".png"]) do |tmp|
     filename: tmp.path,
     width: 800, height: 450,
     antialias: true,
-    compression: 1.0,             # PNG is always lossless; 1.0 = strongest compression
+    compression: 1.0,             # JPEG-only quality factor (0.0=max compression, 1.0=best quality); ignored for PNG
     transparent: false,
   )
   raise "write_image failed" unless ok
 
   bytes = File.binread(tmp.path)
-  # ... use bytes (Base64.strict_encode64 for transport) ...
+  # ... use bytes (e.g. Base64.strict_encode64 for transport) ...
+  puts "captured #{bytes.bytesize} bytes"  # peek so eval_ruby has a return value
 end                                 # Tempfile auto-deletes here
 
 # --- restore ---
@@ -505,3 +494,18 @@ snap_ro.each { |k, v| model.rendering_options[k] = v }
 
 Used internally by `Handlers::View.viewport_screenshot` (see
 `su_mcp/su_mcp/handlers/view.rb`).
+
+## Common pitfalls
+
+| Mistake | Fix |
+|---|---|
+| `model.entities.find_entity_by_id(id)` | Use `model.find_entity_by_id(id)` |
+| Passing mm values to API without conversion | Divide by 25.4 |
+| Reading API coords as mm without conversion | Multiply by 25.4 |
+| `bounds1 + bounds2` | Manually collect min/max across groups |
+| No `start_operation` wrapper | Changes can't be undone; always wrap edits |
+| `face.pushpull(h/MM)` assuming +Z direction | Check `face.normal.z` sign first (see `make_box` helper) |
+| `vertex.position` assumed to be world space | Multiply by `grp.transformation` to get world coords |
+| `bounds` of nested sub-group assumed to be world space | Bounds of sub-group are in parent's local space; apply parent's transformation if needed |
+| `A.subtract(B)` expecting `A - B` | `Group#subtract` is reversed: returns `B - A`. Call `tool.subtract(target)` to get «target - tool» |
+| `Sketchup::Model#undo` | Doesn't exist — use `Sketchup.send_action("editUndo:")` |
