@@ -16,6 +16,7 @@ SketchupMCP bridges Claude AI and SketchUp via the Model Context Protocol (MCP).
 - **SketchUp is single-threaded**: the Ruby extension cannot use threads; all I/O runs in `UI.start_timer` callbacks.
 - **Wire protocol** (v0.0.1+): 4-byte big-endian length-prefix framing, 64 MiB cap.
 - **Persistent socket**: Python server holds one TCP connection; `asyncio.Lock` serializes tool-calls. Ruby reads non-blocking inside `UI.start_timer`, capped at 50 reads per tick (~3.2 MB) to keep SketchUp's UI responsive.
+- **Ruby accepts a single TCP client at a time**: `core/server.rb` has one `@client` slot (`accept_one_client` runs only when `@client.nil?`); a second concurrent client gets `ECONNREFUSED`. To run `examples/smoke_check.py` while a Claude Code session has the `sketchup` MCP server attached, restart the SketchUp plugin (Plugins → MCP Server → Start) or temporarily disable `sketchup` in Claude Code's MCP config — both release the existing client. Ruby auto-resets after `IDLE_DEADLINE_S = 300.0` seconds without progress.
 - **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; cast incoming string IDs with `.to_i`.
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
@@ -64,6 +65,8 @@ Log-level changes apply immediately. Host/port changes prompt the user to restar
 - `SKETCHUP_MCP_PORT` (default `9876`)
 - `SKETCHUP_MCP_TIMEOUT` (default `60` seconds)
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
+
+`examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` (via `sketchup_mcp.config`). For a split-host setup — Linux dev box + Windows SketchUp — set them when running the smoke check, e.g. `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`. In that mode the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network).
 
 ## Architecture
 

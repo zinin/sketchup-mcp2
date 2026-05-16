@@ -8,6 +8,8 @@ Pre-conditions:
      src/sketchup_mcp/compat.py (MIN_RUBY..MAX_RUBY); step 22 verifies this.
   3. Run with the same Python venv used by the MCP server.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
+     When SketchUp runs remotely, step 18 (export_scene) degrades to asserting
+     Ruby returned a non-empty path — the file lives on the SketchUp host.
 
 Usage:
     python examples/smoke_check.py
@@ -35,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sketchup_mcp.connection import SketchUpConnection  # noqa: E402
 from sketchup_mcp.errors import SketchUpError  # noqa: E402
-from sketchup_mcp import config  # noqa: E402
+from sketchup_mcp import compat, config  # noqa: E402
 
 
 async def call(conn: SketchUpConnection, tool: str, **args) -> dict:
@@ -165,7 +167,11 @@ async def main() -> int:
         step = 18; print(f"[{step}] export_scene format=png")
         ex = parse(await call(conn, "export_scene", format="png"))
         path = ex["path"]
-        assert os.path.exists(path), f"export file missing: {path}"
+        # Split-host: when SketchUp runs remotely the export file isn't visible here.
+        if config.HOST in {"127.0.0.1", "localhost", "::1"}:
+            assert os.path.exists(path), f"export file missing: {path}"
+        else:
+            assert path, "export_scene returned empty path"
 
         step = 19; print(f"[{step}] get_viewport_screenshot — exercise the new tool")
         result = await call(
@@ -209,19 +215,22 @@ async def main() -> int:
         await call(conn, "undo")
 
         step = 22; print(f"[{step}] version handshake — matched pair must report compatible=true")
-        payload = parse(await call(conn, "get_version"))
-        print(f"    python={payload['python_version']} ruby={payload['ruby_version']}")
-        print(f"    compatible={payload['compatible']} error={payload['error']}")
-        assert payload["compatible"] is True, f"version mismatch: {payload}"
-        # Two-way verdict sanity: Ruby payload must have populated all fields.
-        # `compatible=True` with any of these None would mean the verdict was
-        # reached on partial data (Python silently accepting missing Ruby side).
-        assert payload["ruby_version"] is not None, f"ruby_version missing: {payload}"
-        assert payload["ruby_min_compatible_python"] is not None, \
-            f"two-way field ruby_min_compatible_python missing: {payload}"
-        assert payload["ruby_max_compatible_python"] is not None, \
-            f"two-way field ruby_max_compatible_python missing: {payload}"
-        assert payload["error"] is None, f"error reported despite compatible=true: {payload}"
+        # smoke_check.py talks to Ruby directly (no FastMCP), so this returns
+        # the raw handlers/system.rb output. Replicate the two-way verdict
+        # that src/sketchup_mcp/tools.py::get_version computes.
+        ruby_payload = parse(await call(conn, "get_version"))
+        ruby_version = ruby_payload["ruby_version"]
+        ruby_min_py = ruby_payload["min_compatible_python"]
+        ruby_max_py = ruby_payload["max_compatible_python"]
+        print(f"    python={compat.CLIENT_VERSION} ruby={ruby_version}")
+        print(f"    ruby advertises python compat: {ruby_min_py}..{ruby_max_py}")
+        compat.check_ruby_version(ruby_version)
+        client = compat.parse(compat.CLIENT_VERSION)
+        assert compat.parse(ruby_min_py) <= client <= compat.parse(ruby_max_py), (
+            f"Ruby advertised range {ruby_min_py}..{ruby_max_py} rejects "
+            f"client {compat.CLIENT_VERSION}"
+        )
+        print("    matched-pair: compatible=true")
 
         print("\nALL STEPS PASSED ✓")
         return 0
