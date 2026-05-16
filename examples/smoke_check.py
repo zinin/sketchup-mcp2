@@ -206,6 +206,12 @@ async def main() -> int:
         step = 21; print(f"[{step}] undo — verify the tool runs without error")
         await call(conn, "undo")
 
+        step = 22; print(f"[{step}] version handshake — matched pair must report compatible=true")
+        payload = parse(await call(conn, "get_version"))
+        print(f"    python={payload['python_version']} ruby={payload['ruby_version']}")
+        print(f"    compatible={payload['compatible']} error={payload['error']}")
+        assert payload["compatible"] is True, f"version mismatch: {payload}"
+
         print("\nALL STEPS PASSED ✓")
         return 0
     except Exception as e:
