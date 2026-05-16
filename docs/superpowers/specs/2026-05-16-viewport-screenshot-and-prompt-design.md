@@ -453,6 +453,38 @@ specify:
 
 Approximate size: ~1.5 KB, ~50 lines.
 
+### 5.8 Python wrapper structure: `_raw_call` extraction
+
+The screenshot wrapper cannot reuse the existing `_call` helper because
+`_call` returns `str` and we need to return `Image`. To avoid silent
+divergence of the connection-acquisition logic, we extract a small
+shared helper:
+
+```python
+async def _raw_call(ctx, tool_name, /, **kwargs) -> dict:
+    """Acquire the connection and execute one tools/call. Returns the
+    raw result dict (MCP-shaped: {"content": [...], "isError": ...}).
+
+    Translates ConnectionError → SketchUpError for Image-returning
+    callers; text-returning callers (via _call) format their own
+    user-friendly string. See note below on error-handling asymmetry."""
+```
+
+Then:
+
+- `_call(ctx, name, **kw)` — unchanged externally — internally:
+  `_raw_call → catch SketchUpError → format_error string`.
+- `get_viewport_screenshot` — `_raw_call → parse content[0].text → json
+  → base64-decode → Image`.
+
+**Documented error-handling asymmetry.** String-returning tools surface
+`ConnectionError` as a human-readable string (graceful — the LLM sees
+"SketchUp not running…" and can continue or retry). The screenshot tool
+raises `SketchUpError` because there is no Image sentinel for "not
+connected". This is *intentional* and lives here as a single canonical
+note — neither approach is more correct in isolation; they are matched
+to what the tool can communicate.
+
 ### 6.3 How users see it
 
 In Claude Desktop / Code MCP-aware clients, the prompt appears in the

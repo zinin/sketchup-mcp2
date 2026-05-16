@@ -504,6 +504,69 @@ Do NOT commit yet.
 **Files:**
 - Modify: `src/sketchup_mcp/tools.py` (add imports + new function near line 282)
 
+- [ ] **Step 4.0: Refactor `_call` to delegate to a new `_raw_call` helper**
+
+In `src/sketchup_mcp/tools.py`, immediately above the existing `_call` (line ~21), add a small shared helper. Then rewrite `_call` to delegate to it.
+
+```python
+async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
+    """Acquire the connection and execute one tools/call.
+
+    Returns the raw MCP-shaped result dict
+    (``{"content": [...], "isError": False}``).
+
+    Translates ``ConnectionError`` to :class:`SketchUpError` so callers
+    that cannot return a graceful string (e.g. ``get_viewport_screenshot``
+    which must return :class:`Image`) get a single, uniform exception
+    type. Text-returning callers (via :func:`_call`) catch and format it
+    into a user-readable string.
+
+    See the design's §5.8 for the rationale on error-handling asymmetry
+    between text-returning and Image-returning tools.
+    """
+    try:
+        sketchup = await get_connection()
+    except ConnectionError as e:
+        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
+    try:
+        return await sketchup.send_command(tool_name, kwargs)
+    except ConnectionError as e:
+        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
+
+
+async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
+    """Dispatch a tool call to SketchUp and shape the response for Claude.
+
+    Same external contract as before — kept for compatibility with the 22
+    existing string-returning tools.  Now delegates to :func:`_raw_call`
+    for connection handling and converts the result to a string.
+    """
+    try:
+        result = await _raw_call(ctx, tool_name, **kwargs)
+    except SketchUpError as e:
+        # ConnectionError-derived: surface as graceful string for the LLM.
+        if e.code == -32000 and "SketchUp not running" in (e.message or ""):
+            return e.message or "SketchUp not running"
+        return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
+    content = result.get("content") if isinstance(result, dict) else None
+    if (
+        isinstance(content, list)
+        and content
+        and isinstance(content[0], dict)
+        and "text" in content[0]
+    ):
+        return content[0]["text"]
+    return json.dumps(result)
+```
+
+This is a **pure refactor** of `_call` — the contract for existing 22 tools is unchanged (same input, same output, same graceful "SketchUp not running" string on connection failure). Run the existing test suite to confirm:
+
+```
+uv run pytest tests/test_tools.py -v
+```
+
+Expected: no regressions.
+
 - [ ] **Step 4.1: Add imports at top of `src/sketchup_mcp/tools.py`**
 
 Open `src/sketchup_mcp/tools.py`. The current import block (lines 6-16) is:
@@ -577,23 +640,18 @@ async def get_viewport_screenshot(
     block, so an exception anywhere between snapshot and write_image still
     leaves the viewport in its original state.
     """
-    try:
-        sketchup = await get_connection()
-    except ConnectionError as e:
-        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
-    try:
-        raw = await sketchup.send_command(
-            "get_viewport_screenshot",
-            {
-                "max_size": max_size,
-                "view_preset": view_preset,
-                "zoom_extents": zoom_extents,
-                "style": style,
-                "restore_view": restore_view,
-            },
-        )
-    except ConnectionError as e:
-        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
+    # Delegate connection + send_command to _raw_call so we don't duplicate
+    # the transport logic of _call. ConnectionError surfaces as SketchUpError;
+    # see design §5.8 for the error-handling asymmetry rationale.
+    raw = await _raw_call(
+        ctx,
+        "get_viewport_screenshot",
+        max_size=max_size,
+        view_preset=view_preset,
+        zoom_extents=zoom_extents,
+        style=style,
+        restore_view=restore_view,
+    )
 
     # Ruby returns MCP-shaped {content: [{type: "text", text: JSON-blob}], ...}.
     # Extract the JSON blob and decode the base64 PNG into raw bytes.
@@ -675,16 +733,27 @@ Expected: existing 56 tests + 5 prompt tests + 8 screenshot tests + 1 new connec
 ```bash
 git add src/sketchup_mcp/tools.py src/sketchup_mcp/connection.py \
         tests/test_screenshot.py tests/test_connection.py
-git commit -m "feat(tools): add get_viewport_screenshot wrapper returning MCP Image
+git commit -m "feat(tools): add get_viewport_screenshot returning MCP Image + _raw_call refactor
 
-Thin wrapper around the new Ruby handler: Pydantic-validates
-max_size/view_preset/zoom_extents/style/restore_view, round-trips a
-JSON-RPC call, base64-decodes the png_base64 field, and returns
-mcp.server.fastmcp.Image so Claude can see the scene between steps.
+- Extract _raw_call(ctx, name, /, **kw) -> dict from _call. Carries
+  connection acquisition + send_command + ConnectionError-to-SketchUpError
+  translation. The existing _call now delegates to _raw_call and adds the
+  string formatting for the 22 text-returning tools (zero behavior change
+  for them; tests/test_tools.py passes unchanged).
 
-Also adds get_viewport_screenshot to connection._RETRY_SAFE_TOOLS —
-the handler is idempotent (no document state changes), so stale-socket
-retry is safe. Regression test guards against accidental removal."
+- New tool get_viewport_screenshot wraps Ruby handler:
+  Pydantic-validates max_size/view_preset/zoom_extents/style/restore_view,
+  round-trips through _raw_call, parses MCP envelope, base64-decodes
+  png_base64, returns mcp.server.fastmcp.Image so Claude can see the
+  scene between steps.
+
+- Add get_viewport_screenshot to connection._RETRY_SAFE_TOOLS — the
+  handler is idempotent (no document state changes in either restore_view
+  mode), so stale-socket retry is safe. Regression test guards against
+  accidental removal.
+
+- Error-handling asymmetry between text-returning tools and the
+  Image-returning screenshot is intentional and documented in design §5.8."
 ```
 
 ---
