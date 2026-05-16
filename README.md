@@ -18,6 +18,8 @@ Big Shoutout to [Blender MCP](https://github.com/ahujasid/blender-mcp) for the i
 * **Scene inspection**: Get detailed information about the current Sketchup scene
 * **Selection handling**: Get and manipulate selected components
 * **Ruby code evaluation**: Execute arbitrary Ruby code directly in SketchUp for advanced operations
+* **Viewport snapshots**: `get_viewport_screenshot` returns the current SketchUp viewport as an MCP `Image`, so Claude can visually verify the scene between operations. Optional `view_preset` / `style` / `zoom_extents`; restores camera and rendering options after the snapshot by default.
+* **Modeling-strategy prompt**: an MCP prompt `sketchup_modeling_strategy` is available in the slash menu of MCP-aware clients — insert it at the start of a chat to teach Claude the project conventions (pre-flight checks, typed-tools-vs-`eval_ruby`, millimeter units, post-mutation verification).
 
 ## Components
 
