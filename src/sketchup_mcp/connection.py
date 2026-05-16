@@ -48,6 +48,8 @@ _RETRY_SAFE_TOOLS: frozenset[str] = frozenset(
         "find_components",
         "list_layers",
         "get_selection",
+        "get_viewport_screenshot",  # read-only viewport capture; idempotent in
+                                    # both restore_view modes (no document state changes)
     }
 )
 
