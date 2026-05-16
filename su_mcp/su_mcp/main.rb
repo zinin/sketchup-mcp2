@@ -17,6 +17,7 @@ module SU_MCP
   LOAD_ORDER = %w[
     core/config
     core/errors
+    core/compat
     helpers/units
     core/logger
     helpers/validation
