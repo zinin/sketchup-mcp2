@@ -159,39 +159,51 @@ Validation:
 |---|---|
 | `max_size` | Largest side of the returned PNG. Aspect ratio is taken from `view.vpwidth / view.vpheight`; the smaller side is scaled proportionally and rounded. |
 | `view_preset="current"` | Camera is not modified. |
-| `view_preset=<other>` | `Sketchup.send_action("view#{Preset.capitalize}:")` switches to the named SketchUp standard view. These actions are synchronous and locale-independent. |
+| `view_preset=<other>` | Camera is set **directly** via `view.camera = Sketchup::Camera.new(eye, target, up)`. Eye/target/up are computed deterministically from `model.bounds.center` and a preset-specific unit direction vector; distance = `bb.diagonal * 1.5` (extents-friendly framing). `Sketchup.send_action("view#{Preset}:")` was rejected — empirically verified to be **asynchronous** in SketchUp 2026 (camera does not change before the call returns), which would silently break preset + restore semantics. The deterministic-camera approach guarantees sync, locale-independence, and stub-level testability at the cost of a slight visual difference from SketchUp's native "View → Standard Views" menu (≤ a few degrees of elevation in some presets — acceptable for a verification screenshot). |
 | `zoom_extents=true` | `view.zoom_extents` is called after the (optional) preset change and style change. |
 | `style="default"` | Rendering options are not modified. |
 | `style=<other>` | A small set of `model.rendering_options` keys is modified directly. We do **not** switch `model.styles.selected_style` (that is locale-dependent and pollutes the undo stack). |
 | `restore_view=true` | Camera and the touched rendering-options keys are snapshotted before mutations and restored after `write_image`. |
 | `restore_view=false` | No snapshot; the model retains the new view/style after the call. |
 
-### 5.3 Style → rendering_options mapping (initial — to be verified)
+### 5.3 Style → rendering_options mapping
 
-The keys below are **proposed**; SketchUp's `Sketchup::RenderingOptions`
-documentation is incomplete and some keys behave differently between
-versions (in SketchUp 2024+ unknown keys raise `ArgumentError`).
-Verifying each key against SketchUp 2026 is a blocking acceptance
-gate — see §13.
+Empirically verified against SketchUp 2026 (review iter 1 acceptance
+gate, ran via `eval_ruby` in a live session). The high-level
+`RenderMode` enum is the only reliable lever for the three styles we
+expose; the older boolean toggles like `DisplayShaded` / `DrawEdges` /
+`DrawFaces` are **read-only / no-op-on-write** in SketchUp 2026
+(`ArgumentError: Rendering option could not be set to the given value`).
+Working write-able keys observed: `RenderMode` (Integer enum), `DrawHidden`
+(Boolean), `DrawProfilesOnly` (Boolean), `Texture` (Boolean),
+`DrawBackEdges` (Boolean).
 
-| `style` | Keys set (proposed) |
+`RenderMode` enum values (SketchUp 2026):
+- `0` — Wireframe
+- `1` — Hidden Line
+- `2` — Shaded (default — flat colors, no textures)
+- `3` — Shaded with Textures
+- `4` — Monochrome
+- `5` — Sketchy
+- `6` — X-Ray
+- `7` — reserved
+
+| `style` | Keys set |
 |---|---|
-| `shaded` | `DisplayShaded=true`, `DisplayShadedUsingAllSameObject=false`, `DrawEdges=true` |
-| `hidden_line` | `DisplayShaded=false`, `DrawEdges=true`, `DrawHidden=true`, `DrawProfilesOnly=false` |
-| `wireframe` | `DisplayShaded=false`, `DrawEdges=true`, `DrawFaces=false` (the `DisplayShaded=false` is essential — without it, faces may still render even with `DrawFaces=false`) |
+| `shaded` | `RenderMode = 2` (shaded, no textures). Set `Texture = true` if the user has textured materials and wants them visible — see Open Decisions §11 ("Default shaded variant"). |
+| `hidden_line` | `RenderMode = 1` (hidden line). Optionally set `DrawHidden = true` to also draw hidden geometry — for now we do not (a clean hidden-line is what users expect). |
+| `wireframe` | `RenderMode = 0`. No additional toggles needed; wireframe mode handles faces correctly on its own. |
 
-The Ruby production handler raises `Core::StructuredError` if any key
-in the requested style's set is rejected by SketchUp; the test stub
-raises on unknown keys to mirror that behavior.
+`default` does not touch `rendering_options` at all (RO snapshot is
+empty, restore is a no-op).
 
 **RO snapshot scope.** When `restore_view=true` and `style != "default"`,
 only the keys listed for the requested style are snapshotted and
-restored — not the full ~30-key `rendering_options` dictionary. This is
-sufficient because `Sketchup.send_action("view{Preset}:")` (preset
-application) is empirically verified during acceptance (§13) to leave
-`rendering_options` untouched, so no out-of-style keys change as a
-side effect. If acceptance discovers otherwise, we switch to a
-full-dictionary snapshot.
+restored — only `RenderMode` for the three styles above, optionally
+`Texture` for `shaded`. This is sufficient because there are no
+side-effect mutations of other RO keys in the preset/camera path
+(camera is set via direct `view.camera =` assignment, not
+`send_action`, so SketchUp does not toggle other rendering settings).
 
 ### 5.4 Ruby handler flow
 
@@ -224,7 +236,11 @@ is `nil`. Never dereference into `nil`.
 
    begin   # outer begin/ensure guarantees restore on every path
 
-2.   (if view_preset != "current") Sketchup.send_action("view#{P}:")
+2.   if view_preset != "current"
+       # Direct camera construction — synchronous, locale-independent.
+       # send_action is asynchronous in SU 2026 and was rejected (see §5.2).
+       eye, target, up = compute_preset_camera(view_preset, model.bounds)
+       view.camera = Sketchup::Camera.new(eye, target, up)
 3.   (if style != "default")        apply rendering_options keys
 4.   (if zoom_extents)
         begin
@@ -648,17 +664,24 @@ Resolved during review iter 1:
 
 The work is complete when:
 
-- [ ] **Live SketchUp 2026 verification step BEFORE writing the
-      production handler** — each of these assumptions verified via a
-      tiny `eval_ruby` snippet against a running SketchUp 2026, results
-      pasted into the PR description:
-   1. Each `rendering_options` key listed in §5.3 is accepted (no
-      `ArgumentError`) and produces the expected visual change.
-   2. `view.camera` returns a fresh object on each call (or, if not,
-      the snapshot mechanism in §5.4 step 1 is verified to capture
-      eye/target/up/perspective/fov-or-height correctly).
-   3. RO writes do **not** add entries to the Undo menu (verified by
-      observing the menu before/after the snippet).
+- [x] **Live SketchUp 2026 verification — completed during review iter 1**
+      (results inlined here, evidence in commit history):
+   1. `Sketchup.send_action("view{Preset}:")` is **asynchronous** —
+      camera does not change before the call returns. Design switched
+      to direct `view.camera = Sketchup::Camera.new(...)` assignment
+      (synchronous, locale-independent).
+   2. `Sketchup::RenderingOptions` boolean keys `DisplayShaded`,
+      `DrawEdges`, `DrawFaces`, `DisplayShadedUsingAllSameObject` are
+      **WRITE-REJECTED** (`ArgumentError`). Design §5.3 now uses
+      `RenderMode` enum (0..7) for style switching; only `RenderMode`,
+      `DrawHidden`, `DrawProfilesOnly`, `Texture`, `DrawBackEdges`
+      were verified writeable.
+   3. `view.camera` returns a fresh object on every call; deep-copy
+      snapshot via `Sketchup::Camera.new(eye, target, up)` is correct.
+   4. `rendering_options[]=` does **NOT** trigger
+      `Sketchup::ModelObserver#onTransactionStart`/`#onTransactionCommit`
+      — confirmed by attaching an observer and writing both `RenderMode`
+      and `DrawHidden` outside any `start_operation`. §5.5 holds.
 - [ ] `get_viewport_screenshot` is registered as an MCP tool and
       callable through Claude Desktop, returning an MCP `Image`.
 - [ ] `get_viewport_screenshot` appears in `_RETRY_SAFE_TOOLS`

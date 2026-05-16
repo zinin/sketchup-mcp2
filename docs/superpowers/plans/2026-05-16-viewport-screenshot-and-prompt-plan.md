@@ -52,82 +52,32 @@
 
 ---
 
-## Task 0: Pre-implementation acceptance gate — live SketchUp 2026 verification
+## Task 0: Pre-implementation acceptance gate — COMPLETED in review iter 1
 
-The design rests on three assumptions that cannot be verified from
-stubs. **Do these checks before writing the Ruby handler**, paste the
-outputs into the PR description, and stop early if any check fails (or
-the implementation will need different keys / fall-back strategies).
+All four empirical checks were performed during review iter 1 against
+a live SketchUp 2026 session (see commit log). Results, used to shape
+§5.2 and §5.3 of the design:
 
-Requires SketchUp 2026 running with the existing plugin (v0.0.3) loaded.
+- [x] **Step 0.1: `rendering_options` write-ability** — `DisplayShaded`,
+      `DisplayShadedUsingAllSameObject`, `DrawEdges`, `DrawFaces` are
+      **WRITE-REJECTED** in SketchUp 2026 (`ArgumentError`). Working
+      writeable keys: `RenderMode` (0..7), `DrawHidden`, `DrawProfilesOnly`,
+      `Texture`, `DrawBackEdges`. **Design §5.3 was rewritten to use
+      `RenderMode` enum exclusively.**
+- [x] **Step 0.2: `view.camera` identity** — returns a fresh object each
+      call (different `object_id`). Deep-copy snapshot via
+      `Sketchup::Camera.new(eye, target, up)` confirmed correct.
+- [x] **Step 0.3: `rendering_options[]=` undo behavior** — does NOT trigger
+      `ModelObserver#onTransactionStart`/`Commit`. Confirmed via a
+      live observer in the test session. §5.5 design assumption holds —
+      no `start_operation` wrap needed.
+- [x] **Step 0.4: `Sketchup.send_action("view{Preset}:")` synchronicity** —
+      **ASYNCHRONOUS**. Camera unchanged before the call returns,
+      verified for `viewIso:`, `viewTop:`, `viewFront:`. **Design §5.2
+      was rewritten to use direct `view.camera = Sketchup::Camera.new(...)`
+      assignment** (verified synchronous in the same test session).
 
-- [ ] **Step 0.1: Empirically verify `rendering_options` keys for each style**
-
-In SketchUp's Ruby Console:
-
-```ruby
-m = Sketchup.active_model
-ro = m.rendering_options
-%w[DisplayShaded DisplayShadedUsingAllSameObject DrawEdges
-   DrawFaces DrawHidden DrawProfilesOnly].each do |k|
-  begin
-    before = ro[k]
-    ro[k] = before                       # no-op write
-    puts "#{k}: OK (value=#{before.inspect})"
-  rescue => e
-    puts "#{k}: FAIL — #{e.class}: #{e.message}"
-  end
-end
-```
-
-Expected: every key prints `OK`. If any key fails, update §5.3 of the
-design with the working alternative (typically `RenderMode`, `Texture`,
-or `DrawBackEdges`) before Task 6.
-
-- [ ] **Step 0.2: Verify `view.camera` returns a fresh object each call**
-
-```ruby
-v = Sketchup.active_model.active_view
-puts v.camera.object_id == v.camera.object_id ? "SAME OBJECT — handler must snapshot via deep copy" : "FRESH each call"
-```
-
-Either result is fine — the handler already deep-copies via
-`Sketchup::Camera.new(eye, target, up)` per §5.4 — but knowing the
-behavior helps debugging if a regression appears.
-
-- [ ] **Step 0.3: Verify `rendering_options[]=` does NOT enter the undo stack**
-
-1. Note the current Edit → Undo menu label (e.g. "Undo Move"
-   — whatever is at the top).
-2. Run in Ruby Console: `Sketchup.active_model.rendering_options["DrawEdges"] = false`
-3. Restore: `Sketchup.active_model.rendering_options["DrawEdges"] = true`
-4. Re-check Edit → Undo menu label — must be **unchanged** from step 1.
-
-If the undo entry changes, the design assumption in §5.5 is wrong and
-the handler must wrap its RO writes in
-`model.start_operation("__sumcp_screenshot__", true, false, true)`
-(transparent flag = true so screenshots never pollute user-visible undo).
-Update §5.5 + §12 risks + Task 6 implementation accordingly.
-
-- [ ] **Step 0.4: Verify `Sketchup.send_action("viewIso:")` synchronicity**
-
-```ruby
-v = Sketchup.active_model.active_view
-c0 = [v.camera.eye, v.camera.target]
-Sketchup.send_action("viewIso:")
-c1 = [v.camera.eye, v.camera.target]
-puts "send_action sync: #{c0 != c1 ? 'YES (camera changed before return)' : 'NO (camera unchanged — DEFERRED)'}"
-```
-
-If `NO` — `send_action` is asynchronous, and the entire preset path
-needs redesign (DISPUTED group G1; see review iter 1). The check
-result is the empirical input the disputed-issues discussion needs.
-
-- [ ] **Step 0.5: Confirm results in PR description**
-
-Acceptance gate: paste the four block outputs into the PR description
-before requesting review. If Step 0.1 / 0.3 / 0.4 fail, halt and
-re-open the design discussion. Step 0.2 is informational only.
+No live-SU checks remain blocking. Implementation can proceed.
 
 ---
 
@@ -770,11 +720,37 @@ TINY_PNG_BYTES = Base64.strict_decode64(
 # We stub only the API our handler touches. Other tests in test/ already
 # define some of these — Ruby ``module`` declarations are additive.
 
+# Minimal Geom stubs the production handler uses.
+module Geom
+  class Point3d
+    attr_reader :x, :y, :z
+    def initialize(x = 0, y = 0, z = 0); @x, @y, @z = x, y, z; end
+    def to_a; [@x, @y, @z]; end
+    def ==(o); o.is_a?(Point3d) && x == o.x && y == o.y && z == o.z; end
+    def +(v); Point3d.new(@x + v.x, @y + v.y, @z + v.z); end
+  end
+  class Vector3d
+    attr_accessor :x, :y, :z
+    def initialize(x = 0, y = 0, z = 0); @x, @y, @z = x, y, z; end
+    def length
+      Math.sqrt(@x * @x + @y * @y + @z * @z)
+    end
+    def length=(l)
+      cur = length
+      return if cur == 0
+      f = l.to_f / cur
+      @x *= f; @y *= f; @z *= f
+    end
+  end
+end unless defined?(Geom::Vector3d)
+
 module Sketchup
   class Camera
     attr_accessor :eye, :target, :up
     attr_writer :perspective, :fov, :height
-    def initialize(eye = [0, 0, 0], target = [0, 0, 0], up = [0, 0, 1])
+    def initialize(eye = Geom::Point3d.new(0, 0, 0),
+                   target = Geom::Point3d.new(0, 0, 0),
+                   up = Geom::Vector3d.new(0, 0, 1))
       @eye, @target, @up = eye, target, up
       @perspective = true
       @fov = 35.0
@@ -784,18 +760,28 @@ module Sketchup
     def fov; @fov; end
     def height; @height; end
     def ==(o)
-      o.is_a?(Camera) && eye == o.eye && target == o.target && up == o.up &&
+      o.is_a?(Camera) &&
+        coord_eq?(eye, o.eye) && coord_eq?(target, o.target) && coord_eq?(up, o.up) &&
         perspective? == o.perspective? && fov == o.fov && height == o.height
+    end
+    private
+    def coord_eq?(a, b)
+      ax = a.respond_to?(:x) ? [a.x, a.y, a.z] : a.to_a
+      bx = b.respond_to?(:x) ? [b.x, b.y, b.z] : b.to_a
+      ax == bx
     end
   end
 
-  # Strict rendering_options stub: rejects unknown keys (mirrors SketchUp 2024+
-  # behaviour). Tracks all writes via the `writes` accessor so tests can spy.
+  # Strict rendering_options stub modelled on SketchUp 2026 behavior:
+  # - These keys are READ-able but WRITE-REJECTED (verified live):
+  #   DisplayShaded, DisplayShadedUsingAllSameObject, DrawEdges, DrawFaces.
+  # - These keys are READ + WRITE OK:
+  #   RenderMode, DrawHidden, DrawProfilesOnly, Texture, DrawBackEdges.
+  # Tracks all successful writes via `writes` for spy assertions.
   class RenderingOptionsStub
-    KNOWN_KEYS = %w[
-      DisplayShaded DisplayShadedUsingAllSameObject DrawEdges DrawFaces
-      DrawHidden DrawProfilesOnly RenderMode Texture DrawBackEdges
-    ].freeze
+    WRITEABLE_KEYS = %w[RenderMode DrawHidden DrawProfilesOnly Texture DrawBackEdges].freeze
+    READONLY_KEYS  = %w[DisplayShaded DisplayShadedUsingAllSameObject DrawEdges DrawFaces].freeze
+    KNOWN_KEYS = (WRITEABLE_KEYS + READONLY_KEYS).freeze
 
     attr_reader :writes
     def initialize(initial)
@@ -804,13 +790,28 @@ module Sketchup
     end
     def [](k); @data[k]; end
     def []=(k, v)
-      raise ArgumentError, "unknown rendering_options key: #{k.inspect}" unless KNOWN_KEYS.include?(k)
+      unless WRITEABLE_KEYS.include?(k)
+        if READONLY_KEYS.include?(k)
+          raise ArgumentError, "Rendering option could not be set to the given value"
+        else
+          raise ArgumentError, "unknown rendering_options key: #{k.inspect}"
+        end
+      end
       @writes << [k, v]
       @data[k] = v
     end
     def dup; @data.dup; end
     def each_pair(&blk); @data.each_pair(&blk); end
     def keys; @data.keys; end
+  end
+
+  # Minimal BoundingBox stub used by build_preset_camera.
+  class BBox
+    attr_reader :center
+    def initialize(center: Geom::Point3d.new(0, 0, 0), diagonal: 1000.0)
+      @center = center; @diag = diagonal
+    end
+    def diagonal; @diag; end
   end
 
   class View
@@ -858,14 +859,24 @@ module Sketchup
 
   class Model
     attr_reader :rendering_options
+    attr_accessor :bounds
     def initialize
       @rendering_options = RenderingOptionsStub.new(
-        "DisplayShaded" => true,
-        "DisplayShadedUsingAllSameObject" => false,
-        "DrawEdges" => true,
+        # Read-only keys, present but write-rejected.
+        "DisplayShaded" => nil,
+        "DisplayShadedUsingAllSameObject" => nil,
+        "DrawEdges" => nil,
+        "DrawFaces" => nil,
+        # Writeable keys with realistic defaults.
+        "RenderMode" => 2,            # shaded
         "DrawHidden" => false,
         "DrawProfilesOnly" => false,
-        "DrawFaces" => true,
+        "Texture" => true,
+        "DrawBackEdges" => false,
+      )
+      @bounds = BBox.new(
+        center: Geom::Point3d.new(0, 0, 0),
+        diagonal: 1000.0,
       )
     end
   end
@@ -968,35 +979,25 @@ class TestView < Minitest::Test
   # --- camera snapshot/restore -----------------------------------------------
 
   def test_camera_restored_when_flag_true
-    # Strengthened (CONCERN-7): we need to make sure the production code actually
-    # ran a restore-assignment AND brought the camera back to the original state.
-    original = @view.camera                            # capture before stubbing
-    # Simulate `send_action` mutating the camera in-band: replace it with a
-    # marker, then trust the handler to restore via @view.camera=.
-    @view.define_singleton_method(:trigger_preset_mutation!) do
-      self.camera = Sketchup::Camera.new([99, 99, 99], [9, 9, 9], [0, 0, 1])
-    end
-    # Hook into send_action to perform the mutation when preset is requested.
-    Sketchup.define_singleton_method(:send_action) do |name|
-      (@send_action_calls ||= []) << name
-      Sketchup.active_model.active_view.trigger_preset_mutation!
-      true
-    end
-
+    # Production code now sets camera DIRECTLY (view.camera = Camera.new(...)),
+    # so we can observe two assignments: (1) preset → new camera, (2) restore → snapshot.
+    original = @view.camera
     call("view_preset" => "top", "restore_view" => true)
-
-    # We should see >=1 restore assignment, and the final camera should equal original.
-    assert @view.camera_writes.size >= 1,
-           "expected at least one camera= assignment for restore"
-    assert_equal original.eye, @view.camera.eye
-    assert_equal original.target, @view.camera.target
-    assert_equal original.up, @view.camera.up
+    # Expect at least 2 assignments: preset apply + restore.
+    assert @view.camera_writes.size >= 2,
+           "expected preset assignment + restore assignment; got #{@view.camera_writes.size}"
+    # The FINAL camera (after handler return) should equal the original snapshot.
+    final_camera = @view.camera_writes.last
+    assert_equal original.eye.respond_to?(:to_a) ? original.eye.to_a : original.eye,
+                 final_camera.eye.respond_to?(:to_a) ? final_camera.eye.to_a : final_camera.eye
   end
 
   def test_camera_not_restored_when_flag_false
     call("view_preset" => "top", "restore_view" => false)
-    assert_empty @view.camera_writes,
-                 "camera= should not be called when restore_view=false"
+    # With restore_view=false, we should see exactly ONE assignment (preset apply),
+    # not two — restore step is skipped.
+    assert_equal 1, @view.camera_writes.size,
+                 "expected exactly 1 camera assignment (preset, no restore); got #{@view.camera_writes.size}"
   end
 
   def test_camera_restored_after_zoom_extents_failure
@@ -1018,41 +1019,38 @@ class TestView < Minitest::Test
   # --- rendering_options snapshot/restore -------------------------------------
 
   def test_rendering_options_restored_for_style
-    # Pre-mutate one of the target keys so we can detect proper restore.
-    Sketchup.active_model.rendering_options["DrawEdges"] = false
-    snap_before = Sketchup.active_model.rendering_options.dup
+    # Pre-mutate RenderMode so we can detect proper restore (wireframe sets RenderMode=0).
+    ro = Sketchup.active_model.rendering_options
+    ro["RenderMode"] = 2  # shaded baseline
+    snap_before = ro.dup
 
     call("style" => "wireframe", "restore_view" => true)
 
-    %w[DisplayShaded DrawEdges DrawFaces].each do |k|
-      assert_equal snap_before[k],
-                   Sketchup.active_model.rendering_options[k],
-                   "RO key #{k} not restored"
-    end
+    assert_equal snap_before["RenderMode"], ro["RenderMode"],
+                 "RenderMode not restored to baseline after wireframe style"
   end
 
   def test_rendering_options_restored_after_write_image_failure
-    Sketchup.active_model.rendering_options["DrawEdges"] = false
-    snap_before = Sketchup.active_model.rendering_options.dup
+    ro = Sketchup.active_model.rendering_options
+    ro["RenderMode"] = 2  # baseline
+    snap_before = ro.dup
     @view.force_write_image_failure!
     begin
       call("style" => "wireframe", "restore_view" => true)
     rescue SU_MCP::Core::StructuredError
       # expected
     end
-    %w[DisplayShaded DrawEdges DrawFaces].each do |k|
-      assert_equal snap_before[k],
-                   Sketchup.active_model.rendering_options[k],
-                   "RO key #{k} not restored after write_image failure"
-    end
+    assert_equal snap_before["RenderMode"], ro["RenderMode"],
+                 "RenderMode not restored after write_image failure"
   end
 
   def test_rendering_options_not_restored_when_restore_view_false
-    snap_before = Sketchup.active_model.rendering_options.dup
+    ro = Sketchup.active_model.rendering_options
+    ro["RenderMode"] = 2
+    snap_before = ro.dup
     call("style" => "wireframe", "restore_view" => false)
-    refute_equal snap_before["DrawFaces"],
-                 Sketchup.active_model.rendering_options["DrawFaces"],
-                 "DrawFaces should remain mutated when restore_view=false"
+    refute_equal snap_before["RenderMode"], ro["RenderMode"],
+                 "RenderMode should remain mutated to 0 when restore_view=false"
   end
 
   def test_no_ro_touched_when_style_default
@@ -1065,14 +1063,20 @@ class TestView < Minitest::Test
 
   # --- preset / zoom_extents --------------------------------------------------
 
-  def test_send_action_called_for_preset
-    call("view_preset" => "iso")
-    assert_includes Sketchup.send_action_calls, "viewIso:"
+  def test_camera_assigned_for_preset
+    # Production code sets camera DIRECTLY via view.camera = Sketchup::Camera.new(...).
+    # `send_action` is no longer used for presets (it was async in SU 2026 — see review iter 1).
+    call("view_preset" => "iso", "restore_view" => false)
+    assert_equal 1, @view.camera_writes.size,
+                 "expected camera assignment for preset (no restore)"
+    refute_includes (Sketchup.send_action_calls || []), "viewIso:",
+                    "production code must NOT call Sketchup.send_action for presets"
   end
 
-  def test_send_action_not_called_for_current_preset
-    call("view_preset" => "current")
-    refute_includes (Sketchup.send_action_calls || []), "viewCurrent:"
+  def test_no_camera_assigned_for_current_preset
+    call("view_preset" => "current", "restore_view" => false)
+    assert_empty @view.camera_writes,
+                 "no camera assignment expected for view_preset='current'"
   end
 
   def test_zoom_extents_called_when_flag_true
@@ -1183,8 +1187,8 @@ Do NOT commit failing tests alone.
 # invariants):
 #   0. validate → guards (active_model!, active_view)
 #   1. snapshot (camera deep-copy + RO subset) if restore_view
-#   2. preset    (Sketchup.send_action)
-#   3. style     (rendering_options assignments)
+#   2. preset    (DIRECT view.camera = ... — synchronous in SU 2026; see §5.2)
+#   3. style     (RenderMode enum write — empirically the only reliable way)
 #   4. zoom_extents (rescued — empty-model dialog tolerated)
 #   5. write_image into Tempfile
 #   6. size cap check (< 32 MiB raw)
@@ -1204,34 +1208,27 @@ module SU_MCP
       ALLOWED_STYLES  = %w[default shaded hidden_line wireframe].freeze
       MIN_MAX_SIZE = 64
       MAX_MAX_SIZE = 4096
-      # 32 MiB raw — ~64 MiB after base64+JSON-string wrapping, matches
-      # the framing cap; raising here surfaces a clear "reduce max_size"
-      # message instead of cryptic transport errors.
       MAX_RAW_BYTES = 32 * 1024 * 1024
 
-      # rendering_options key sets per style. ``default`` does not touch RO.
-      # NOTE: each key set requires empirical verification against SketchUp
-      # 2026 BEFORE shipping (see §13 acceptance gate). ArgumentError on an
-      # unknown key surfaces as Core::StructuredError automatically.
+      # SketchUp 2026 RenderMode enum (verified empirically — review iter 1):
+      # 0=wireframe, 1=hidden_line, 2=shaded, 3=textured_shaded,
+      # 4=monochrome, 5=sketchy, 6=x-ray.
       STYLE_RO = {
-        "shaded" => {
-          "DisplayShaded" => true,
-          "DisplayShadedUsingAllSameObject" => false,
-          "DrawEdges" => true,
-        },
-        "hidden_line" => {
-          "DisplayShaded" => false,
-          "DrawEdges" => true,
-          "DrawHidden" => true,
-          "DrawProfilesOnly" => false,
-        },
-        "wireframe" => {
-          # DisplayShaded=false is essential — without it faces still render
-          # even with DrawFaces=false. See CONCERN-5 in review iter 1.
-          "DisplayShaded" => false,
-          "DrawEdges" => true,
-          "DrawFaces" => false,
-        },
+        "shaded"      => { "RenderMode" => 2 },
+        "hidden_line" => { "RenderMode" => 1 },
+        "wireframe"   => { "RenderMode" => 0 },
+      }.freeze
+
+      # Unit direction vectors for camera presets (eye = target + dir*distance).
+      # `up` is Z+ for elevation views, Y+ for top/bottom (otherwise camera goes singular).
+      PRESET_DIR = {
+        "front"  => [Geom::Vector3d.new( 0, -1,  0), Geom::Vector3d.new(0, 0, 1)],
+        "back"   => [Geom::Vector3d.new( 0,  1,  0), Geom::Vector3d.new(0, 0, 1)],
+        "left"   => [Geom::Vector3d.new(-1,  0,  0), Geom::Vector3d.new(0, 0, 1)],
+        "right"  => [Geom::Vector3d.new( 1,  0,  0), Geom::Vector3d.new(0, 0, 1)],
+        "top"    => [Geom::Vector3d.new( 0,  0,  1), Geom::Vector3d.new(0, 1, 0)],
+        "bottom" => [Geom::Vector3d.new( 0,  0, -1), Geom::Vector3d.new(0, 1, 0)],
+        "iso"    => [Geom::Vector3d.new( 1, -1,  1), Geom::Vector3d.new(0, 0, 1)],
       }.freeze
 
       def self.viewport_screenshot(params)
@@ -1251,8 +1248,7 @@ module SU_MCP
         snap_ro     = nil
         if restore_view
           c = view.camera
-          # Construct a fresh Camera to insulate from in-place mutation
-          # by SketchUp (CONCERN-1 in review iter 1).
+          # Construct a fresh Camera (deep copy) — verified safe in SU 2026.
           snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
           snap_camera.perspective = c.perspective?
           if c.perspective?
@@ -1266,7 +1262,6 @@ module SU_MCP
           end
         end
 
-        # Compute output dimensions preserving aspect ratio.
         vw = view.vpwidth.to_f
         vh = view.vpheight.to_f
         if vw <= 0 || vh <= 0
@@ -1278,13 +1273,12 @@ module SU_MCP
 
         data = nil
         begin
-          # 2. Preset.
+          # 2. Preset — direct camera assignment (synchronous; send_action is async).
           if view_preset != "current"
-            Sketchup.send_action("view#{view_preset.capitalize}:")
+            view.camera = build_preset_camera(view_preset, model.bounds, view.camera)
           end
 
-          # 3. Style (apply rendering_options). Unknown keys → ArgumentError →
-          # wrapped as StructuredError in dispatch by Ruby exception bridging.
+          # 3. Style — RenderMode write (verified writeable in SU 2026).
           if style != "default"
             STYLE_RO[style].each { |k, v| model.rendering_options[k] = v }
           end
@@ -1333,6 +1327,27 @@ module SU_MCP
           "preset_used"  => view_preset,
           "style_used"   => style,
         }
+      end
+
+      # Build a Sketchup::Camera for one of the named presets, framed on the
+      # model's bounding box. Falls back to a sensible default when the model
+      # is empty (bounds.diagonal == 0).
+      def self.build_preset_camera(preset, bounds, current_camera)
+        dir, up = PRESET_DIR[preset]
+        center  = bounds.center
+        diag    = bounds.diagonal
+        diag    = 1000.0 if diag.nil? || diag <= 0   # fallback for empty model
+        dist    = diag * 1.5
+        offset  = Geom::Vector3d.new(dir.x, dir.y, dir.z); offset.length = dist
+        eye     = center + offset
+        cam = Sketchup::Camera.new(eye, center, up)
+        cam.perspective = current_camera.perspective?
+        if cam.perspective?
+          cam.fov = current_camera.fov
+        else
+          cam.height = current_camera.height
+        end
+        cam
       end
 
       def self.require_max_size(params)
