@@ -9,13 +9,29 @@ module SU_MCP
       # receive a response.
       def self.handle(request)
         request_id = nil
+        is_notification = false
         tool = nil
         params = {}
         begin
           validate_envelope!(request)
+
+          # Capture id and notification flag BEFORE the version check so:
+          #  - -32001 error responses preserve the real request id
+          #  - notifications (no "id") are silently dropped on mismatch
           request_id = request["id"]
-          method = request["method"]
           is_notification = !request.key?("id")
+          method = request["method"]
+
+          # Version handshake — diagnostic bypass for tools/call → get_version
+          # (matches the actual wire format; Python NEVER sends method == "get_version").
+          is_get_version_call =
+            method == "tools/call" &&
+            request["params"].is_a?(Hash) &&
+            request.dig("params", "name") == "get_version"
+
+          unless is_get_version_call
+            Core::Compat.check_python_version(request["client_version"])
+          end
 
           response_body =
             case method
@@ -42,13 +58,18 @@ module SU_MCP
           return nil if is_notification
           build_success_response(response_body, request_id)
         rescue Core::StructuredError => e
-          Core::Logger.log_error(tool || "?", e)
-          return nil if request.is_a?(Hash) && !request.key?("id")
+          if e.code == -32001
+            Core::Logger.log("WARN",
+              "tool=dispatch.version msg=client_version mismatch: #{e.message}")
+          else
+            Core::Logger.log_error(tool || "?", e)
+          end
+          return nil if is_notification
           Core::Errors.build_error_response(e.code, e.message,
             Core::Errors.exception_to_data(e, tool || "?", params), request_id)
         rescue StandardError => e
           Core::Logger.log_error(tool || "?", e)
-          return nil if request.is_a?(Hash) && !request.key?("id")
+          return nil if is_notification
           Core::Errors.build_error_response(-32603, e.message,
             Core::Errors.exception_to_data(e, tool || "?", params), request_id)
         end

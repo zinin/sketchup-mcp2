@@ -163,6 +163,7 @@ module SU_MCP
       # no response to send and the client would hang waiting for one.
       # Fall back to a generic -32603 envelope referencing the original id.
       def encode_response_body(response)
+        response["server_version"] = Core::Compat::SERVER_VERSION if response.is_a?(Hash)
         JSON.generate(response)
       rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
         Logger.log_error("server.encode", e)
@@ -171,9 +172,11 @@ module SU_MCP
         # bytes inherited from the original response (which is what brought
         # us here in the first place).
         safe_msg = e.message.encode("utf-8", invalid: :replace, undef: :replace)
-        JSON.generate(Errors.build_error_response(-32603,
+        fallback = Errors.build_error_response(-32603,
           "response not serializable: #{e.class.name}",
-          { "error" => safe_msg }, rid))
+          { "error" => safe_msg }, rid)
+        fallback["server_version"] = Core::Compat::SERVER_VERSION
+        JSON.generate(fallback)
       end
 
       def send_transport_error(structured_error, request_id)

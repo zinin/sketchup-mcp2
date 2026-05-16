@@ -225,6 +225,7 @@ end
 # Order matters: errors / config / logger / helpers must precede dispatch
 # (CRITICAL-6 in review iter 1 -- dispatch.rb references Core::Logger).
 require_relative "../su_mcp/su_mcp/core/errors"
+require_relative "../su_mcp/su_mcp/core/compat"
 require_relative "../su_mcp/su_mcp/core/config"
 require_relative "../su_mcp/su_mcp/helpers/units"
 require_relative "../su_mcp/su_mcp/core/logger"
@@ -271,6 +272,7 @@ class TestView < Minitest::Test
                                    "style" => "default",
                                    "restore_view" => true}},
       "id" => 1,
+      "client_version" => SU_MCP::Core::Compat::MIN_PYTHON,
     })
     assert_equal "2.0", response["jsonrpc"]
     assert_equal 1, response["id"]
