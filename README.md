@@ -20,6 +20,7 @@ Big Shoutout to [Blender MCP](https://github.com/ahujasid/blender-mcp) for the i
 * **Ruby code evaluation**: Execute arbitrary Ruby code directly in SketchUp for advanced operations
 * **Viewport snapshots**: `get_viewport_screenshot` returns the current viewport as an MCP `Image` for visual verification. Optional `view_preset` / `style` / `zoom_extents`; non-destructive by default.
 * **Modeling-strategy prompt**: the MCP prompt `sketchup_modeling_strategy` (slash menu of MCP-aware clients) teaches Claude this project's conventions — pre-flight checks, typed-tools-vs-`eval_ruby`, millimeter units, post-mutation verification.
+* **Automatic Python ↔ Ruby version compatibility check**: every JSON-RPC request/response carries `client_version`/`server_version`; both sides hard-fail with a reinstall/upgrade hint on mismatch. The `get_version` tool always returns the verdict for diagnostics, even when other tools are blocked.
 
 ## Components
 
@@ -108,6 +109,7 @@ Introspection:
 * `find_components` — Search by name/type/layer
 * `list_layers`, `create_layer` — Layer/tag management
 * `get_selection` — IDs and metadata of currently selected entities
+* `get_version` — Python + Ruby versions and a compatibility verdict; always succeeds even when other tools fail with `IncompatibleVersionError`
 * `undo` — Roll back the last operation
 
 Visual:
