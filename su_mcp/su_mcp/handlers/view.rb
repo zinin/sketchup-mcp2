@@ -23,8 +23,13 @@ module SU_MCP
 
       ALLOWED_PRESETS = %w[current front back left right top bottom iso].freeze
       ALLOWED_STYLES  = %w[default shaded hidden_line wireframe].freeze
+      # Bounds per design §5.1 -- lower bound for legible thumbnails, upper
+      # bound where SketchUp's write_image remains stable on typical scenes.
       MIN_MAX_SIZE = 64
       MAX_MAX_SIZE = 4096
+      # 32 MiB raw -> ~43 MiB on wire after base64 (4/3 expansion, no extra
+      # escaping for base64 alphabet inside JSON). Stays comfortably under
+      # the 64 MiB framing cap.
       MAX_RAW_BYTES = 32 * 1024 * 1024
 
       # SketchUp 2026 RenderMode enum (verified empirically -- review iter 1):
@@ -54,6 +59,12 @@ module SU_MCP
       }.freeze
 
       def self.viewport_screenshot(params)
+        # `restore_view` covers BOTH camera state AND rendering_options
+        # (RenderMode etc.) -- when false, both stay mutated after the call.
+        # The name is historic; the param's actual scope is "restore everything
+        # this handler mutated". The Python wrapper's docstring documents this
+        # for the LLM caller.
+        #
         # 0. Validate params and guards.
         max_size      = require_max_size(params)
         view_preset   = V.require_enum(params, "view_preset", ALLOWED_PRESETS)
@@ -64,6 +75,14 @@ module SU_MCP
         model = EH.active_model!                              # raises if nil
         view  = model.active_view
         raise E.new(-32000, "no active view") if view.nil?
+
+        # Validate viewport dimensions BEFORE snapshotting -- avoids wasted
+        # snapshot allocation when the viewport has zero dimensions.
+        vw = view.vpwidth.to_f
+        vh = view.vpheight.to_f
+        if vw <= 0 || vh <= 0
+          raise E.new(-32603, "viewport has zero dimensions (vw=#{vw}, vh=#{vh})")
+        end
 
         # 1. Snapshot (only if we will mutate).
         snap_camera = nil
@@ -95,11 +114,6 @@ module SU_MCP
           end
         end
 
-        vw = view.vpwidth.to_f
-        vh = view.vpheight.to_f
-        if vw <= 0 || vh <= 0
-          raise E.new(-32603, "viewport has zero dimensions (vw=#{vw}, vh=#{vh})")
-        end
         scale = max_size.to_f / [vw, vh].max
         out_w = (vw * scale).round
         out_h = (vh * scale).round
