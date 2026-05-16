@@ -29,6 +29,30 @@ module SU_MCP
            center[2]]
         end
       end
+
+      # Bounding box that unions only visible top-level entities of the
+      # current model — i.e. honors `entity.hidden?` and the visibility
+      # of the entity's layer (`Sketchup::Layer#visible?`). Used by the
+      # viewport screenshot tool for `view_preset` framing so the camera
+      # frames what the user currently sees (consistent with screenshot
+      # not unhiding anything; see design §5.2 / §5.6).
+      #
+      # Returns `model.bounds` (the global bbox of all entities, hidden
+      # or not) when nothing is visible — degrade gracefully rather than
+      # produce a degenerate camera.
+      def self.visible_bounds(model)
+        bb = Geom::BoundingBox.new
+        model.entities.each do |e|
+          next if e.respond_to?(:hidden?) && e.hidden?
+          if e.respond_to?(:layer)
+            layer = e.layer
+            next if layer && layer.respond_to?(:visible?) && !layer.visible?
+          end
+          bb.add(e.bounds) if e.respond_to?(:bounds)
+        end
+        return model.bounds if bb.empty? || bb.diagonal.to_f <= 0.0
+        bb
+      end
     end
   end
 end

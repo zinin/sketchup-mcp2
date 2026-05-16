@@ -31,6 +31,7 @@ module SU_MCP
     handlers/export
     handlers/model
     handlers/eval
+    handlers/view
     core/server
     core/application
     ui/settings_validator
