@@ -14,8 +14,8 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-from sketchup_mcp import config
-from sketchup_mcp.errors import SketchUpError
+from sketchup_mcp import compat, config
+from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError
 
 logger = logging.getLogger("sketchup_mcp.connection")
 
@@ -50,6 +50,7 @@ _RETRY_SAFE_TOOLS: frozenset[str] = frozenset(
         "get_selection",
         "get_viewport_screenshot",  # read-only viewport capture; idempotent in
                                     # both restore_view modes (no document state changes)
+        "get_version",              # read-only diagnostic; no side effects
     }
 )
 
@@ -131,6 +132,7 @@ class SketchUpConnection:
             "method": "tools/call",
             "params": {"name": name, "arguments": args},
             "id": rid,
+            "client_version": compat.CLIENT_VERSION,
         }
         body = json.dumps(request).encode("utf-8")
         if len(body) > config.MAX_MESSAGE_SIZE:
@@ -190,8 +192,23 @@ class SketchUpConnection:
             raise SketchUpError(
                 -32603, f"id mismatch: sent {rid}, got {response.get('id')}"
             )
+        # Defensive: malformed plugin could send a non-dict at the top level.
+        # (The id-match check above usually catches this — Hash with id matching
+        # rid is highly unlikely from a malformed peer — but make the assumption
+        # explicit before we call .get() again.)
+        assert isinstance(response, dict), \
+            f"malformed JSON-RPC response (not a dict): {type(response).__name__}"
+        # Version handshake — bypassed for the diagnostic tool get_version so users
+        # on mismatched versions can still query the verdict.
+        if name != "get_version":
+            compat.check_ruby_version(response.get("server_version"))
         if "error" in response:
             err = response["error"]
+            # Promote Ruby-detected version mismatches from generic SketchUpError
+            # to IncompatibleVersionError so callers can catch a single class
+            # regardless of which side detected the mismatch.
+            if err.get("code") == -32001:
+                raise IncompatibleVersionError(err.get("message", "version mismatch"))
             raise SketchUpError(
                 err.get("code", -32000),
                 err.get("message", "unknown"),

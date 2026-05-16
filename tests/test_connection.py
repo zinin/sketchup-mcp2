@@ -12,7 +12,22 @@ from sketchup_mcp.errors import SketchUpError
 pytestmark = pytest.mark.asyncio
 
 
-def encode_response(payload: dict) -> bytes:
+_INJECT_MAX = object()  # sentinel: inject compat.MAX_RUBY by default
+
+
+def encode_response(payload: dict, *, server_version=_INJECT_MAX) -> bytes:
+    """Build a fake 4-byte-length-prefixed JSON-RPC response frame.
+
+    server_version defaults to compat.MAX_RUBY so existing tests don't
+    trip the new inbound handshake check inside _send_once. Pass
+    server_version=None explicitly for tests verifying "missing-field
+    treated as pre-0.1.0" behavior.
+    """
+    from sketchup_mcp import compat
+    if server_version is _INJECT_MAX:
+        server_version = compat.MAX_RUBY
+    if server_version is not None and isinstance(payload, dict):
+        payload = {**payload, "server_version": server_version}
     body = json.dumps(payload).encode("utf-8")
     return struct.pack(">I", len(body)) + body
 
