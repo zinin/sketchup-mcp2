@@ -21,6 +21,7 @@ SketchupMCP bridges Claude AI and SketchUp via the Model Context Protocol (MCP).
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
 - **Mutating handlers wrap edits in `model.start_operation`/`commit_operation`** so `undo` rolls back atomically.
+- **Version handshake**: every JSON-RPC request carries `client_version` and every response carries `server_version`. Both sides hard-fail on mismatch (Python raises `IncompatibleVersionError`, Ruby returns JSON-RPC error code `-32001`; Python promotes inbound `-32001` envelopes to `IncompatibleVersionError` so callers catch one class). Notifications (no `id`) with mismatched `client_version` are logged WARN and silently dropped per JSON-RPC 2.0. The `get_version` tool is the only diagnostic bypass — it always returns a payload, even on mismatch, and lives in `_RETRY_SAFE_TOOLS`. Bypass is name-based: Python checks `name == "get_version"`; Ruby checks `method == "tools/call" && params.name == "get_version"` (the JSON-RPC `method` is never the bare tool name in this protocol). Compatibility ranges live in `src/sketchup_mcp/compat.py` and `su_mcp/su_mcp/core/compat.rb`; both use strict `\A\d+\Z` regex parsing.
 
 ## Development Commands
 
@@ -83,6 +84,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | `config.py` | ENV-driven config |
 | `errors.py` | `SketchUpError` parsed from JSON-RPC error envelopes |
 | `server.py` | Legacy connection helpers (kept for compat) |
+| `compat.py` | Single source of truth for Python↔Ruby version compatibility (MIN_RUBY, MAX_RUBY, check_ruby_version) |
 
 `eval_ruby` is the escape hatch — passes arbitrary Ruby code straight through.
 
@@ -91,8 +93,8 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | Subtree | Role |
 |---|---|
 | `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
-| `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `logger.rb`, `errors.rb` |
-| `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb` |
+| `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
+| `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb`, `system.rb` |
 | `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb` |
 | `ui/` | Settings dialog: `settings_dialog.rb`, `settings_validator.rb`, `settings.html` |
 
@@ -108,7 +110,7 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Edge ops | `chamfer_edge`, `fillet_edge` (Ruby-side names are plural — `chamfer_edges`/`fillet_edges`) |
 | Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
 | Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
-| Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection` |
+| Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | View | `get_viewport_screenshot` (returns MCP Image; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
 | Lifecycle | `undo` |
 | Scripting | `eval_ruby` |
