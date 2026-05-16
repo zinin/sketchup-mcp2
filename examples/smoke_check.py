@@ -16,6 +16,7 @@ the riskiest rewrites (chamfer/fillet/boolean). Fails fast on first error.
 All dimensions are in millimeters per the v0.0.1 unified mm contract.
 """
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -164,8 +165,6 @@ async def main() -> int:
         path = ex["path"]
         assert os.path.exists(path), f"export file missing: {path}"
 
-        import base64
-
         step = 19; print(f"[{step}] get_viewport_screenshot — exercise the new tool")
         result = await call(
             conn, "get_viewport_screenshot",
@@ -176,6 +175,7 @@ async def main() -> int:
         # Structural assertions — response shape.
         for key in ("png_base64", "width", "height", "preset_used", "style_used"):
             assert key in payload, f"missing {key!r} in {payload!r}"
+        # Echo-back sanity: handler must report the preset/style it actually used.
         assert payload["preset_used"] == "iso", f"unexpected preset_used: {payload['preset_used']!r}"
         assert payload["style_used"] == "default", f"unexpected style_used: {payload['style_used']!r}"
         # Dimension sanity — width/height are positive integers, both ≤ max_size=640.

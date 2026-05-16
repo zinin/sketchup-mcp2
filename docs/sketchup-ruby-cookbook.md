@@ -457,6 +457,7 @@ ro_keys = ["RenderMode"]
 snap_ro = ro_keys.map { |k| [k, model.rendering_options[k]] }.to_h
 
 # --- mutate (direct camera assignment + RenderMode enum) ---
+# Production handler uses Helpers::Geometry.visible_bounds(model) to skip hidden entities.
 bb     = model.bounds
 center = bb.center
 diag   = bb.diagonal

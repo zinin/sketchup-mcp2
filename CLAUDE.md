@@ -36,11 +36,11 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd su_mcp && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (120 runs / 279 assertions)
-uv run pytest tests/ -q        # Python (56 tests)
+ruby test/run_all.rb           # Ruby (154 runs / 354 assertions)
+uv run pytest tests/ -q        # Python (81 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 20-step end-to-end (covers all handlers)
+python examples/smoke_check.py # 21-step end-to-end (covers all handlers)
 ```
 
 Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.
@@ -78,6 +78,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 |---|---|
 | `app.py`, `__main__.py` | FastMCP server entry point |
 | `tools.py` | One MCP tool wrapper per Ruby handler (FastMCP definitions) |
+| `prompts.py` | MCP prompt definitions (`sketchup_modeling_strategy`) |
 | `connection.py` | Persistent TCP socket, length-prefix framing, `asyncio.Lock` |
 | `config.py` | ENV-driven config |
 | `errors.py` | `SketchUpError` parsed from JSON-RPC error envelopes |
@@ -91,8 +92,9 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 |---|---|
 | `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
 | `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `logger.rb`, `errors.rb` |
-| `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb` |
+| `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb` |
 | `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb` |
+| `ui/` | Settings dialog: `settings_dialog.rb`, `settings_validator.rb`, `settings.html` |
 
 All created geometry lives inside SketchUp **Groups** so it can be selected/moved/deleted as a unit.
 
@@ -112,11 +114,13 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Scripting | `eval_ruby` |
 
 > **SketchUp version requirement (viewport screenshot only):** the
-> `get_viewport_screenshot` tool relies on SketchUp 2026 behavior for
-> `view.camera=` (synchronous), `Sketchup::RenderingOptions["RenderMode"]`
-> writability, and `Sketchup::Camera#is_2d?`. Earlier SketchUp versions
-> may work but are not tested and not officially supported by this tool.
-> All other tools target the same baseline as the rest of the plugin.
+> `get_viewport_screenshot` tool was verified on SketchUp 2026. Only
+> `Sketchup::Camera#is_2d?` is a hard floor (introduced in SU 2018); the
+> behaviors of `view.camera=` (synchronous) and
+> `Sketchup::RenderingOptions["RenderMode"]` (writable enum) were
+> empirically confirmed on 2026 and may differ on earlier versions. Older
+> SketchUp builds are not tested and not officially supported by this
+> tool. All other tools target the same baseline as the rest of the plugin.
 
 All entity-returning handlers respond `{id, name, type, bbox_mm}` so Claude can re-locate entities by bounding box if their IDs become stale after destructive operations.
 
@@ -149,10 +153,12 @@ defined in `src/sketchup_mcp/prompts.py`. It teaches Claude the
 project conventions (pre-flight checks, typed-tools-vs-`eval_ruby`,
 millimeter/degree units, post-mutation `bbox_mm` verification, known
 traps). MCP-aware clients (e.g. Claude Desktop) surface it in the
-slash menu. Ruby `handlers/dispatch.rb` still has a dormant
-`prompts/list → []` branch — FastMCP serves prompts Python-side and
-never forwards `prompts/*` to Ruby, so the branch is never exercised
-but left in place for safety.
+slash menu.
+
+> **Note:** `su_mcp/su_mcp/handlers/dispatch.rb` still has a dormant
+> `prompts/list → []` branch. FastMCP serves prompts Python-side and
+> never forwards `prompts/*` to Ruby, so the branch is never exercised
+> but left in place for safety.
 
 ## Releasing
 
