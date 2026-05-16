@@ -11,10 +11,10 @@ from typing import Annotated, Literal, Optional
 from mcp.server.fastmcp import Context, Image
 from pydantic import Field
 
-from sketchup_mcp import config
+from sketchup_mcp import compat, config
 from sketchup_mcp.app import mcp
 from sketchup_mcp.connection import get_connection
-from sketchup_mcp.errors import SketchUpError, format_error
+from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError, format_error
 
 logger = logging.getLogger("sketchup_mcp.tools")
 
@@ -448,3 +448,76 @@ async def create_layer(
 async def undo(ctx: Context) -> str:
     """Undo the last atomic operation in SketchUp. One MCP tool-call = one undo step."""
     return await _call(ctx, "undo")
+
+
+@mcp.tool()
+async def get_version(ctx: Context) -> str:
+    """Return Python + Ruby SketchUp-MCP versions and a compatibility verdict.
+
+    Diagnostic tool — always returns a payload even when versions are
+    incompatible (ordinary tools hard-fail in that case). Use this to
+    inspect the version handshake state when other tools surface
+    `IncompatibleVersionError`. The result is a JSON string with fields:
+    python_version, ruby_version, min_compatible_ruby, max_compatible_ruby,
+    ruby_min_compatible_python, ruby_max_compatible_python,
+    compatible (bool), error (string | null).
+    """
+    def _payload(ruby_version, ruby_min, ruby_max, compatible, error_msg):
+        return json.dumps({
+            "python_version": compat.CLIENT_VERSION,
+            "ruby_version": ruby_version,
+            "min_compatible_ruby": compat.MIN_RUBY,
+            "max_compatible_ruby": compat.MAX_RUBY,
+            "ruby_min_compatible_python": ruby_min,
+            "ruby_max_compatible_python": ruby_max,
+            "compatible": compatible,
+            "error": error_msg,
+        })
+
+    try:
+        raw = await _raw_call(ctx, "get_version")
+    except ConnectionError as e:
+        return _payload(None, None, None, False,
+                        f"SketchUp not running or extension not started: {e}")
+    except SketchUpError as e:
+        # Covers old Ruby returning -32601 "unknown tool: get_version",
+        # any other JSON-RPC error envelope. IncompatibleVersionError
+        # would inherit from SketchUpError but here name=='get_version'
+        # bypasses check_ruby_version inside _send_once, so this branch
+        # fires only on Ruby-side errors that survive the bypass.
+        return _payload(None, None, None, False, str(e))
+
+    ruby_payload = json.loads(raw["content"][0]["text"])
+    ruby_version = ruby_payload.get("ruby_version")
+    ruby_min = ruby_payload.get("min_compatible_python")
+    ruby_max = ruby_payload.get("max_compatible_python")
+
+    # Two-way compatibility: BOTH sides' tables must accept the counterpart.
+    try:
+        compat.check_ruby_version(ruby_version)
+        python_accepts_ruby, py_error = True, None
+    except IncompatibleVersionError as e:
+        python_accepts_ruby, py_error = False, str(e)
+
+    try:
+        ruby_accepts_python = bool(
+            ruby_min and ruby_max and
+            compat._parse(ruby_min)
+            <= compat._parse(compat.CLIENT_VERSION)
+            <= compat._parse(ruby_max)
+        )
+    except ValueError:
+        ruby_accepts_python = False
+
+    compatible = python_accepts_ruby and ruby_accepts_python
+    if py_error:
+        error_msg = py_error
+    elif not ruby_accepts_python:
+        error_msg = (
+            f"SketchUp plugin advertises Python compatibility "
+            f"{ruby_min}..{ruby_max}, which excludes v{compat.CLIENT_VERSION}."
+        )
+    else:
+        error_msg = None
+
+    return _payload(ruby_version, ruby_min, ruby_max, compatible, error_msg)
