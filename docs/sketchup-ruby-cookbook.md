@@ -434,3 +434,74 @@ right_door = model.entities.add_instance(door_def,
 | `bounds` of nested sub-group assumed to be world space | Bounds of sub-group are in parent's local space; apply parent's transformation if needed |
 | `A.subtract(B)` expecting `A - B` | `Group#subtract` is reversed: returns `B - A`. Call `tool.subtract(target)` to get «target - tool» |
 | `Sketchup::Model#undo` | Doesn't exist — use `Sketchup.send_action("editUndo:")` |
+
+## Viewport snapshot via `View#write_image`
+
+For non-destructive screenshots, deep-copy the camera and snapshot the
+rendering-options keys you intend to change, mutate, write the image,
+then restore. `View#camera=` and `RenderingOptions[]=` are UI state —
+they don't enter the undo stack — so you don't need `model.start_operation`.
+
+**Important notes for SketchUp 2026** (verified empirically):
+
+- `Sketchup.send_action("viewIso:")` is **asynchronous** — the camera does
+  NOT change before the call returns. Use direct `view.camera =
+  Sketchup::Camera.new(eye, target, up)` for synchronous, locale-independent
+  preset switching.
+- The boolean rendering-options keys `DisplayShaded`, `DrawEdges`, `DrawFaces`
+  are **WRITE-REJECTED** (`ArgumentError`). For switching rendering style use
+  the `RenderMode` integer enum (`0` Wireframe / `1` Hidden Line / `2` Shaded /
+  `3` Textured Shaded / `4` Monochrome / `5` Sketchy / `6` X-Ray).
+
+```ruby
+view  = Sketchup.active_model.active_view
+model = view.model
+
+# --- snapshot (deep copy — protects against future API changes that might
+# return live references; iter-1 verified `view.camera` returns a fresh
+# wrapper today, but the deep copy is defence-in-depth) ---
+c = view.camera
+snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
+snap_camera.perspective = c.perspective?
+if c.perspective?
+  snap_camera.fov = c.fov
+else
+  snap_camera.height = c.height
+end
+ro_keys = ["RenderMode"]
+snap_ro = ro_keys.map { |k| [k, model.rendering_options[k]] }.to_h
+
+# --- mutate (direct camera assignment + RenderMode enum) ---
+bb     = model.bounds
+center = bb.center
+dist   = (bb.diagonal.zero? ? 1000.0 : bb.diagonal) * 1.5
+offset = Geom::Vector3d.new(1, -1, 1)
+offset.length = dist
+eye    = center + offset
+view.camera = Sketchup::Camera.new(eye, center, Geom::Vector3d.new(0, 0, 1))
+model.rendering_options["RenderMode"] = 2  # 2 = Shaded
+view.zoom_extents
+
+require "tempfile"
+Tempfile.create(["snap_", ".png"]) do |tmp|
+  tmp.close
+  ok = view.write_image(
+    filename: tmp.path,
+    width: 800, height: 450,
+    antialias: true,
+    compression: 1.0,             # PNG is always lossless; 1.0 = strongest compression
+    transparent: false,
+  )
+  raise "write_image failed" unless ok
+
+  bytes = File.binread(tmp.path)
+  # ... use bytes (Base64.strict_encode64 for transport) ...
+end                                 # Tempfile auto-deletes here
+
+# --- restore ---
+view.camera = snap_camera
+snap_ro.each { |k, v| model.rendering_options[k] = v }
+```
+
+Used internally by `Handlers::View.viewport_screenshot` (see
+`su_mcp/su_mcp/handlers/view.rb`).
