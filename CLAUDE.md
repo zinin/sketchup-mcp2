@@ -107,8 +107,16 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
 | Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
 | Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection` |
+| View | `get_viewport_screenshot` (returns MCP Image; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
 | Lifecycle | `undo` |
 | Scripting | `eval_ruby` |
+
+> **SketchUp version requirement (viewport screenshot only):** the
+> `get_viewport_screenshot` tool relies on SketchUp 2026 behavior for
+> `view.camera=` (synchronous), `Sketchup::RenderingOptions["RenderMode"]`
+> writability, and `Sketchup::Camera#is_2d?`. Earlier SketchUp versions
+> may work but are not tested and not officially supported by this tool.
+> All other tools target the same baseline as the rest of the plugin.
 
 All entity-returning handlers respond `{id, name, type, bbox_mm}` so Claude can re-locate entities by bounding box if their IDs become stale after destructive operations.
 
@@ -133,6 +141,18 @@ docs/sketchup-ruby-cookbook.md  # eval_ruby reference snippets
 pyproject.toml            # Python package config (version, deps)
 LICENSE / NOTICE          # MIT license + upstream attribution
 ```
+
+## MCP Prompts
+
+The server exposes one MCP prompt — `sketchup_modeling_strategy` —
+defined in `src/sketchup_mcp/prompts.py`. It teaches Claude the
+project conventions (pre-flight checks, typed-tools-vs-`eval_ruby`,
+millimeter/degree units, post-mutation `bbox_mm` verification, known
+traps). MCP-aware clients (e.g. Claude Desktop) surface it in the
+slash menu. Ruby `handlers/dispatch.rb` still has a dormant
+`prompts/list → []` branch — FastMCP serves prompts Python-side and
+never forwards `prompts/*` to Ruby, so the branch is never exercised
+but left in place for safety.
 
 ## Releasing
 
