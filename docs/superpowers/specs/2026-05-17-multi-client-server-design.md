@@ -110,8 +110,9 @@ su_mcp/su_mcp/
                           new handshake site instead of per-request.
   handlers/dispatch.rb    MODIFY — remove per-request version check
                           and get_version bypass, remove dormant
-                          prompts/list / resources/list branches,
-                          accept ClientState param for context.
+                          prompts/list / resources/list branches.
+                          (Handlers do NOT receive ClientState; per-handler
+                          logs stay context-free — see §8.4.)
 
 src/sketchup_mcp/
   connection.py           MAJOR MODIFY — _handshake() on connect,
@@ -157,15 +158,16 @@ module SU_MCP
   module Core
     class ClientState
       attr_reader   :id, :sock, :reader, :label
-      attr_accessor :handshaked, :client_version
+      attr_accessor :handshaked, :client_version, :close_after_response
 
       def initialize(id, sock)
-        @id              = id
-        @sock            = sock
-        @reader          = Framing::FrameReader.new
-        @label           = "##{id}[#{peer_label(sock)}]"
-        @handshaked      = false
-        @client_version  = nil
+        @id                   = id
+        @sock                 = sock
+        @reader               = Framing::FrameReader.new
+        @label                = "##{id}[#{peer_label(sock)}]"
+        @handshaked           = false
+        @client_version       = nil
+        @close_after_response = false
       end
 
       def closed?
@@ -236,16 +238,36 @@ end
 #### accept_pending_clients
 
 ```ruby
+ACCEPT_ABORTED_MAX = 10   # defensive cap on ECONNABORTED churn per tick
+
 def accept_pending_clients
+  aborted = 0
   loop do
     begin
       sock = @server.accept_nonblock
     rescue IO::WaitReadable
       return
     rescue Errno::ECONNABORTED
-      next      # transient on Windows; try next iteration
+      aborted += 1
+      # Windows kernel can keep yielding ECONNABORTED for aborted
+      # connections sitting in the backlog. Cap the retries so a
+      # pathological backlog cannot wedge the UI timer.
+      return if aborted >= ACCEPT_ABORTED_MAX
+      next
     end
-    sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_KEEPALIVE, true)
+    begin
+      sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_KEEPALIVE, true)
+    rescue StandardError => e
+      # accept succeeded but the socket is unusable. Close it; do NOT
+      # register — registered-or-closed is the invariant we maintain.
+      begin
+        sock.close
+      rescue StandardError
+        # best-effort
+      end
+      Logger.log_error("server.accept_setsockopt", e)
+      next
+    end
     state = ClientState.new(@next_client_id, sock)
     @next_client_id += 1
     @clients[sock] = state
@@ -256,7 +278,8 @@ end
 
 `SO_KEEPALIVE` enabled per socket — OS-level half-open detection
 (~2 hours Linux/Windows default). Drains the entire kernel backlog in
-one tick.
+one tick, with `ACCEPT_ABORTED_MAX` as a defensive ceiling against a
+runaway `ECONNABORTED` loop on Windows.
 
 #### drain_reads_all_clients
 
@@ -379,20 +402,29 @@ def handle_pre_handshake(state, request)
     "client_version=#{state.client_version}",
     client_label: state.label)
 
-  Handlers::Dispatch.build_success_response(
-    { "server_version" => Core::Compat::SERVER_VERSION,
-      "client_id"      => state.id },
-    request["id"]
-  )
+  # Build a raw JSON-RPC envelope directly — NOT via
+  # Handlers::Dispatch.build_success_response, because that wrapper
+  # turns `result` into the MCP `tools/call` shape
+  # `{content:[{type:text,text:...}], isError:false}`. The handshake
+  # response carries `server_version` and `client_id` as a plain
+  # JSON-RPC `result` object so the Python client can read them
+  # directly.
+  {
+    "jsonrpc" => "2.0",
+    "result"  => {
+      "server_version" => Core::Compat::SERVER_VERSION,
+      "client_id"      => state.id,
+    },
+    "id"      => request["id"],
+  }
 end
 
 def reject_handshake(state, request, structured_error)
   rid = request.is_a?(Hash) ? request["id"] : nil
-  response = Core::Errors.build_error_response(structured_error.code,
+  state.close_after_response = true
+  Core::Errors.build_error_response(structured_error.code,
     structured_error.message,
     Core::Errors.exception_to_data(structured_error, "hello", {}), rid)
-  state.instance_variable_set(:@close_after_response, true)
-  response
 end
 ```
 
@@ -400,8 +432,28 @@ end
 
 ```ruby
 def write_response(state, response)
-  body = encode_response_body(response)
-  frame = Framing.encode_frame(body)
+  body  = encode_response_body(response)
+  frame =
+    begin
+      Framing.encode_frame(body)
+    rescue Core::StructuredError => e
+      # Body exceeds the 64 MiB framing cap (or is unexpectedly empty).
+      # We owe the caller *something* — try a small fallback envelope.
+      # If even the fallback won't encode, give up and close the client
+      # so the per-client failure isolation guarantee is honored.
+      Logger.log_error("server.encode_frame", e, client_label: state.label)
+      fallback = Errors.build_error_response(-32603,
+        "response too large for transport",
+        Errors.exception_to_data(e, "?", {}),
+        response.is_a?(Hash) ? response["id"] : nil)
+      begin
+        Framing.encode_frame(JSON.generate(fallback))
+      rescue StandardError
+        close_client(state, "encode_frame_failed")
+        return
+      end
+    end
+
   ready = IO.select(nil, [state.sock], nil, WRITE_SELECT_TIMEOUT_S)
   unless ready
     close_client(state, "write_timeout")
@@ -410,7 +462,7 @@ def write_response(state, response)
   state.sock.write(frame)
   state.sock.flush
 
-  if state.instance_variable_get(:@close_after_response)
+  if state.close_after_response
     close_client(state, "handshake_rejected")
   end
 rescue Errno::EPIPE, Errno::ECONNRESET, IOError
@@ -418,22 +470,24 @@ rescue Errno::EPIPE, Errno::ECONNRESET, IOError
 end
 ```
 
-(The `@close_after_response` shim is intentionally minimal — only used
-on the rejection path. If the design ever grows more "respond then
-close" cases, it should graduate to a real `closing` enum on
-`ClientState`. For now, isolated to one site.)
+(The `close_after_response` flag is a regular `attr_accessor` on
+`ClientState` — see §5.1 — and is read once after a successful
+write. Only the handshake-rejection path sets it today.)
 
 ### 5.4 close_client
 
 ```ruby
 def close_client(state, reason)
-  return if state.closed?
+  # Idempotent: `@clients` membership is the source of truth for
+  # "still tracked". Second call (e.g. drain_one_client after a
+  # write_response rescue already removed the client) is a no-op.
+  return unless @clients.key?(state.sock)
+  @clients.delete(state.sock)
   begin
-    state.sock.close
+    state.sock.close unless state.closed?
   rescue StandardError
     # best-effort
   end
-  @clients.delete(state.sock)
   Logger.log_tool("server", "client_disconnected",
     "reason=#{reason}",
     client_label: state.label)
@@ -512,7 +566,14 @@ async def connect(self) -> None:
         self.host, self.port
     )
     try:
-        await self._handshake()
+        # Bound the handshake so a Ruby that accepted TCP but hangs
+        # before replying surfaces as a timeout instead of an
+        # indefinite block on _recv_frame's readexactly().
+        await asyncio.wait_for(self._handshake(), timeout=self.timeout)
+    except asyncio.TimeoutError:
+        await self.disconnect()
+        raise SketchUpError(-32000,
+            f"handshake timed out after {self.timeout}s") from None
     except Exception:
         await self.disconnect()
         raise
@@ -528,18 +589,26 @@ async def _handshake(self) -> None:
     self._writer.write(struct.pack(">I", len(body)) + body)
     await self._writer.drain()
     response_body = await self._recv_frame()
-    response = json.loads(response_body)
+    try:
+        response = json.loads(response_body)
+    except json.JSONDecodeError as e:
+        raise SketchUpError(-32700,
+            f"handshake parse error: {e}") from e
     if not isinstance(response, dict):
         raise SketchUpError(-32603,
             f"malformed handshake response: {type(response).__name__}")
     if "error" in response:
-        err = response["error"]
-        if err.get("code") == -32001:
+        err = response["error"] if isinstance(response.get("error"), dict) else {}
+        code = err.get("code", -32000)
+        if code == -32001:
             raise IncompatibleVersionError(err.get("message", "version mismatch"))
-        raise SketchUpError(err.get("code", -32000),
+        raise SketchUpError(code,
             err.get("message", "handshake failed"),
             err.get("data"))
-    result = response.get("result", {})
+    result = response.get("result") or {}
+    if not isinstance(result, dict):
+        raise SketchUpError(-32603,
+            f"malformed handshake result: {type(result).__name__}")
     server_version = result.get("server_version")
     self._server_version = server_version
     self._client_id      = result.get("client_id")

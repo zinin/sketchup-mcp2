@@ -1179,13 +1179,18 @@ module SU_MCP
       end
 
       def close_client(state, reason)
-        return if state.closed?
+        # Idempotent. `@clients` membership is the source of truth for
+        # "still tracked"; `state.closed?` only decides whether sock.close
+        # is needed. A second call (e.g. drain_one_client after a
+        # write_response rescue already evicted the client) is a no-op
+        # and does NOT log a duplicate "client_disconnected" line.
+        return unless @clients.key?(state.sock)
+        @clients.delete(state.sock)
         begin
-          state.sock.close
+          state.sock.close unless state.closed?
         rescue StandardError
           # best-effort
         end
-        @clients.delete(state.sock)
         Logger.log_tool("server", "client_disconnected",
           "reason=#{reason}",
           client_label: state.label)
@@ -1526,11 +1531,20 @@ def handle_pre_handshake(state, request)
     "client_version=#{state.client_version}",
     client_label: state.label)
 
-  Handlers::Dispatch.build_success_response(
-    { "server_version" => Core::Compat::SERVER_VERSION,
-      "client_id"      => state.id },
-    request["id"]
-  )
+  # Build a raw JSON-RPC envelope inline — do NOT use
+  # Handlers::Dispatch.build_success_response. That wrapper turns
+  # `result` into the MCP `tools/call` shape
+  # `{content:[{type:text,text:...}], isError:false}`, which would
+  # break the Python client's `result.server_version` / `result.client_id`
+  # reads on the handshake response.
+  {
+    "jsonrpc" => "2.0",
+    "result"  => {
+      "server_version" => Core::Compat::SERVER_VERSION,
+      "client_id"      => state.id,
+    },
+    "id"      => request["id"],
+  }
 end
 
 def reject_handshake(state, request, structured_error)
@@ -1538,19 +1552,39 @@ def reject_handshake(state, request, structured_error)
   Logger.log_tool("server", "handshake_rejected",
     "code=#{structured_error.code} msg=#{structured_error.message}",
     client_label: state.label)
-  state.instance_variable_set(:@close_after_response, true)
+  state.close_after_response = true
   Errors.build_error_response(structured_error.code,
     structured_error.message,
     Errors.exception_to_data(structured_error, "hello", {}), rid)
 end
 ```
 
-**3c.** Replace `write_response` with version that honors `@close_after_response`:
+**3c.** Replace `write_response` so it (a) handles a framing-encode failure (StructuredError from `Framing.encode_frame`) with a small fallback envelope, falling back to closing the client only when even the fallback won't encode, and (b) honors the new `state.close_after_response` accessor (added to `ClientState` in this task — see step 3e below):
 
 ```ruby
 def write_response(state, response)
-  body = encode_response_body(response)
-  frame = Framing.encode_frame(body)
+  body  = encode_response_body(response)
+  frame =
+    begin
+      Framing.encode_frame(body)
+    rescue StructuredError => e
+      # Body exceeded the 64 MiB framing cap (or was unexpectedly empty).
+      # Per the per-client isolation invariant we still owe the caller a
+      # response. Try a small fallback envelope; if that won't encode
+      # either, close this client and continue serving the rest.
+      Logger.log_error("server.encode_frame", e, client_label: state.label)
+      rid = response.is_a?(Hash) ? response["id"] : nil
+      fallback = Errors.build_error_response(-32603,
+        "response too large for transport",
+        Errors.exception_to_data(e, "?", {}), rid)
+      begin
+        Framing.encode_frame(JSON.generate(fallback))
+      rescue StandardError
+        close_client(state, "encode_frame_failed")
+        return
+      end
+    end
+
   unless io_select_writable?(state.sock)
     Logger.log_tool("server", "write_timeout",
       client_label: state.label)
@@ -1559,7 +1593,7 @@ def write_response(state, response)
   end
   state.sock.write(frame)
   state.sock.flush
-  if state.instance_variable_get(:@close_after_response)
+  if state.close_after_response
     close_client(state, "handshake_rejected")
   end
 rescue Errno::EPIPE, Errno::ECONNRESET, IOError
@@ -1664,16 +1698,33 @@ For `test_parse_error_on_one_client_closes_only_that_client`:
 
 For `test_framing_oversize_closes_only_that_client`: same as parse-error case.
 
-For `test_disconnect_mid_queue_skips_remaining_pending_frames`:
+For `test_disconnect_mid_queue_skips_remaining_pending_frames`: the
+intent of this test — verifying that **post-handshake** queue skipping
+works when the dispatching client is closed mid-queue — needs to be
+preserved. The naive prepend of `HELLO` would let the test wrap fire on
+the *handshake* reply instead of A1, defeating the test. Update the
+wrap so that it only fires on the FIRST post-handshake response (i.e.
+when `response["id"]` is not the handshake `id=0`):
+
 ```ruby
 a = FakeSocket.new(read_chunks: [HELLO + a_chunks.join])
-# closed_after triggers on the FIRST post-handshake response — i.e.
-# on the get_version with id=1. So response stream is:
-#   hello-reply (id=0) — written, then closed_after=0 sets next-close
-# Adjust the assertion accordingly:
-assert_equal [0, 1], all_frames(a.written).map { |f| f["id"] }
+# Wrap write_response so it closes A right after the first *post-handshake*
+# write. Hello reply (id=0) is allowed through; A1 (id=1) is the trigger;
+# A2 and A3 should be skipped because state.closed? becomes true.
+closed_after = nil
+orig = SU_MCP::Core::Server.instance_method(:write_response)
+SU_MCP::Core::Server.send(:define_method, :write_response) do |state, response|
+  orig.bind(self).call(state, response)
+  if closed_after.nil? && response["id"] != 0
+    closed_after = response["id"]
+    send(:close_client, state, "test_force_close")
+  end
+end
+# ...
+assert_equal [0, 1], all_frames(a.written).map { |f| f["id"] },
+  "hello reply + A1 reply only — A2 and A3 skipped after force_close"
+assert a.closed?
 ```
-(Wait — re-read the test. `closed_after = response["id"]; close_client(state, …)`. After first write, A is closed. So only `[0]` makes it out. Update accordingly: `assert_equal [0], all_frames(a.written).map { |f| f["id"] }`.)
 
 For `test_server_level_error_in_tick_does_not_reset_clients`: unchanged — that test doesn't send any frames at all, just checks that an existing `ClientState` survives.
 
@@ -1964,7 +2015,7 @@ def __post_init__(self) -> None:
     self._client_id: int | None = None
 ```
 
-**4b.** Replace `connect()`:
+**4b.** Replace `connect()` (note the explicit `asyncio.wait_for` around the handshake — without it, a Ruby server that accepts TCP but never replies would block `_recv_frame` indefinitely):
 
 ```python
 async def connect(self) -> None:
@@ -1972,13 +2023,20 @@ async def connect(self) -> None:
         self.host, self.port
     )
     try:
-        await self._handshake()
+        await asyncio.wait_for(self._handshake(), timeout=self.timeout)
+    except asyncio.TimeoutError:
+        await self.disconnect()
+        raise SketchUpError(-32000,
+            f"handshake timed out after {self.timeout}s") from None
     except Exception:
         await self.disconnect()
         raise
 ```
 
-**4c.** Add a new method `_handshake()` just below `connect()`:
+**4c.** Add a new method `_handshake()` just below `connect()`. Note the
+defensive normalization: every malformed-envelope path (non-dict, missing
+`error` dict shape, missing `result` dict shape, JSON decode failure) is
+funneled into `SketchUpError` so callers catch a single class:
 
 ```python
 async def _handshake(self) -> None:
@@ -2004,13 +2062,16 @@ async def _handshake(self) -> None:
             f"malformed handshake response: {type(response).__name__}",
         )
     if "error" in response:
-        err = response["error"]
+        err = response["error"] if isinstance(response.get("error"), dict) else {}
         code = err.get("code", -32000)
         if code == -32001:
             raise IncompatibleVersionError(err.get("message", "version mismatch"))
         raise SketchUpError(code, err.get("message", "handshake failed"),
                             err.get("data"))
     result = response.get("result") or {}
+    if not isinstance(result, dict):
+        raise SketchUpError(-32603,
+            f"malformed handshake result: {type(result).__name__}")
     server_version = result.get("server_version")
     self._server_version = server_version
     self._client_id = result.get("client_id")
@@ -2249,6 +2310,12 @@ LIGHT_WORKLOAD = (
     [{"tool": "list_components", "args": {}} for _ in range(5)]
 )
 
+# NB: HEAVY_WORKLOAD is intentionally simple and self-contained — it
+# avoids `boolean_operation` because that tool takes entity-id strings
+# (target_id / tool_id), which the smoke worker would have to resolve
+# via find_components first. The goal here is to exercise the multi-
+# client server, not to test boolean ops; the work is "heavy" because
+# create_component on a 1m cube is a slower handler than get_model_info.
 HEAVY_WORKLOAD = [
     {"tool": "create_component",
      "args": {"name": "smoke_box_heavy_A", "type": "cube",
@@ -2256,12 +2323,9 @@ HEAVY_WORKLOAD = [
     {"tool": "create_component",
      "args": {"name": "smoke_box_heavy_B", "type": "cube",
               "position": [400, 400, 400], "dimensions": [800, 800, 800]}},
-    {"tool": "boolean_operation",
-     "args": {"operation": "union",
-              "target_name": "smoke_box_heavy_A",
-              "tool_name":   "smoke_box_heavy_B"}},
     {"tool": "get_model_info", "args": {}},
     {"tool": "delete_component", "args": {"name": "smoke_box_heavy_A"}},
+    {"tool": "delete_component", "args": {"name": "smoke_box_heavy_B"}},
 ]
 
 
@@ -2286,7 +2350,6 @@ def main():
         help="number of concurrent workers (default: 2; max practical: 4)")
     args = parser.parse_args()
 
-    workloads = [LIGHT_WORKLOAD, HEAVY_WORKLOAD] * args.n
     workers = []
     for i in range(args.n):
         wl = LIGHT_WORKLOAD if i == 0 else HEAVY_WORKLOAD
@@ -2554,6 +2617,354 @@ git log --oneline feature/viewport-screenshot-and-prompt..HEAD
 # the superpowers:finishing-a-development-branch skill, not part of
 # this plan.)
 ```
+
+---
+
+## Review Iteration 1 — Applied Auto-Fixes (overrides above)
+
+The following deltas were applied after external review (iter-1). Where they conflict with code blocks above, **these instructions win** — the executor should integrate them into the corresponding Task before running.
+
+### A. Task 1 — `ClientState` adds `close_after_response` accessor
+
+In `su_mcp/su_mcp/core/client_state.rb`, change `attr_accessor` to:
+
+```ruby
+attr_accessor :handshaked, :client_version, :close_after_response
+```
+
+And `initialize`:
+
+```ruby
+def initialize(id, sock)
+  @id                   = id
+  @sock                 = sock
+  @reader               = Framing::FrameReader.new
+  @label                = "##{id}[#{peer_label(sock)}]"
+  @handshaked           = false
+  @client_version       = nil
+  @close_after_response = false
+end
+```
+
+Add a corresponding test in `test/test_client_state.rb`:
+
+```ruby
+def test_close_after_response_starts_false_and_is_mutable
+  state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+  refute state.close_after_response
+  state.close_after_response = true
+  assert state.close_after_response
+end
+```
+
+Update Step 5 expected count to **7 runs, 9 assertions**, Step 6 full-suite count by +1.
+
+### B. Task 4 — `accept_pending_clients` hardening (CONCERN-1, CONCERN-2)
+
+Replace the Step-4 `accept_pending_clients` body in `server.rb` with:
+
+```ruby
+ACCEPT_ABORTED_MAX = 10
+
+def accept_pending_clients
+  aborted = 0
+  loop do
+    begin
+      sock = @server.accept_nonblock
+    rescue IO::WaitReadable
+      return
+    rescue Errno::ECONNABORTED
+      aborted += 1
+      return if aborted >= ACCEPT_ABORTED_MAX
+      next
+    end
+    begin
+      sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_KEEPALIVE, true)
+    rescue StandardError => e
+      # accept succeeded but the socket is unusable. Close it; do NOT
+      # register — registered-or-closed is the invariant we keep.
+      begin
+        sock.close
+      rescue StandardError
+        # best-effort
+      end
+      Logger.log_error("server.accept_setsockopt", e)
+      next
+    end
+    state = ClientState.new(@next_client_id, sock)
+    @next_client_id += 1
+    @clients[sock] = state
+    Logger.log_tool("server", "client_connected", client_label: state.label)
+  end
+end
+```
+
+This subsumes Task 7's `SO_KEEPALIVE` setsockopt (already present here). Task 7's test of "SO_KEEPALIVE is set on accept" stays valid. **Add** in Task 4 a test for the setsockopt-leak case:
+
+```ruby
+def test_setsockopt_failure_closes_sock_and_skips_registration
+  sock = FakeSocket.new
+  def sock.setsockopt(*_); raise StandardError, "synthetic setsockopt"; end
+  fs = FakeServer.new([sock])
+  srv = run_one_tick(fs)
+  assert sock.closed?, "sock with failing setsockopt must be closed"
+  assert_equal 0, srv.instance_variable_get(:@clients).size
+end
+```
+
+### C. Task 4 — `test/support/frame_helpers.rb` (SUGGESTION-2)
+
+Before writing `test_server_multi_client.rb`, create `test/support/frame_helpers.rb`:
+
+```ruby
+# test/support/frame_helpers.rb — shared length-prefix frame encode/decode.
+require "json"
+
+module FrameHelpers
+  def fr(obj)
+    body = JSON.generate(obj)
+    [body.bytesize].pack("N") + body
+  end
+
+  def all_frames(bytes)
+    bytes = bytes.dup.force_encoding(Encoding::ASCII_8BIT)
+    out = []
+    until bytes.empty?
+      len = bytes.byteslice(0, 4).unpack1("N")
+      out << JSON.parse(bytes.byteslice(4, len))
+      bytes = bytes.byteslice(4 + len..-1) || ""
+    end
+    out
+  end
+end
+```
+
+Drop the module-level `def fr` / `def all_frames` from both `test_server_multi_client.rb` and `test_server_handshake.rb`; instead inside each test class `include FrameHelpers` (after `require_relative "support/frame_helpers"`).
+
+### D. Task 4 / Task 5 — restore `io_select_writable?` in test teardown (SUGGESTION-3)
+
+The monkey-patch via `class_eval` is process-global. Add to **both** `TestServerMultiClient` and `TestServerHandshake`:
+
+```ruby
+def setup
+  @orig_io_select_writable = SU_MCP::Core::Server.instance_method(:io_select_writable?)
+  # ... existing setup ...
+end
+
+def teardown
+  SU_MCP::Core::Server.send(:define_method, :io_select_writable?, @orig_io_select_writable)
+end
+```
+
+### E. Task 4 — additional test coverage (CONCERN-6, CONCERN-7, CONCERN-8, CONCERN-10)
+
+Append to `test_server_multi_client.rb`:
+
+```ruby
+# CONCERN-7 — framing oversize MUST deliver -32600 envelope before close
+def test_framing_oversize_writes_envelope_before_close
+  over = SU_MCP::Core::Config::MAX_MESSAGE_SIZE + 1
+  bad_frame = [over].pack("N")
+  a = FakeSocket.new(read_chunks: [bad_frame])
+  fs = FakeServer.new([a])
+  run_one_tick(fs)
+  frames = all_frames(a.written)
+  assert_equal 1, frames.size
+  assert_equal(-32600, frames[0]["error"]["code"])
+  assert a.closed?
+end
+
+# CONCERN-8 — partial-frame EOF (header only, no body) closes cleanly
+def test_partial_frame_eof_closes_client
+  header_only = [100].pack("N")  # promise 100 bytes, deliver 0
+  a = FakeSocket.new(read_chunks: [header_only])
+  a.push_eof
+  fs = FakeServer.new([a])
+  run_one_tick(fs)
+  assert a.closed?
+end
+
+# CONCERN-6 — frame split across two ticks dispatches correctly
+def test_frame_split_across_ticks_dispatches_after_completion
+  req = fr("jsonrpc" => "2.0", "method" => "tools/call",
+           "params" => { "name" => "get_version", "arguments" => {} },
+           "id" => 1)
+  prefix = req.byteslice(0, 10)
+  suffix = req.byteslice(10..-1)
+  a = FakeSocket.new(read_chunks: [prefix])
+  fs = FakeServer.new([a])
+  srv = SU_MCP::Core::Server.new
+  srv.instance_variable_set(:@server, fs)
+  srv.instance_variable_set(:@running, true)
+  SU_MCP::Core::Server.class_eval do
+    def io_select_writable?(_sock); true; end
+  end
+  srv.send(:on_timer_tick)
+  assert_equal "", a.written, "no response after partial frame"
+  a.push_read(suffix)
+  srv.send(:on_timer_tick)
+  frames = all_frames(a.written)
+  assert_equal [1], frames.map { |f| f["id"] }
+end
+```
+
+For CONCERN-10 (expand `test_server_level_error_in_tick_does_not_reset_clients`): the test already exists; CONCERN-2's new test (above in §B) covers the post-accept setsockopt path so it complements rather than replaces it.
+
+### F. Task 5 — handshake test additions (CONCERN-9, CONCERN-11)
+
+Modify `test_post_handshake_response_has_no_server_version_field` to also positively assert the handshake reply carries `server_version`:
+
+```ruby
+def test_handshake_reply_carries_server_version_post_handshake_does_not
+  # ... unchanged setup ...
+  frames = all_frames(sock.written)
+  assert_equal SU_MCP::Core::Compat::SERVER_VERSION,
+    frames[0]["result"]["server_version"],
+    "handshake reply must carry server_version"
+  refute frames[1].key?("server_version"),
+    "post-handshake response must not carry server_version"
+end
+```
+
+Add a new test for `close_after_response` + write-failure path (CONCERN-11):
+
+```ruby
+def test_handshake_rejection_with_epipe_still_closes_client
+  bad = hello_frame(version: "0.0.0", id: 0)
+  sock = FakeSocket.new(read_chunks: [bad])
+  fs = FakeServer.new([sock])
+  srv = SU_MCP::Core::Server.new
+  srv.instance_variable_set(:@server, fs)
+  srv.instance_variable_set(:@running, true)
+  # Force write to raise EPIPE — rescue path must still close the client.
+  SU_MCP::Core::Server.class_eval do
+    def io_select_writable?(_sock); true; end
+  end
+  sock.define_singleton_method(:write) { |_| raise Errno::EPIPE, "synthetic" }
+  srv.send(:on_timer_tick)
+  assert sock.closed?, "rejected client must be closed even when write raises EPIPE"
+end
+```
+
+### G. Task 6 — additional Python tests (CRITICAL-6, CONCERN-13, SUGGESTION-7)
+
+Append to `tests/test_connection.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_stale_socket_retry_redoes_handshake():
+    """After a stale socket is detected, retry must re-handshake on the new socket."""
+    tool_reply = encode_frame(json.dumps({
+        "jsonrpc": "2.0",
+        "result": {"content": [{"type": "text", "text": "ok"}], "isError": False},
+        "id": 1,
+    }).encode("utf-8"))
+    # First connection: handshake + closes immediately (stale).
+    # Second connection (after retry): handshake + tool reply.
+    # NB: FakeServer must serve two clients sequentially — see fixture below
+    #     for the multi-connection variant.
+    async with FakeServerMulti([
+        [hello_success(compat.CLIENT_VERSION)],          # client 1: handshake only, then close
+        [hello_success(compat.CLIENT_VERSION), tool_reply],  # client 2: handshake + reply
+    ]) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        await conn.connect()
+        # Simulate stale-socket detection on the retry path.
+        # Send a no-op tool and rely on the FakeServerMulti closing
+        # the first connection between hello and tool reply.
+        result = await conn.send_command("some_tool", {})
+        assert result["isError"] is False
+        await conn.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_handshake_timeout_raises_sketchup_error():
+    """Ruby that accepts TCP but never replies must surface as timeout, not a hang."""
+    async with FakeServer([]) as fs:   # no script — server never writes
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=0.5)
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+        assert "timed out" in str(ei.value).lower()
+```
+
+For `test_connect_sends_hello_first_with_client_version` (CONCERN-13): replace the hardcoded `await asyncio.sleep(0.05)` with explicit synchronization. Recommended pattern: set `asyncio.Event` in `FakeServer._handle` after `_received` reaches the expected length, and `await event.wait()` in the test. (If implementation complexity is undesirable, use a `for _ in range(10): if len(fs.received) >= expected: break; await asyncio.sleep(0.01)` busy-loop with explicit upper bound — at least it's bounded.)
+
+For `test_send_once_does_not_require_server_version_in_response` (SUGGESTION-7): replace tool name `"get_version"` with `"some_tool"` — it removes the implication that the test is about `get_version`'s version-checking semantics. The test is purely about envelope shape.
+
+Add the multi-connection FakeServer helper at the top of the test module:
+
+```python
+class FakeServerMulti:
+    """Like FakeServer but serves each new TCP connection with its own script."""
+
+    def __init__(self, scripts: list[list[bytes]]):
+        self._scripts = list(scripts)
+        self._idx = 0
+        self._server: asyncio.base_events.Server | None = None
+        self.host = "127.0.0.1"
+        self.port = 0
+
+    async def __aenter__(self):
+        self._server = await asyncio.start_server(
+            self._handle, host=self.host, port=0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._server.close()
+        await self._server.wait_closed()
+
+    async def _handle(self, reader, writer):
+        if self._idx >= len(self._scripts):
+            writer.close()
+            return
+        script = self._scripts[self._idx]
+        self._idx += 1
+        for chunk in script:
+            writer.write(chunk)
+            await writer.drain()
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+```
+
+### H. Task 6 — update `src/sketchup_mcp/tools.py` (CONCERN-4)
+
+After Step 5 (compat.py wording), add:
+
+> **Step 5b: Update `get_version` description in `src/sketchup_mcp/tools.py`**
+>
+> Find the `get_version` tool definition and its docstring (around lines 455 and 482). Remove the "only diagnostic bypass" / "bypass" phrasing. The tool is now an ordinary `tools/call` that returns the server's version verdict payload. Adjust wording to: "Returns the server version and Python↔Ruby compatibility verdict. Useful as a runtime sanity probe."
+
+### I. Task 4 — comment on FIFO guarantee (SUGGESTION-4)
+
+In the new `server.rb`, add a comment block above `drain_reads_all_clients`:
+
+```ruby
+# Global FIFO: `@clients` is a Hash, whose iteration order in Ruby 1.9+
+# is the *insertion order* (i.e. the order in which TCP accept assigned
+# each client). For each client we drain reads in that order, appending
+# decoded frames to `@frame_queue` as they become available. The
+# resulting dispatch order is therefore "FIFO by (accept-order, then
+# decoded-frame arrival within that client)". This is deliberate — see
+# design §5.3 / §13.1 for the rationale (round-robin reads were
+# considered and explicitly rejected).
+def drain_reads_all_clients
+  ...
+end
+```
+
+### J. Test count baseline adjustments
+
+After all the additions above:
+- Task 1: 7 runs (was 6)
+- Task 4: +5 new tests (setsockopt-leak, framing-envelope-before-close, partial-frame-eof, multi-tick frame split, plus the existing 10) ≈ 15 runs
+- Task 5: +1 new test (handshake_rejection_with_epipe) ≈ 10 runs
+- Task 6: +2 Python tests (stale_socket_retry, handshake_timeout) ≈ 8 added
+
+Cumulative Ruby total at end of Task 7: ~ 220 runs (vs the original plan's ~ 212). Cumulative Python at end of Task 6: ~ 113 passed (vs original ~ 110-115). Adjust per-task expected counts up accordingly.
 
 ---
 
