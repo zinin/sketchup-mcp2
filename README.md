@@ -1,160 +1,33 @@
-# SketchupMCP - Sketchup Model Context Protocol Integration
+# SketchupMCP
 
-> Originally forked from [mhyrr/sketchup-mcp](https://github.com/mhyrr/sketchup-mcp).
-> Diverged at v0.0.1 with a new wire protocol (4-byte length-prefix framing),
-> modular handler architecture, expanded introspection / joinery / edge-op tools,
-> and full unit-test coverage on both Ruby and Python sides.
-> Published to PyPI as `sketchup-mcp2` (the original `sketchup-mcp` package is the upstream).
+> Connect Claude (or any MCP-aware AI client) to SketchUp for prompt-driven 3D modeling.
 
-SketchupMCP connects Sketchup to Claude AI through the Model Context Protocol (MCP), allowing Claude to directly interact with and control Sketchup. This integration enables prompt-assisted 3D modeling, scene creation, and manipulation in Sketchup.
+Two-process bridge:
 
-Big Shoutout to [Blender MCP](https://github.com/ahujasid/blender-mcp) for the inspiration and structure.
+- **Python MCP server** (`sketchup-mcp2` on PyPI) — exposes typed tools to the LLM via the [Model Context Protocol](https://modelcontextprotocol.io/).
+- **Ruby SketchUp extension** — runs a TCP server inside SketchUp and executes commands against the live model.
 
-## Features
+## Quickstart
 
-* **Two-way communication**: Connect Claude AI to Sketchup through a TCP socket connection
-* **Component manipulation**: Create, modify, delete, and transform components in Sketchup
-* **Material control**: Apply and modify materials and colors
-* **Scene inspection**: Get detailed information about the current Sketchup scene
-* **Selection handling**: Get and manipulate selected components
-* **Ruby code evaluation**: Execute arbitrary Ruby code directly in SketchUp for advanced operations
-* **Viewport snapshots**: `get_viewport_screenshot` returns the current viewport as an MCP `Image` for visual verification. Optional `view_preset` / `style` / `zoom_extents`; non-destructive by default.
-* **Modeling-strategy prompt**: the MCP prompt `sketchup_modeling_strategy` (slash menu of MCP-aware clients) teaches Claude this project's conventions — pre-flight checks, typed-tools-vs-`eval_ruby`, millimeter units, post-mutation verification.
-* **Automatic Python ↔ Ruby version compatibility check**: every JSON-RPC request/response carries `client_version`/`server_version`; both sides hard-fail with a reinstall/upgrade hint on mismatch. The `get_version` tool always returns the verdict for diagnostics, even when other tools are blocked.
+### 1. Install the SketchUp extension
 
-## Components
-
-The system consists of two main components:
-
-1. **SketchUp Extension** (`su_mcp/su_mcp/`): a modular Ruby plugin that runs a TCP server inside SketchUp (`core/`, `handlers/`, `helpers/`).
-2. **MCP Server** (`src/sketchup_mcp/`): a modular Python package built on FastMCP — `tools.py` exposes MCP tools, `connection.py` owns the persistent TCP socket with 4-byte length-prefix framing, `config.py` reads `SKETCHUP_MCP_*` env vars, `errors.py` surfaces structured Ruby errors.
-
-## Installation
-
-### Python Packaging
-
-We're using uv so you'll need to ```brew install uv```
-
-### Sketchup Extension
-
-1. Download or build the latest `.rbz` file (see «Building the `.rbz` from source» below)
-2. In Sketchup, go to Window > Extension Manager
-3. Click "Install Extension" and select the downloaded `.rbz` file
-4. Restart Sketchup
-
-#### Building the `.rbz` from source
-
-The packager (`su_mcp/package.rb`) depends on the `rubyzip` gem. Install it once:
+Either grab the latest `.rbz` from GitHub Releases or build it from source:
 
 ```bash
 gem install --user-install rubyzip
-```
-
-Then build:
-
-```bash
 cd su_mcp && ruby package.rb
+# → su_mcp/su_mcp_v<version>.rbz
 ```
 
-The resulting `su_mcp_v<version>.rbz` lands in `su_mcp/`.
+In SketchUp: `Window → Extension Manager → Install Extension`, pick the `.rbz`, restart SketchUp.
 
-## Usage
+### 2. Start the server inside SketchUp
 
-### Starting the Connection
+`Plugins → MCP Server → Start` — by default listens on `127.0.0.1:9876`.
 
-1. In Sketchup, go to Extensions > SketchupMCP > Start Server
-2. The server will start on the default port (9876)
-3. Make sure the MCP server is running in your terminal
+### 3. Configure your MCP client
 
-### Using with Claude
-
-Configure Claude to use the MCP server by adding the following to your Claude configuration:
-
-```json
-    "mcpServers": {
-        "sketchup": {
-            "command": "uvx",
-            "args": [
-                "sketchup-mcp2"
-            ]
-        }
-    }
-```
-
-This will pull the [latest from PyPI](https://pypi.org/project/sketchup-mcp2/)
-
-Once connected, Claude can interact with Sketchup using the following capabilities:
-
-#### Tools
-
-Geometry & transforms:
-* `create_component` — Create a cube/cylinder/cone/sphere with specified dimensions (mm)
-* `delete_component` — Remove a component from the scene
-* `transform_component` — Move/rotate/scale a component (translation in mm)
-* `set_material` — Apply named or hex (`#rrggbb`) colors to a component
-* `export_scene` — Export to skp/obj/dae/stl/png/jpg
-
-Booleans & edge ops:
-* `boolean_operation` — Union/difference/intersection on two solids
-* `chamfer_edge` — Chamfer all edges of a group/component (distance in mm)
-* `fillet_edge` — Fillet (round) all edges (radius in mm, segments configurable)
-
-Joinery:
-* `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` — Woodworking joints (dimensions in mm)
-
-Introspection:
-* `get_model_info` — Path, title, units, bbox of the active model
-* `list_components` — Tree of groups/components with bboxes (recursive, max_depth)
-* `get_component_info` — Details about one entity by id
-* `find_components` — Search by name/type/layer
-* `list_layers`, `create_layer` — Layer/tag management
-* `get_selection` — IDs and metadata of currently selected entities
-* `get_version` — Python + Ruby versions and a compatibility verdict; always succeeds even when other tools fail with `IncompatibleVersionError`
-* `undo` — Roll back the last operation
-
-Visual:
-* `get_viewport_screenshot` — Capture the current viewport as a PNG (returns an MCP Image; optional `view_preset` / `style` / `zoom_extents`; requires SketchUp 2026+)
-
-Escape hatch:
-* `eval_ruby` — Execute arbitrary Ruby code in SketchUp for anything not covered above
-
-### Example Commands
-
-Here are some examples of what you can ask Claude to do:
-
-* "Create a simple house model with a roof and windows"
-* "Select all components and get their information"
-* "Make the selected component red"
-* "Move the selected component 10 units up"
-* "Export the current scene as a 3D model"
-* "Create a complex arts and crafts cabinet using Ruby code"
-
-## Troubleshooting
-
-* **Connection issues**: Make sure both the Sketchup extension server and the MCP server are running
-* **Command failures**: Check the Ruby Console in Sketchup for error messages
-* **Timeout errors**: Try simplifying your requests or breaking them into smaller steps
-
-## Technical Details
-
-### Communication Protocol
-
-The system uses a simple JSON-based protocol over TCP sockets:
-
-* **Commands** are sent as JSON objects with a `type` and optional `params`
-* **Responses** are JSON objects with a `status` and `result` or `message`
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-MIT
-
-## MCP Configuration
-
-Add to your `.mcp.json` (Claude Code) or equivalent client config:
+For Claude Code / Claude Desktop, add to `.mcp.json` (or `claude_desktop_config.json`):
 
 ```json
 {
@@ -173,33 +46,153 @@ Add to your `.mcp.json` (Claude Code) or equivalent client config:
 }
 ```
 
-Manual start (no MCP client):
+`uvx` will pull `sketchup-mcp2` from [PyPI](https://pypi.org/project/sketchup-mcp2/) automatically — install [uv](https://docs.astral.sh/uv/) if you don't have it.
 
-```bash
-uvx sketchup-mcp2
+That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and watch it happen.
+
+## Features
+
+### Tool catalogue
+
+| Category | Tools |
+|---|---|
+| **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm** |
+| **Materials** | `set_material` — named colors and hex `#rrggbb` |
+| **Booleans** | `boolean_operation` — union / difference / intersection |
+| **Edge ops** | `chamfer_edge`, `fillet_edge` — distance/radius in mm, segments configurable |
+| **Joinery** | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
+| **Export** | `export_scene` — skp / obj / dae / stl / png / jpg |
+| **Introspection** | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
+| **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image`; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
+| **Lifecycle** | `undo` |
+| **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above |
+
+All dimensions in **millimeters**; angles in **degrees**. Every entity-returning handler also responds with `bbox_mm` so the LLM can re-locate entities by bounding box if their IDs go stale after destructive ops.
+
+### Capabilities
+
+- **Multi-client support** — N concurrent MCP clients can be connected at once (e.g. Claude Desktop + a smoke-test script + your own Python notebook). Operations are still serialised on the SketchUp UI thread; frames are dispatched in a single global FIFO ordered by decode arrival.
+- **One-time version handshake** — every TCP connection begins with a JSON-RPC `hello` carrying `client_version`; the server validates against its supported range and replies with `server_version` + `client_id`. Incompatible pairs surface immediately as `IncompatibleVersionError` and the socket is closed.
+- **Atomic undo** — every mutating handler wraps the edit in `model.start_operation`/`commit_operation`, so a single `Edit → Undo` rolls back the whole call.
+- **MCP prompt `sketchup_modeling_strategy`** — surfaced in MCP-aware clients' slash menu; teaches the model project conventions (mm units, typed-tools-vs-`eval_ruby`, pitfalls like reversed `Group#subtract`).
+- **Settings dialog** — `Plugins → MCP Server → Settings...` for host / port / log level. Log level applies immediately; host/port changes prompt for a restart.
+
+## Configuration
+
+### Python side (env vars in `.mcp.json`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `SKETCHUP_MCP_HOST` | `127.0.0.1` | Where to connect to the SketchUp extension |
+| `SKETCHUP_MCP_PORT` | `9876` | TCP port |
+| `SKETCHUP_MCP_TIMEOUT` | `60` | Per-tool-call timeout (seconds) |
+| `SKETCHUP_MCP_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
+
+### Ruby side (Settings dialog inside SketchUp)
+
+Open `Plugins → MCP Server → Settings...` to change **Host**, **Port**, and **Log Level**. Values persist in SketchUp's preferences under section `SU_MCP`. No environment variables are read on the Ruby side.
+
+> **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead.
+
+## Examples
+
+Things you can ask Claude:
+
+- *"Create a simple dining table — 1.2 × 0.8 m, 760 mm tall, oak finish"*
+- *"Highlight every component smaller than 100 mm in any dimension"*
+- *"Make the selected component red, then move it 100 mm up"*
+- *"Export the scene as STL for 3D printing"*
+- *"Build a small arts-and-crafts cabinet using `eval_ruby` with dovetails"*
+
+For richer Ruby recipes that drive the SketchUp API directly — framed walls, gable/hip roofs, joist arrays, `follow_me` extrusions, world-space transforms, common pitfalls — see [`docs/sketchup-ruby-cookbook.md`](docs/sketchup-ruby-cookbook.md).
+
+Working examples and load tests live in [`examples/`](examples/):
+
+- `smoke_check.py` — 22-step end-to-end verification of every tool category.
+- `smoke_multi_client.py` — concurrent multi-client load test.
+- `arts_and_crafts_cabinet.py` — a non-trivial generative model via `eval_ruby`.
+- `simple_test.py`, `simple_ruby_eval.py`, `behavior_tester.py` — minimal scaffolds.
+
+## Architecture
+
+```
+Claude (MCP client)
+   ↕  MCP (stdio)
+Python MCP server  (FastMCP)               src/sketchup_mcp/
+   ↕  TCP — JSON-RPC 2.0, 4-byte big-endian length-prefix framing, 64 MiB cap
+Ruby SketchUp extension (server)            su_mcp/su_mcp/
+   ↕  SketchUp Ruby API
+Live SketchUp model
 ```
 
-## Complex Scenarios
+The Ruby side runs entirely on the SketchUp UI thread via `UI.start_timer` callbacks (SketchUp's Ruby is single-threaded — no native threads allowed). The Python side holds one persistent TCP socket per process and serialises tool-calls with an `asyncio.Lock`.
 
-For working with full SketchUp models (walls, roofs, framing, joinery) via
-`eval_ruby`, see the detailed Ruby snippets in
-[`docs/sketchup-ruby-cookbook.md`](docs/sketchup-ruby-cookbook.md):
+Source layout:
 
-- «Inspect the open model» — query path, layers, bounding box.
-- «Create geometry — reliable make_box helper» — `face.normal.z` safe extrusion.
-- «Framed wall (studs + plates)» — full wall section.
-- «Wall with opening» — coplanar-face hole punching.
-- «Gable / hip roof» — manual triangle construction.
-- «follow_me — profile along a path» — mauerlat around perimeter.
-- «Common pitfalls» — including the `Group#subtract` reversed-semantics gotcha.
+- **Python**: `src/sketchup_mcp/{tools,connection,config,compat,errors,prompts}.py`
+- **Ruby**: `su_mcp/su_mcp/{core,handlers,helpers,ui}/`
+
+See [`CLAUDE.md`](CLAUDE.md) for the project's working notes and non-obvious constraints (unit conversions, reversed boolean semantics, framing details, etc.).
+
+## Development
+
+### Python package (editable install)
+
+```bash
+uv pip install -e .
+python -m sketchup_mcp          # direct
+uvx sketchup-mcp2               # production-style (from PyPI)
+```
+
+### Tests
+
+```bash
+ruby test/run_all.rb             # Ruby unit tests (minitest, stdlib only)
+uv run pytest tests/ -q          # Python unit tests
+```
+
+### Live smoke (requires SketchUp running with the extension started)
+
+```bash
+uv run python examples/smoke_check.py          # 22-step end-to-end
+uv run python examples/smoke_multi_client.py   # concurrent multi-client
+```
+
+For a split-host setup (e.g. Linux dev box + Windows SketchUp), prefix with `SKETCHUP_MCP_HOST=<sketchup-host>`.
 
 ## Troubleshooting
 
 ### `SketchUp not running or extension not started: ...`
 
-The Python MCP server tried to connect on port 9876 but found nothing listening.
-Either:
-- SketchUp is not running, or
-- The MCP plugin is installed but not started — open Plugins → MCP Server → Start.
+The Python MCP server connected to the configured host/port but found nothing listening. Either:
 
-The server stays alive after this error; the next tool-call will retry the connect.
+- SketchUp isn't running, or
+- The extension is installed but not started — open `Plugins → MCP Server → Start`.
+
+The Python server stays alive after this error; the next tool-call retries the connect.
+
+### `IncompatibleVersionError`
+
+Your installed `sketchup-mcp2` Python package and the `.rbz` extension are outside the supported version range. Rebuild the `.rbz` from the same commit as the Python package, or `pip install -U sketchup-mcp2`. The current supported range lives in `src/sketchup_mcp/compat.py` and `su_mcp/su_mcp/core/compat.rb`.
+
+### Tool-call timeouts on long operations
+
+Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds.
+
+### SketchUp UI freezes during big requests
+
+Frame-decoding is capped at 50 reads × 64 KiB per client per tick (~3.2 MB) to keep the UI responsive, but a very large `eval_ruby` body or a runaway loop inside it will still freeze SketchUp until it returns. Break the work into smaller calls if you can.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+## Credits and attribution
+
+- Originally forked from [**mhyrr/sketchup-mcp**](https://github.com/mhyrr/sketchup-mcp). The fork diverged at v0.0.1 with a new wire protocol (4-byte length-prefix framing, JSON-RPC 2.0 envelopes), modular handler architecture, expanded introspection / joinery / edge-op tools, multi-client server with one-time `hello` handshake, MCP prompt, viewport screenshot, settings dialog, and full unit-test coverage on both Ruby and Python sides.
+- Published to PyPI as [`sketchup-mcp2`](https://pypi.org/project/sketchup-mcp2/); the upstream package is `sketchup-mcp`.
+- Bridge-pattern inspiration from [**ahujasid/blender-mcp**](https://github.com/ahujasid/blender-mcp).
+
+## Contributing
+
+Pull requests welcome. Before opening one, please run both test suites (`ruby test/run_all.rb` and `uv run pytest tests/`) and — if you've touched anything in the IO path — the live smokes against a running SketchUp.
