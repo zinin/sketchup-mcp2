@@ -24,6 +24,7 @@ module SU_MCP
     helpers/entities
     helpers/geometry
     core/framing
+    core/client_state
     handlers/dispatch
     handlers/geometry
     handlers/operations
