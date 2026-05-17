@@ -3,9 +3,13 @@
 
 Pre-conditions:
   1. SketchUp 2024+ is running with an empty model.
-  2. Ruby plugin v0.0.1 is installed and started via Plugins → MCP Server → Start.
+  2. Ruby SketchUp plugin is installed and started via Plugins → MCP Server →
+     Start. The plugin version must satisfy the handshake range declared in
+     src/sketchup_mcp/compat.py (MIN_RUBY..MAX_RUBY); step 22 verifies this.
   3. Run with the same Python venv used by the MCP server.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
+     When SketchUp runs remotely, step 18 (export_scene) degrades to asserting
+     Ruby returned a non-empty path — the file lives on the SketchUp host.
 
 Usage:
     python examples/smoke_check.py
@@ -16,6 +20,7 @@ the riskiest rewrites (chamfer/fillet/boolean). Fails fast on first error.
 All dimensions are in millimeters per the v0.0.1 unified mm contract.
 """
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -32,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sketchup_mcp.connection import SketchUpConnection  # noqa: E402
 from sketchup_mcp.errors import SketchUpError  # noqa: E402
-from sketchup_mcp import config  # noqa: E402
+from sketchup_mcp import compat, config  # noqa: E402
 
 
 async def call(conn: SketchUpConnection, tool: str, **args) -> dict:
@@ -162,7 +167,36 @@ async def main() -> int:
         step = 18; print(f"[{step}] export_scene format=png")
         ex = parse(await call(conn, "export_scene", format="png"))
         path = ex["path"]
-        assert os.path.exists(path), f"export file missing: {path}"
+        # Split-host: when SketchUp runs remotely the export file isn't visible here.
+        if config.HOST in {"127.0.0.1", "localhost", "::1"}:
+            assert os.path.exists(path), f"export file missing: {path}"
+        else:
+            assert path, "export_scene returned empty path"
+
+        step = 19; print(f"[{step}] get_viewport_screenshot — exercise the new tool")
+        result = await call(
+            conn, "get_viewport_screenshot",
+            view_preset="iso", zoom_extents=True, max_size=640,
+            style="default", restore_view=True,
+        )
+        payload = json.loads(text_of(result))
+        # Structural assertions — response shape.
+        for key in ("png_base64", "width", "height", "preset_used", "style_used"):
+            assert key in payload, f"missing {key!r} in {payload!r}"
+        # Echo-back sanity: handler must report the preset/style it actually used.
+        assert payload["preset_used"] == "iso", f"unexpected preset_used: {payload['preset_used']!r}"
+        assert payload["style_used"] == "default", f"unexpected style_used: {payload['style_used']!r}"
+        # Dimension sanity — width/height are positive integers, both ≤ max_size=640.
+        w, h = payload["width"], payload["height"]
+        assert isinstance(w, int) and isinstance(h, int), f"non-int dimensions: {w!r}×{h!r}"
+        assert 0 < w <= 640 and 0 < h <= 640, f"dimensions out of bounds: {w}×{h}"
+        # Content sanity — must be a non-trivial PNG (a valid 1×1 PNG is ~70 bytes;
+        # require > 1024 bytes to rule out blank/empty captures).
+        png = base64.b64decode(payload["png_base64"])
+        assert png.startswith(b"\x89PNG\r\n\x1a\n"), \
+            f"missing PNG magic header: got {png[0:8]!r}"
+        assert len(png) > 1024, f"PNG suspiciously small: {len(png)} bytes"
+        print(f"    PNG ok: {len(png)} bytes, {w}×{h}, preset={payload['preset_used']}")
 
         # NB: cleanup must precede undo. `undo` rolls back the last undoable
         # operation, which here is mortise_tenon (export bypasses the undo
@@ -170,15 +204,33 @@ async def main() -> int:
         # post-subtract IDs captured in step 14) and the cleanup loop would
         # silently no-op on stale IDs while leaving the restored mortise board
         # behind in the model.
-        step = 19; print(f"[{step}] cleanup: delete created components")
+        step = 20; print(f"[{step}] cleanup: delete created components")
         for cid in [id_bool, b_mortise, b_tenon]:
             try:
                 await call(conn, "delete_component", id=cid)
             except Exception as e:
                 print(f"    (cleanup non-fatal: {e})")
 
-        step = 20; print(f"[{step}] undo — verify the tool runs without error")
+        step = 21; print(f"[{step}] undo — verify the tool runs without error")
         await call(conn, "undo")
+
+        step = 22; print(f"[{step}] version handshake — matched pair must report compatible=true")
+        # smoke_check.py talks to Ruby directly (no FastMCP), so this returns
+        # the raw handlers/system.rb output. Replicate the two-way verdict
+        # that src/sketchup_mcp/tools.py::get_version computes.
+        ruby_payload = parse(await call(conn, "get_version"))
+        ruby_version = ruby_payload["ruby_version"]
+        ruby_min_py = ruby_payload["min_compatible_python"]
+        ruby_max_py = ruby_payload["max_compatible_python"]
+        print(f"    python={compat.CLIENT_VERSION} ruby={ruby_version}")
+        print(f"    ruby advertises python compat: {ruby_min_py}..{ruby_max_py}")
+        compat.check_ruby_version(ruby_version)
+        client = compat.parse(compat.CLIENT_VERSION)
+        assert compat.parse(ruby_min_py) <= client <= compat.parse(ruby_max_py), (
+            f"Ruby advertised range {ruby_min_py}..{ruby_max_py} rejects "
+            f"client {compat.CLIENT_VERSION}"
+        )
+        print("    matched-pair: compatible=true")
 
         print("\nALL STEPS PASSED ✓")
         return 0

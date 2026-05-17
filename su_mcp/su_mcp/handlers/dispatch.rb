@@ -9,13 +9,15 @@ module SU_MCP
       # receive a response.
       def self.handle(request)
         request_id = nil
+        is_notification = false
         tool = nil
         params = {}
         begin
           validate_envelope!(request)
+
           request_id = request["id"]
-          method = request["method"]
           is_notification = !request.key?("id")
+          method = request["method"]
 
           response_body =
             case method
@@ -33,8 +35,6 @@ module SU_MCP
                 raise Core::StructuredError.new(-32602, "tools/call 'arguments' must be an object")
               end
               call_handler(tool, params)
-            when "resources/list", "prompts/list"
-              { "resources" => [], "prompts" => [] }
             else
               raise Core::StructuredError.new(-32601, "method not found: #{method}")
             end
@@ -43,12 +43,12 @@ module SU_MCP
           build_success_response(response_body, request_id)
         rescue Core::StructuredError => e
           Core::Logger.log_error(tool || "?", e)
-          return nil if request.is_a?(Hash) && !request.key?("id")
+          return nil if is_notification
           Core::Errors.build_error_response(e.code, e.message,
             Core::Errors.exception_to_data(e, tool || "?", params), request_id)
         rescue StandardError => e
           Core::Logger.log_error(tool || "?", e)
-          return nil if request.is_a?(Hash) && !request.key?("id")
+          return nil if is_notification
           Core::Errors.build_error_response(-32603, e.message,
             Core::Errors.exception_to_data(e, tool || "?", params), request_id)
         end
@@ -109,6 +109,8 @@ module SU_MCP
         when "create_layer"          then Handlers::Model.create_layer(params)
         when "undo"                  then Handlers::Model.undo(params)
         when "get_selection"         then Handlers::Model.get_selection(params)
+        when "get_viewport_screenshot" then Handlers::View.viewport_screenshot(params)
+        when "get_version"             then Handlers::System.get_version(params)
         else
           raise Core::StructuredError.new(-32601, "unknown tool: #{tool}")
         end

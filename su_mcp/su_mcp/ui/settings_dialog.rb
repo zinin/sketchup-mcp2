@@ -32,8 +32,8 @@ module SU_MCP
           preferences_key: DIALOG_PREFS,
           scrollable:      false,
           resizable:       false,
-          width:           360,
-          height:          290,
+          width:           380,
+          height:          360,
           style:           ::UI::HtmlDialog::STYLE_DIALOG
         )
 

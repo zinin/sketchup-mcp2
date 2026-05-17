@@ -49,3 +49,4 @@ mcp = FastMCP(
 # here so MCP hosts loading the published `[project.entry-points.mcp]` get a
 # FastMCP with tools registered, not an empty instance.
 import sketchup_mcp.tools  # noqa: E402, F401
+import sketchup_mcp.prompts  # noqa: E402, F401

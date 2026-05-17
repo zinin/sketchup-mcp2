@@ -3,43 +3,60 @@
 Each tool is a thin wrapper that delegates to :func:`_call`, which centralises
 connection acquisition, error handling, and response unwrapping.
 """
+import base64
 import json
 import logging
 from typing import Annotated, Literal, Optional
 
-from mcp.server.fastmcp import Context
+from mcp.server.fastmcp import Context, Image
 from pydantic import Field
 
-from sketchup_mcp import config
+from sketchup_mcp import compat, config
 from sketchup_mcp.app import mcp
 from sketchup_mcp.connection import get_connection
-from sketchup_mcp.errors import SketchUpError, format_error
+from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError, format_error
 
 logger = logging.getLogger("sketchup_mcp.tools")
+
+
+async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
+    """Acquire the connection and execute one tools/call.
+
+    Returns the raw MCP-shaped result dict
+    (``{"content": [...], "isError": False}``).
+
+    ``tool_name`` is positional-only (PEP 570) so wrappers can forward
+    user kwargs containing a ``name`` key via ``**args`` without
+    colliding with this parameter — see ``find_components`` /
+    ``create_layer`` callers below for the pattern.
+
+    Does **not** translate :class:`ConnectionError` to anything — that
+    is each caller's responsibility, since callers have divergent
+    strategies for unavailable-server (string-returning tools surface a
+    graceful string, Image-returning tools raise). Centralising the
+    conversion here would introduce brittle string-based detection in
+    callers and lose the canonical error text shared by the 22 existing
+    text-returning tools.
+
+    See the design's §5.8 for the rationale on error-handling asymmetry
+    between text-returning and Image-returning tools.
+    """
+    sketchup = await get_connection()              # may raise ConnectionError
+    return await sketchup.send_command(tool_name, kwargs)  # raises SketchUpError
 
 
 async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
 
-    `tool_name` is positional-only (PEP 570) so that wrappers can pass user
-    kwargs containing a ``name`` key via ``**args`` without colliding with
-    this parameter — see find_components/create_layer.
-
-    - Connection errors → human-readable string, server keeps running.
-    - SketchUpError → ``format_error`` string.
-    - Successful MCP-shaped result ({content: [{text: "..."}]}) → just the text.
-    - Any other dict result → ``json.dumps``.
+    Same external contract as before — kept for compatibility with the 22
+    existing string-returning tools. Now delegates to :func:`_raw_call`
+    for connection acquisition and converts the result to a string.
+    Connection failures surface as the canonical legacy string so the LLM
+    sees a stable, actionable hint.
     """
     try:
-        sketchup = await get_connection()
+        result = await _raw_call(ctx, tool_name, **kwargs)
     except ConnectionError as e:
-        return f"SketchUp not running or extension not started: {e}"
-    try:
-        result = await sketchup.send_command(tool_name, kwargs)
-    except ConnectionError as e:
-        # Cached connection was stale and reconnect inside send_command failed:
-        # `_connect_or_raise` re-raises OSError as ConnectionError before the
-        # send/recv try-block, so it escapes past the SketchUpError handler.
         return f"SketchUp not running or extension not started: {e}"
     except SketchUpError as e:
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
@@ -280,6 +297,87 @@ async def fillet_edge(
 
 
 @mcp.tool()
+async def get_viewport_screenshot(
+    ctx: Context,
+    max_size: Annotated[int, Field(ge=64, le=4096)] = 800,
+    view_preset: Literal[
+        "current", "front", "back", "left", "right",
+        "top", "bottom", "iso",
+    ] = "current",
+    zoom_extents: bool = False,
+    style: Literal["default", "shaded", "hidden_line", "wireframe"] = "default",
+    restore_view: bool = True,
+) -> Image:
+    """Capture the current SketchUp viewport as a PNG and return it as an MCP Image.
+
+    Useful for letting Claude visually verify the scene between steps.
+
+    Parameters
+    - max_size: largest side of the returned PNG (64..4096). Aspect ratio is
+      taken from the current viewport; the smaller side is scaled proportionally.
+    - view_preset: switch the camera to a standard view before snapping.
+      ``current`` leaves the camera alone.
+    - zoom_extents: call view.zoom_extents before snapping.
+    - style: temporarily flip a small set of rendering_options keys.
+      ``default`` leaves them alone.
+    - restore_view: when true (default), camera and rendering_options are
+      snapshotted before mutation and restored after the snapshot, so the
+      user's viewport is unchanged.
+
+    Note on operation order (Ruby handler): snapshot → preset → style →
+    zoom_extents → write_image → restore. Restore runs in an outer ``ensure``
+    block, so an exception anywhere between snapshot and write_image still
+    leaves the viewport in its original state.
+    """
+    # Delegate connection + send_command to _raw_call so we don't duplicate
+    # the transport logic of _call. _raw_call does NOT translate
+    # ConnectionError (text-tools and Image-tools have divergent strategies),
+    # so we convert here: there is no Image sentinel for "not connected",
+    # so raise SketchUpError. See design §5.8 for the error-handling
+    # asymmetry rationale.
+    try:
+        raw = await _raw_call(
+            ctx,
+            "get_viewport_screenshot",
+            max_size=max_size,
+            view_preset=view_preset,
+            zoom_extents=zoom_extents,
+            style=style,
+            restore_view=restore_view,
+        )
+    except ConnectionError as e:
+        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
+
+    # Ruby returns MCP-shaped {content: [{type: "text", text: JSON-blob}], ...}.
+    # Extract the JSON blob and decode the base64 PNG into raw bytes.
+    text: Optional[str] = None
+    if isinstance(raw, dict):
+        content = raw.get("content")
+        if (
+            isinstance(content, list)
+            and content
+            and isinstance(content[0], dict)
+        ):
+            text = content[0].get("text")
+    if not isinstance(text, str):
+        raise SketchUpError(
+            -32603, f"unexpected screenshot response shape: {raw!r}"
+        )
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise SketchUpError(-32603, f"screenshot response not JSON: {e}") from e
+    b64 = payload.get("png_base64")
+    if not isinstance(b64, str):
+        raise SketchUpError(-32603, "screenshot response missing png_base64")
+    try:
+        png_bytes = base64.b64decode(b64, validate=True)
+    except (ValueError, base64.binascii.Error) as e:
+        raise SketchUpError(-32603, f"png_base64 decode failed: {e}") from e
+    return Image(data=png_bytes, format="png")
+
+
+@mcp.tool()
 async def get_model_info(ctx: Context) -> str:
     """Get current SketchUp model info: file path, title, units, bounding box, entity count, layer list."""
     return await _call(ctx, "get_model_info")
@@ -350,3 +448,87 @@ async def create_layer(
 async def undo(ctx: Context) -> str:
     """Undo the last atomic operation in SketchUp. One MCP tool-call = one undo step."""
     return await _call(ctx, "undo")
+
+
+@mcp.tool()
+async def get_version(ctx: Context) -> str:
+    """Return the server version and Python↔Ruby compatibility verdict.
+
+    Useful as a runtime sanity probe — always returns a payload, even
+    when the connection or other tools surface errors. The result is a
+    JSON string with fields: python_version, ruby_version,
+    min_compatible_ruby, max_compatible_ruby, ruby_min_compatible_python,
+    ruby_max_compatible_python, compatible (bool), error (string | null).
+    """
+    def _payload(ruby_version, ruby_min, ruby_max, compatible, error_msg):
+        return json.dumps({
+            "python_version": compat.CLIENT_VERSION,
+            "ruby_version": ruby_version,
+            "min_compatible_ruby": compat.MIN_RUBY,
+            "max_compatible_ruby": compat.MAX_RUBY,
+            "ruby_min_compatible_python": ruby_min,
+            "ruby_max_compatible_python": ruby_max,
+            "compatible": compatible,
+            "error": error_msg,
+        })
+
+    try:
+        raw = await _raw_call(ctx, "get_version")
+    except ConnectionError as e:
+        return _payload(None, None, None, False,
+                        f"SketchUp not running or extension not started: {e}")
+    except SketchUpError as e:
+        # Covers old Ruby returning -32601 "unknown tool: get_version"
+        # and any other JSON-RPC error envelope. Version compatibility is
+        # validated once at connect-time in ``_handshake``; once a
+        # connection survives that, tool-level errors here come from the
+        # Ruby handler itself (not from per-request version checks).
+        return _payload(None, None, None, False, str(e))
+
+    # Defensive parse: any unexpected shape (missing keys, non-list content,
+    # non-string text, invalid JSON, non-dict payload) must STILL produce a
+    # payload — the tool's contract is "always returns a payload even on
+    # mismatch / error", so a KeyError/IndexError/TypeError/JSONDecodeError
+    # escaping here would violate it.
+    try:
+        ruby_payload = json.loads(raw["content"][0]["text"])
+        if not isinstance(ruby_payload, dict):
+            raise TypeError(
+                f"ruby payload is {type(ruby_payload).__name__}, expected dict"
+            )
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as e:
+        return _payload(None, None, None, False,
+                        f"unexpected get_version response shape: {e}")
+    ruby_version = ruby_payload.get("ruby_version")
+    ruby_min = ruby_payload.get("min_compatible_python")
+    ruby_max = ruby_payload.get("max_compatible_python")
+
+    # Two-way compatibility: BOTH sides' tables must accept the counterpart.
+    try:
+        compat.check_ruby_version(ruby_version)
+        python_accepts_ruby, py_error = True, None
+    except IncompatibleVersionError as e:
+        python_accepts_ruby, py_error = False, str(e)
+
+    try:
+        ruby_accepts_python = bool(
+            ruby_min and ruby_max and
+            compat.parse(ruby_min)
+            <= compat.parse(compat.CLIENT_VERSION)
+            <= compat.parse(ruby_max)
+        )
+    except ValueError:
+        ruby_accepts_python = False
+
+    compatible = python_accepts_ruby and ruby_accepts_python
+    if py_error:
+        error_msg = py_error
+    elif not ruby_accepts_python:
+        error_msg = (
+            f"SketchUp plugin advertises Python compatibility "
+            f"{ruby_min}..{ruby_max}, which excludes v{compat.CLIENT_VERSION}."
+        )
+    else:
+        error_msg = None
+
+    return _payload(ruby_version, ruby_min, ruby_max, compatible, error_msg)

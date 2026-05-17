@@ -420,6 +420,82 @@ right_door = model.entities.add_instance(door_def,
   Geom::Transformation.new(Geom::Point3d.new(600/MM, 400/MM, 0)))
 ```
 
+## Viewport snapshot via `View#write_image`
+
+For non-destructive screenshots, deep-copy the camera and snapshot the
+rendering-options keys you intend to change, mutate, write the image,
+then restore. `View#camera=` and `RenderingOptions[]=` are UI state —
+they don't enter the undo stack — so you don't need `model.start_operation`.
+
+**Two non-obvious behaviors** (last verified against SketchUp 2026):
+
+- `Sketchup.send_action("viewIso:")` is **asynchronous** — the camera does
+  NOT change before the call returns. Use direct `view.camera =
+  Sketchup::Camera.new(eye, target, up)` for synchronous, locale-independent
+  preset switching.
+- The boolean rendering-options keys `DisplayShaded`, `DrawEdges`, `DrawFaces`
+  are **WRITE-REJECTED** (`ArgumentError`). For switching rendering style use
+  the `RenderMode` integer enum (`0` Wireframe / `1` Hidden Line / `2` Shaded /
+  `3` Textured Shaded / `4` Monochrome / `5` Sketchy / `6` X-Ray).
+
+```ruby
+view  = Sketchup.active_model.active_view
+model = view.model
+
+# --- snapshot (deep copy — protects against future API changes that might
+# return live references; empirically `view.camera` returns a fresh
+# wrapper today, but the deep copy is defence-in-depth) ---
+c = view.camera
+snap_camera = Sketchup::Camera.new(c.eye, c.target, c.up)
+snap_camera.perspective = c.perspective?
+if c.perspective?
+  snap_camera.fov = c.fov
+else
+  snap_camera.height = c.height
+end
+ro_keys = ["RenderMode"]
+snap_ro = ro_keys.map { |k| [k, model.rendering_options[k]] }.to_h
+
+# --- mutate (direct camera assignment + RenderMode enum) ---
+# Production handler uses Helpers::Geometry.visible_bounds(model) to skip hidden entities.
+bb     = model.bounds
+center = bb.center
+diag   = bb.diagonal
+dist   = (diag.nil? || diag.to_f <= 0 ? 1000.0 : diag.to_f) * 1.5
+offset = Geom::Vector3d.new(1, -1, 1)
+offset.length = dist
+eye    = center + offset
+new_cam = Sketchup::Camera.new(eye, center, Geom::Vector3d.new(0, 0, 1))
+new_cam.perspective = c.perspective?   # don't silently flip ortho→perspective
+view.camera = new_cam
+model.rendering_options["RenderMode"] = 2  # 2 = Shaded
+view.zoom_extents                              # fine-tune framing after the rough preset
+
+require "tempfile"
+Tempfile.create(["snap_", ".png"]) do |tmp|
+  tmp.close
+  ok = view.write_image(
+    filename: tmp.path,
+    width: 800, height: 450,
+    antialias: true,
+    compression: 1.0,             # JPEG-only quality factor (0.0=max compression, 1.0=best quality); ignored for PNG
+    transparent: false,
+  )
+  raise "write_image failed" unless ok
+
+  bytes = File.binread(tmp.path)
+  # ... use bytes (e.g. Base64.strict_encode64 for transport) ...
+  puts "captured #{bytes.bytesize} bytes"  # peek so eval_ruby has a return value
+end                                 # Tempfile auto-deletes here
+
+# --- restore ---
+view.camera = snap_camera
+snap_ro.each { |k, v| model.rendering_options[k] = v }
+```
+
+Used internally by `Handlers::View.viewport_screenshot` (see
+`su_mcp/su_mcp/handlers/view.rb`).
+
 ## Common pitfalls
 
 | Mistake | Fix |

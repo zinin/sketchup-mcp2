@@ -16,11 +16,34 @@ SketchupMCP bridges Claude AI and SketchUp via the Model Context Protocol (MCP).
 - **SketchUp is single-threaded**: the Ruby extension cannot use threads; all I/O runs in `UI.start_timer` callbacks.
 - **Wire protocol** (v0.0.1+): 4-byte big-endian length-prefix framing, 64 MiB cap.
 - **Persistent socket**: Python server holds one TCP connection; `asyncio.Lock` serializes tool-calls. Ruby reads non-blocking inside `UI.start_timer`, capped at 50 reads per tick (~3.2 MB) to keep SketchUp's UI responsive.
+- **Ruby supports N concurrent TCP clients**: `core/server.rb` keeps
+  `@clients` (sock → ClientState) and a global FIFO `@frame_queue`.
+  Each timer tick: accept pending connections, drain reads from every
+  client into per-client `FrameReader`, dispatch queued frames in
+  FIFO decode-arrival order (accept-order across clients, decode-order
+  within each client — single shared queue, not round-robin).
+  Operations are still serialised on the SketchUp UI
+  thread (single-threaded Ruby API). Per-client errors close only the
+  offending client; other clients keep running. **Logical races between
+  clients on the model are the user's responsibility** — the server
+  does no locking. Half-open sockets are detected via `SO_KEEPALIVE`
+  (OS default ~2h).
 - **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; cast incoming string IDs with `.to_i`.
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
 - **Mutating handlers wrap edits in `model.start_operation`/`commit_operation`** so `undo` rolls back atomically.
+- **Version handshake (one-time on connect)**: every TCP connection MUST
+  begin with a JSON-RPC `hello` request carrying
+  `params.client_version`. The server validates against
+  `core/compat.rb`'s `MIN_PYTHON`..`MAX_PYTHON` range and replies with
+  `{server_version, client_id}` in `result`. Mismatches return JSON-RPC
+  error `-32001` (`IncompatibleVersionError` on the Python side) and
+  the server closes the socket. After a successful handshake, regular
+  `tools/call` requests carry no `client_version` field and responses
+  carry no `server_version` field. Compatibility ranges live in
+  `src/sketchup_mcp/compat.py` and `su_mcp/su_mcp/core/compat.rb`.
+  `get_version` remains a regular tool returning the verdict payload.
 
 ## Development Commands
 
@@ -36,11 +59,11 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd su_mcp && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (120 runs / 279 assertions)
-uv run pytest tests/ -q        # Python (56 tests)
+ruby test/run_all.rb           # Ruby (230 runs / 516 assertions)
+uv run pytest tests/ -q        # Python (120 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 20-step end-to-end (covers all handlers)
+python examples/smoke_check.py # 22-step end-to-end (covers all handlers)
 ```
 
 Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.
@@ -64,6 +87,8 @@ Log-level changes apply immediately. Host/port changes prompt the user to restar
 - `SKETCHUP_MCP_TIMEOUT` (default `60` seconds)
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
 
+`examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` (via `sketchup_mcp.config`). For a split-host setup — Linux dev box + Windows SketchUp — set them when running the smoke check, e.g. `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`. In that mode the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network).
+
 ## Architecture
 
 ```
@@ -78,10 +103,12 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 |---|---|
 | `app.py`, `__main__.py` | FastMCP server entry point |
 | `tools.py` | One MCP tool wrapper per Ruby handler (FastMCP definitions) |
+| `prompts.py` | MCP prompt definitions (`sketchup_modeling_strategy`) |
 | `connection.py` | Persistent TCP socket, length-prefix framing, `asyncio.Lock` |
 | `config.py` | ENV-driven config |
 | `errors.py` | `SketchUpError` parsed from JSON-RPC error envelopes |
 | `server.py` | Legacy connection helpers (kept for compat) |
+| `compat.py` | Single source of truth for Python↔Ruby version compatibility (MIN_RUBY, MAX_RUBY, check_ruby_version) |
 
 `eval_ruby` is the escape hatch — passes arbitrary Ruby code straight through.
 
@@ -90,9 +117,10 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | Subtree | Role |
 |---|---|
 | `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
-| `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `logger.rb`, `errors.rb` |
-| `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb` |
+| `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
+| `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb`, `system.rb` |
 | `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb` |
+| `ui/` | Settings dialog: `settings_dialog.rb`, `settings_validator.rb`, `settings.html` |
 
 All created geometry lives inside SketchUp **Groups** so it can be selected/moved/deleted as a unit.
 
@@ -106,9 +134,19 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Edge ops | `chamfer_edge`, `fillet_edge` (Ruby-side names are plural — `chamfer_edges`/`fillet_edges`) |
 | Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
 | Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
-| Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection` |
+| Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
+| View | `get_viewport_screenshot` (returns MCP Image; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
 | Lifecycle | `undo` |
 | Scripting | `eval_ruby` |
+
+> **SketchUp version requirement (viewport screenshot only):** the
+> `get_viewport_screenshot` tool was verified on SketchUp 2026. Only
+> `Sketchup::Camera#is_2d?` is a hard floor (introduced in SU 2018); the
+> behaviors of `view.camera=` (synchronous) and
+> `Sketchup::RenderingOptions["RenderMode"]` (writable enum) were
+> empirically confirmed on 2026 and may differ on earlier versions. Older
+> SketchUp builds are not tested and not officially supported by this
+> tool. All other tools target the same baseline as the rest of the plugin.
 
 All entity-returning handlers respond `{id, name, type, bbox_mm}` so Claude can re-locate entities by bounding box if their IDs become stale after destructive operations.
 
@@ -133,6 +171,15 @@ docs/sketchup-ruby-cookbook.md  # eval_ruby reference snippets
 pyproject.toml            # Python package config (version, deps)
 LICENSE / NOTICE          # MIT license + upstream attribution
 ```
+
+## MCP Prompts
+
+The server exposes one MCP prompt — `sketchup_modeling_strategy` —
+defined in `src/sketchup_mcp/prompts.py`. It teaches Claude the
+project conventions (pre-flight checks, typed-tools-vs-`eval_ruby`,
+millimeter/degree units, post-mutation `bbox_mm` verification, known
+traps). MCP-aware clients (e.g. Claude Desktop) surface it in the
+slash menu.
 
 ## Releasing
 

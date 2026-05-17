@@ -5,7 +5,7 @@ require 'fileutils'
 
 # Configuration
 EXTENSION_NAME = 'su_mcp'
-VERSION = '0.0.3'
+VERSION = '0.1.0'
 OUTPUT_NAME = "#{EXTENSION_NAME}_v#{VERSION}.rbz"
 
 # Create temp directory
@@ -13,10 +13,14 @@ temp_dir = "#{EXTENSION_NAME}_temp"
 FileUtils.rm_rf(temp_dir) if Dir.exist?(temp_dir)
 FileUtils.mkdir_p(temp_dir)
 
-# Copy files to temp directory
+# Copy files to temp directory.
+# NB: an .rbz package must contain exactly one root .rb file (the loader)
+# and a directory of the same name — anything else at root causes the
+# Trimble Extension Signature service to reject the package with
+# "Extra files found." `extension.json` lives INSIDE su_mcp/ (already
+# carried by cp_r above) — do NOT copy it to root.
 FileUtils.cp_r('su_mcp', temp_dir)
 FileUtils.cp('su_mcp.rb', temp_dir)
-FileUtils.cp('extension.json', temp_dir)
 
 # Create zip file
 FileUtils.rm(OUTPUT_NAME) if File.exist?(OUTPUT_NAME)

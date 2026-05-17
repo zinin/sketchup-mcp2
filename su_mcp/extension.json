@@ -1,10 +1,10 @@
 {
   "name": "Sketchup MCP Server",
   "description": "Model Context Protocol server for Sketchup",
-  "creator": "MCP Team",
-  "copyright": "2024",
+  "creator": "Alexander Zinin",
+  "copyright": "2026",
   "license": "MIT",
   "product_id": "SU_MCP_SERVER",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "build": "1"
 } 

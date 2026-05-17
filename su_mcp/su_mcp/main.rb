@@ -17,12 +17,14 @@ module SU_MCP
   LOAD_ORDER = %w[
     core/config
     core/errors
+    core/compat
     helpers/units
     core/logger
     helpers/validation
     helpers/entities
     helpers/geometry
     core/framing
+    core/client_state
     handlers/dispatch
     handlers/geometry
     handlers/operations
@@ -31,6 +33,8 @@ module SU_MCP
     handlers/export
     handlers/model
     handlers/eval
+    handlers/system
+    handlers/view
     core/server
     core/application
     ui/settings_validator

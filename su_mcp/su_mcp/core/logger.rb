@@ -10,12 +10,18 @@ module SU_MCP
         write(line)
       end
 
-      def self.log_tool(tool, status, extra = nil)
-        log("INFO", "tool=#{tool} status=#{status}#{extra ? " " + extra : ""}")
+      def self.log_tool(tool, status, extra = nil, client_label: nil)
+        body = "tool=#{tool} status=#{status}"
+        body << " client=#{client_label}" if client_label
+        body << " #{extra}" if extra
+        log("INFO", body)
       end
 
-      def self.log_error(tool, exception)
-        log("ERROR", "tool=#{tool} class=#{exception.class.name} msg=#{exception.message}")
+      def self.log_error(tool, exception, client_label: nil)
+        body = "tool=#{tool}"
+        body << " client=#{client_label}" if client_label
+        body << " class=#{exception.class.name} msg=#{exception.message}"
+        log("ERROR", body)
         return unless Config.log_level == "DEBUG" && exception.backtrace
         exception.backtrace.first(3).each { |bt| write("    #{bt}") }
       end

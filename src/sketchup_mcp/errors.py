@@ -16,6 +16,16 @@ class SketchUpError(Exception):
         super().__init__(message)
 
 
+class IncompatibleVersionError(SketchUpError):
+    """Raised on Python↔Ruby version mismatch (or missing handshake field).
+
+    Maps to JSON-RPC code -32001 (sibling of -32000 used by StructuredError)
+    so log-grep can distinguish 'version-mismatch' from 'plain server error'.
+    """
+    def __init__(self, message: str):
+        super().__init__(code=-32001, message=message)
+
+
 def _short_json(value: object) -> str:
     """Serialise ``value`` and truncate to ``_PARAMS_TRUNCATE_AT`` bytes.
 
