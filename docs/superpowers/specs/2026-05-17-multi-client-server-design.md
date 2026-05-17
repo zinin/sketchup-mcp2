@@ -317,9 +317,19 @@ Read iterations are bounded per client (50 chunks × 64 KB = 3.2 MB).
 With N clients that means up to N × 3.2 MB drained per tick — acceptable
 on desktop hardware.
 
-Frames decoded *before* an error in the same chunk **do** make it into
-`@frame_queue`; `process_frame_queue` will skip them later because
-`state.closed?` becomes true.
+A framing error (zero-length / oversize length prefix) raises
+`StructuredError` out of `FrameReader#feed` *before* the method returns
+the accumulator, so **any frames decoded in earlier iterations of the
+same `feed(chunk)` call are discarded**. This is acceptable: a framing
+error means the stream is desynced (the bad length prefix proves we
+cannot trust where the next frame begins), so even the bodies that
+appeared to decode cleanly may have started from the wrong boundary.
+We close the client and let it reconnect.
+
+Pending frames belonging to this client that were already pushed onto
+`@frame_queue` in **previous ticks** are not removed from the queue —
+they will be skipped by the `state.closed?` check at the top of each
+iteration in `process_frame_queue`.
 
 #### process_frame_queue
 
@@ -533,6 +543,12 @@ After `state.handshaked = true`:
 - Subsequent server responses are regular JSON-RPC, **without** the
   `server_version` field.
 - `tools/call` works as today.
+- A second `hello` after handshake is treated as an ordinary unknown
+  method: `Dispatch.handle` returns `-32601 method not found`. The
+  connection stays open. No special "second hello" path exists — this
+  is deliberate (symmetry with every other unknown method; the
+  one-shot-on-connect contract is documented, not enforced as a
+  protocol-violation gate).
 - `Handlers::Dispatch.handle` no longer calls
   `Core::Compat.check_python_version` — the check is gone from the
   per-request path entirely.

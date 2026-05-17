@@ -32,7 +32,7 @@
 - `su_mcp/su_mcp/core/compat.rb` — adjust error wording (no more "every request carries client_version")
 - `src/sketchup_mcp/connection.py` — add `_handshake()` in `connect()`, drop `client_version` from per-request envelope, drop per-response `server_version` check
 - `src/sketchup_mcp/compat.py` — adjust error wording
-- `test/test_server_compat.rb` — rewrite as Dispatch tests (drop version-check cases; assert post-handshake dispatch semantics)
+- `test/test_server_compat.rb` → **renamed** to `test/test_dispatch_post_handshake.rb` and rewritten (drop version-check cases; assert post-handshake dispatch semantics)
 - `tests/test_connection.py` — rewrite for handshake roundtrip, drop `client_version` assertions
 - `tests/test_version_handshake.py` — rewrite for one-time handshake semantics
 - `tests/test_version_tool.py` — minor cleanup (get_version tool stays, but no longer "bypass diagnostic")
@@ -370,20 +370,29 @@ multi-client server logging."
 
 **Files:**
 - Modify: `su_mcp/su_mcp/handlers/dispatch.rb`
-- Modify: `test/test_server_compat.rb` (rewrite — drop version cases, add post-handshake dispatch cases)
+- Rename + rewrite: `test/test_server_compat.rb` → `test/test_dispatch_post_handshake.rb` (drop version cases, add post-handshake dispatch cases)
 
 **Context:** Today every request to `Dispatch.handle` carries `client_version` and `Dispatch` calls `Core::Compat.check_python_version`. With the upcoming handshake, version verification moves to a one-shot at connect-time (handled in `Server`, not `Dispatch`). `Dispatch` becomes the post-handshake-only path. The dormant `resources/list` / `prompts/list` branches (already never reached because FastMCP serves these Python-side) go away in the same edit.
 
-- [ ] **Step 1: Rewrite `test/test_server_compat.rb`**
+- [ ] **Step 1: Rename and rewrite `test/test_server_compat.rb` → `test/test_dispatch_post_handshake.rb`**
 
-Replace the **entire file** contents with:
+First, rename the file so its name reflects the new content (compat-specific tests move to `test_server_handshake.rb`):
+
+```bash
+git mv test/test_server_compat.rb test/test_dispatch_post_handshake.rb
+# If test/run_all.rb references the old name explicitly, update it
+# (most run_all.rb implementations use a glob and don't need editing).
+grep -nE "test_server_compat" test/run_all.rb || echo "no explicit reference — glob will pick the renamed file"
+```
+
+Then replace the **entire renamed file's** contents with:
 
 ```ruby
-# test/test_server_compat.rb — Dispatch.handle behavior after one-time
-# handshake (no per-request version check). Tests the post-handshake
-# protocol surface: tools/call dispatch, unknown methods, malformed
-# envelopes, notification handling. Version-handshake logic itself is
-# tested in test/test_server_handshake.rb.
+# test/test_dispatch_post_handshake.rb — Dispatch.handle behavior after
+# the one-time handshake (no per-request version check). Tests the
+# post-handshake protocol surface: tools/call dispatch, unknown methods,
+# malformed envelopes, notification handling. Version-handshake logic
+# itself is tested in test/test_server_handshake.rb.
 
 require "minitest/autorun"
 require "json"
@@ -510,7 +519,7 @@ end
 - [ ] **Step 2: Run the rewritten test and verify it fails**
 
 ```bash
-ruby test/test_server_compat.rb 2>&1 | tail -10
+ruby test/test_dispatch_post_handshake.rb 2>&1 | tail -10
 # Expected: most tests fail. Likely failures:
 # - test_dispatch_prompts_list_returns_method_not_found — fails because
 #   dispatch.rb still has the "resources/list", "prompts/list" branch.
@@ -586,7 +595,7 @@ Keep `validate_envelope!`, `build_success_response`, `wrap_content`, `call_handl
 - [ ] **Step 4: Run the rewritten test and verify it passes**
 
 ```bash
-ruby test/test_server_compat.rb 2>&1 | tail -3
+ruby test/test_dispatch_post_handshake.rb 2>&1 | tail -3
 # Expected: 11 runs, ~14 assertions, 0 failures
 ```
 
@@ -604,7 +613,9 @@ If any other Ruby test fails, it likely depends on the removed `client_version` 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add su_mcp/su_mcp/handlers/dispatch.rb test/test_server_compat.rb
+git add su_mcp/su_mcp/handlers/dispatch.rb test/test_dispatch_post_handshake.rb
+# `git mv` from Step 1 already staged the rename; the new file is at
+# test/test_dispatch_post_handshake.rb in the index.
 git commit -m "refactor(ruby): drop per-request version check and dormant branches from Dispatch
 
 Per-request client_version verification moves to Server's connect-time
