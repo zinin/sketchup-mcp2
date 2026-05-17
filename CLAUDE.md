@@ -16,13 +16,32 @@ SketchupMCP bridges Claude AI and SketchUp via the Model Context Protocol (MCP).
 - **SketchUp is single-threaded**: the Ruby extension cannot use threads; all I/O runs in `UI.start_timer` callbacks.
 - **Wire protocol** (v0.0.1+): 4-byte big-endian length-prefix framing, 64 MiB cap.
 - **Persistent socket**: Python server holds one TCP connection; `asyncio.Lock` serializes tool-calls. Ruby reads non-blocking inside `UI.start_timer`, capped at 50 reads per tick (~3.2 MB) to keep SketchUp's UI responsive.
-- **Ruby accepts a single TCP client at a time**: `core/server.rb` has one `@client` slot (`accept_one_client` runs only when `@client.nil?`); a second concurrent client gets `ECONNREFUSED`. To run `examples/smoke_check.py` while a Claude Code session has the `sketchup` MCP server attached, restart the SketchUp plugin (Plugins → MCP Server → Start) or temporarily disable `sketchup` in Claude Code's MCP config — both release the existing client. Ruby auto-resets after `IDLE_DEADLINE_S = 300.0` seconds without progress.
+- **Ruby supports N concurrent TCP clients**: `core/server.rb` keeps
+  `@clients` (sock → ClientState) and a global FIFO `@frame_queue`.
+  Each timer tick: accept pending connections, drain reads from every
+  client into per-client `FrameReader`, dispatch queued frames in
+  arrival order. Operations are still serialised on the SketchUp UI
+  thread (single-threaded Ruby API). Per-client errors close only the
+  offending client; other clients keep running. **Logical races between
+  clients on the model are the user's responsibility** — the server
+  does no locking. Half-open sockets are detected via `SO_KEEPALIVE`
+  (OS default ~2h).
 - **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; cast incoming string IDs with `.to_i`.
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
 - **Mutating handlers wrap edits in `model.start_operation`/`commit_operation`** so `undo` rolls back atomically.
-- **Version handshake**: every JSON-RPC request carries `client_version` and every response carries `server_version`. Both sides hard-fail on mismatch (Python raises `IncompatibleVersionError`, Ruby returns JSON-RPC error code `-32001`; Python promotes inbound `-32001` envelopes to `IncompatibleVersionError` so callers catch one class). Notifications (no `id`) with mismatched `client_version` are logged WARN and silently dropped per JSON-RPC 2.0. The `get_version` tool is the only diagnostic bypass — it always returns a payload, even on mismatch, and lives in `_RETRY_SAFE_TOOLS`. Bypass is name-based: Python checks `name == "get_version"`; Ruby checks `method == "tools/call" && params.name == "get_version"` (the JSON-RPC `method` is never the bare tool name in this protocol). Compatibility ranges live in `src/sketchup_mcp/compat.py` and `su_mcp/su_mcp/core/compat.rb`; both use strict `\A\d+\Z` regex parsing.
+- **Version handshake (one-time on connect)**: every TCP connection MUST
+  begin with a JSON-RPC `hello` request carrying
+  `params.client_version`. The server validates against
+  `core/compat.rb`'s `MIN_PYTHON`..`MAX_PYTHON` range and replies with
+  `{server_version, client_id}` in `result`. Mismatches return JSON-RPC
+  error `-32001` (`IncompatibleVersionError` on the Python side) and
+  the server closes the socket. After a successful handshake, regular
+  `tools/call` requests carry no `client_version` field and responses
+  carry no `server_version` field. Compatibility ranges live in
+  `src/sketchup_mcp/compat.py` and `su_mcp/su_mcp/core/compat.rb`.
+  `get_version` remains a regular tool returning the verdict payload.
 
 ## Development Commands
 
@@ -159,11 +178,6 @@ project conventions (pre-flight checks, typed-tools-vs-`eval_ruby`,
 millimeter/degree units, post-mutation `bbox_mm` verification, known
 traps). MCP-aware clients (e.g. Claude Desktop) surface it in the
 slash menu.
-
-> **Note:** `su_mcp/su_mcp/handlers/dispatch.rb` still has a dormant
-> `prompts/list → []` branch. FastMCP serves prompts Python-side and
-> never forwards `prompts/*` to Ruby, so the branch is never exercised
-> but left in place for safety.
 
 ## Releasing
 
