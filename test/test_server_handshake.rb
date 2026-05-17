@@ -23,20 +23,12 @@ class TestServerHandshake < Minitest::Test
     SU_MCP::Core::Config.host      = "127.0.0.1"
     SU_MCP::Core::Config.port      = 9876
     SU_MCP::Core::Config.log_level = "ERROR"
-    @orig_io_select_writable = SU_MCP::Core::Server.instance_method(:io_select_writable?)
-  end
-
-  def teardown
-    SU_MCP::Core::Server.send(:define_method, :io_select_writable?, @orig_io_select_writable)
   end
 
   def run_one_tick(fake_server)
     srv = SU_MCP::Core::Server.new
     srv.instance_variable_set(:@server, fake_server)
     srv.instance_variable_set(:@running, true)
-    SU_MCP::Core::Server.class_eval do
-      def io_select_writable?(_sock); true; end
-    end
     srv.send(:on_timer_tick)
     srv
   end
@@ -188,10 +180,7 @@ class TestServerHandshake < Minitest::Test
     srv = SU_MCP::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
-    SU_MCP::Core::Server.class_eval do
-      def io_select_writable?(_sock); true; end
-    end
-    sock.define_singleton_method(:write) { |_| raise Errno::EPIPE, "synthetic" }
+    sock.define_singleton_method(:write_nonblock) { |_| raise Errno::EPIPE, "synthetic" }
     srv.send(:on_timer_tick)
     assert sock.closed?, "rejected client must be closed even when write raises EPIPE"
   end

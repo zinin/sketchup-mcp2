@@ -1,5 +1,7 @@
 # test/test_server_multi_client.rb — Server multi-client unit tests.
-# Uses FakeSocket + FakeServer + monkey-patched IO.select to drive the tick.
+# Uses FakeSocket + FakeServer to drive the tick. FakeSocket#write_nonblock
+# accepts all bytes synchronously by default; per-test stubs simulate partial
+# writes or IO::WaitWritable backpressure.
 require "minitest/autorun"
 require "json"
 
@@ -31,13 +33,6 @@ class TestServerMultiClient < Minitest::Test
     SU_MCP::Core::Config.host      = "127.0.0.1"
     SU_MCP::Core::Config.port      = 9876
     SU_MCP::Core::Config.log_level = "ERROR"   # silence INFO chatter
-
-    # Always-ready writes; per-test override when testing write_timeout.
-    @orig_io_select_writable = SU_MCP::Core::Server.instance_method(:io_select_writable?)
-  end
-
-  def teardown
-    SU_MCP::Core::Server.send(:define_method, :io_select_writable?, @orig_io_select_writable)
   end
 
   # Build a Server with a FakeServer in place of TCPServer and run a
@@ -46,12 +41,6 @@ class TestServerMultiClient < Minitest::Test
     srv = SU_MCP::Core::Server.new
     srv.instance_variable_set(:@server, fake_server)
     srv.instance_variable_set(:@running, true)
-
-    # Force IO.select to always be ready for writes during this tick.
-    SU_MCP::Core::Server.class_eval do
-      def io_select_writable?(_sock); true; end
-    end
-
     srv.send(:on_timer_tick)
     srv
   end
@@ -192,10 +181,6 @@ class TestServerMultiClient < Minitest::Test
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
 
-    SU_MCP::Core::Server.class_eval do
-      def io_select_writable?(_sock); true; end
-    end
-
     # Wrap write_response so it closes A right after the first *post-handshake*
     # write. Hello reply (id=0) is allowed through; A1 (id=1) is the trigger;
     # A2 and A3 should be skipped because state.closed? becomes true.
@@ -293,9 +278,6 @@ class TestServerMultiClient < Minitest::Test
     srv = SU_MCP::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
-    SU_MCP::Core::Server.class_eval do
-      def io_select_writable?(_sock); true; end
-    end
     srv.send(:on_timer_tick)
     # Only the hello reply lands in tick 1 — the tools/call is still incomplete.
     assert_equal [0], all_frames(a.written).map { |f| f["id"] },
@@ -304,5 +286,126 @@ class TestServerMultiClient < Minitest::Test
     srv.send(:on_timer_tick)
     frames = all_frames(a.written)
     assert_equal [0, 1], frames.map { |f| f["id"] }
+  end
+
+  # ---------- D3: non-blocking write path ----------
+
+  def test_write_completes_in_single_tick_when_kernel_ready
+    # FakeSocket#write_nonblock accepts all bytes by default — buffer should
+    # drain to empty before the tick returns.
+    req = fr("jsonrpc" => "2.0", "method" => "tools/call",
+             "params" => { "name" => "get_version", "arguments" => {} },
+             "id" => 1)
+    sock = FakeSocket.new(read_chunks: [hello_frame + req])
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    state = srv.instance_variable_get(:@clients).values.first
+    assert state.pending_write_empty?,
+      "pending_write_bytes should be empty after a single ready tick"
+    assert_nil state.pending_write_deadline_at,
+      "deadline must be cleared once the buffer drains"
+    assert_equal [0, 1], all_frames(sock.written).map { |f| f["id"] }
+  end
+
+  def test_write_resumes_across_ticks_when_partial
+    # Cap the first write_nonblock to 8 bytes, then signal WaitWritable.
+    # The hello reply (~100+ bytes) cannot drain in a single tick.
+    sock = FakeSocket.new(read_chunks: [hello_frame])
+    sock.stub_partial_write(max_bytes_per_call: 8, calls: 1)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    state = srv.instance_variable_get(:@clients).values.first
+    refute state.pending_write_empty?,
+      "8 bytes per partial write should leave the rest in the buffer"
+    refute_nil state.pending_write_deadline_at,
+      "deadline must remain set until the buffer fully drains"
+    # No complete frame yet — only 8 bytes flushed to the wire.
+    assert_equal 8, sock.written.bytesize
+
+    # Remove the cap and tick again — flush_pending_writes_all_clients
+    # should drain the remainder.
+    sock.instance_variable_set(:@partial_write_max_bytes, nil)
+    srv.send(:on_timer_tick)
+    assert state.pending_write_empty?
+    assert_nil state.pending_write_deadline_at
+    frames = all_frames(sock.written)
+    assert_equal 1, frames.size
+    assert_equal 0, frames[0]["id"]
+  end
+
+  def test_write_deadline_closes_client_after_timeout
+    sock = FakeSocket.new(read_chunks: [hello_frame])
+    fs = FakeServer.new([sock])
+    srv = SU_MCP::Core::Server.new
+    srv.instance_variable_set(:@server, fs)
+    srv.instance_variable_set(:@running, true)
+
+    # Tick once with WaitWritable stuck on every call — populates the buffer
+    # and sets the deadline, but writes nothing.
+    sock.stub_write_pending(times: 100)
+    srv.send(:on_timer_tick)
+
+    state = srv.instance_variable_get(:@clients).values.first
+    refute state.pending_write_empty?
+    refute_nil state.pending_write_deadline_at,
+      "deadline should be set after first append"
+
+    # Push the deadline into the past — the next flush must close the client.
+    state.pending_write_deadline_at = Time.now - 1.0
+    srv.send(:on_timer_tick)
+
+    assert sock.closed?, "client should be closed after the deadline elapses"
+    refute srv.instance_variable_get(:@clients).key?(sock),
+      "closed client must be removed from @clients"
+  end
+
+  def test_write_failure_isolates_to_offending_client
+    req_a = fr("jsonrpc" => "2.0", "method" => "tools/call",
+               "params" => { "name" => "get_version", "arguments" => {} },
+               "id" => 100)
+    req_b = fr("jsonrpc" => "2.0", "method" => "tools/call",
+               "params" => { "name" => "get_version", "arguments" => {} },
+               "id" => 200)
+    a = FakeSocket.new(read_chunks: [hello_frame + req_a])
+    b = FakeSocket.new(read_chunks: [hello_frame + req_b])
+    # A raises EPIPE on every write_nonblock — B is normal.
+    a.define_singleton_method(:write_nonblock) { |_| raise Errno::EPIPE, "synthetic" }
+    fs = FakeServer.new([a, b])
+    srv = run_one_tick(fs)
+
+    assert a.closed?, "A should be closed when write_nonblock raises EPIPE"
+    refute b.closed?, "B must remain connected"
+    refute srv.instance_variable_get(:@clients).key?(a)
+    assert_equal [0, 200], all_frames(b.written).map { |f| f["id"] },
+      "B receives both hello reply + get_version reply"
+  end
+
+  def test_pending_write_overflow_closes_client
+    # Build a server with one accepted client whose state is pre-populated
+    # such that the next write would tip the buffer past the 16 MiB cap.
+    sock = FakeSocket.new
+    fs = FakeServer.new([sock])
+    srv = SU_MCP::Core::Server.new
+    srv.instance_variable_set(:@server, fs)
+    srv.instance_variable_set(:@running, true)
+    srv.send(:accept_pending_clients)
+    state = srv.instance_variable_get(:@clients).values.first
+
+    cap     = SU_MCP::Core::Server::PENDING_WRITE_MAX_BYTES
+    near    = "x" * (cap - 64)   # just below the cap; can't trigger overflow alone
+    state.append_pending_write(near)
+    state.pending_write_deadline_at = Time.now + 60   # don't deadline during test
+
+    # Crafting an overflow: ask write_response to encode a typical small
+    # response — the projected buffer (~near + frame_bytes) overshoots cap.
+    response = { "jsonrpc" => "2.0",
+                 "result" => { "padding" => "y" * 200 },
+                 "id" => 1 }
+    srv.send(:write_response, state, response)
+
+    assert sock.closed?, "client should be closed on pending_write_overflow"
+    refute srv.instance_variable_get(:@clients).key?(sock)
   end
 end

@@ -70,4 +70,64 @@ class TestClientState < Minitest::Test
     state.close_after_response = true
     assert state.close_after_response
   end
+
+  # ---------- D3: pending-write buffer ----------
+
+  def test_pending_write_bytes_defaults_to_empty_ascii_8bit
+    state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+    assert_equal "", state.pending_write_bytes
+    assert_equal 0, state.pending_write_bytes.bytesize
+    assert_equal Encoding::ASCII_8BIT, state.pending_write_bytes.encoding
+    assert state.pending_write_empty?
+  end
+
+  def test_pending_write_deadline_at_defaults_to_nil_and_is_mutable
+    state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+    assert_nil state.pending_write_deadline_at
+    t = Time.now + 5
+    state.pending_write_deadline_at = t
+    assert_equal t, state.pending_write_deadline_at
+  end
+
+  def test_append_pending_write_concatenates_and_preserves_ascii_8bit
+    state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+    state.append_pending_write("abc")
+    state.append_pending_write("xyz")
+    assert_equal "abcxyz", state.pending_write_bytes
+    assert_equal Encoding::ASCII_8BIT, state.pending_write_bytes.encoding
+    assert_equal 6, state.pending_write_bytes.bytesize
+  end
+
+  def test_append_pending_write_coerces_utf8_input_to_ascii_8bit
+    state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+    utf8 = "héllo".dup.force_encoding(Encoding::UTF_8)
+    state.append_pending_write(utf8)
+    assert_equal Encoding::ASCII_8BIT, state.pending_write_bytes.encoding
+    assert_equal utf8.bytesize, state.pending_write_bytes.bytesize
+  end
+
+  def test_consume_pending_write_truncates_leading_bytes
+    state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+    state.append_pending_write("0123456789")
+    state.consume_pending_write(4)
+    assert_equal "456789", state.pending_write_bytes
+    assert_equal Encoding::ASCII_8BIT, state.pending_write_bytes.encoding
+    refute state.pending_write_empty?
+  end
+
+  def test_consume_pending_write_full_drain_yields_empty_buffer
+    state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+    state.append_pending_write("hello")
+    state.consume_pending_write(5)
+    assert state.pending_write_empty?
+    assert_equal Encoding::ASCII_8BIT, state.pending_write_bytes.encoding
+  end
+
+  def test_consume_pending_write_with_zero_or_negative_is_noop
+    state = SU_MCP::Core::ClientState.new(0, FakeSockForState.new)
+    state.append_pending_write("hello")
+    state.consume_pending_write(0)
+    state.consume_pending_write(-1)
+    assert_equal "hello", state.pending_write_bytes
+  end
 end

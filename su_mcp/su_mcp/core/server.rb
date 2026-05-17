@@ -5,11 +5,12 @@ require "socket"
 module SU_MCP
   module Core
     class Server
-      TIMER_INTERVAL          = 0.1     # seconds between ticks
-      READ_CHUNK              = 64 * 1024
-      READ_MAX_ITERATIONS     = 50      # per client per tick
-      WRITE_SELECT_TIMEOUT_S  = 1.0     # write probe (per client per write)
-      ACCEPT_ABORTED_MAX      = 10      # defensive cap on ECONNABORTED churn
+      TIMER_INTERVAL            = 0.1     # seconds between ticks
+      READ_CHUNK                = 64 * 1024
+      READ_MAX_ITERATIONS       = 50      # per client per tick
+      ACCEPT_ABORTED_MAX        = 10      # defensive cap on ECONNABORTED churn
+      WRITE_DEADLINE_S          = 5.0     # cumulative drain deadline per pending-write
+      PENDING_WRITE_MAX_BYTES   = 16 * 1024 * 1024  # 16 MiB per-client buffer cap
 
       def initialize
         @server         = nil
@@ -51,6 +52,7 @@ module SU_MCP
         @processing = true
         begin
           accept_pending_clients
+          flush_pending_writes_all_clients
           drain_reads_all_clients
           process_frame_queue
         rescue StandardError => e
@@ -58,6 +60,15 @@ module SU_MCP
           Logger.log_error("server.timer", e)
         ensure
           @processing = false
+        end
+      end
+
+      # Iterate `@clients.values` (Hash#values returns a snapshot — same
+      # pattern as drain_reads_all_clients) and try to drain any in-flight
+      # writes. Per-client errors close only the offending client.
+      def flush_pending_writes_all_clients
+        @clients.values.each do |state|
+          flush_pending_write(state)
         end
       end
 
@@ -240,6 +251,7 @@ module SU_MCP
       end
 
       def write_response(state, response)
+        return if state.closed?
         body  = encode_response_body(response)
         frame =
           begin
@@ -262,24 +274,69 @@ module SU_MCP
             end
           end
 
-        unless io_select_writable?(state.sock)
+        # Append to the per-client buffer and try to drain immediately.
+        # Overflow guard: cap the cumulative pending bytes per client to
+        # protect against pathological accumulation when many handlers
+        # reply faster than the client can read.
+        projected = state.pending_write_bytes.bytesize + frame.bytesize
+        if projected > PENDING_WRITE_MAX_BYTES
+          Logger.log_tool("server", "pending_write_overflow",
+            "limit=#{PENDING_WRITE_MAX_BYTES} projected=#{projected}",
+            client_label: state.label)
+          close_client(state, "pending_write_overflow")
+          return
+        end
+        state.append_pending_write(frame)
+        if state.pending_write_deadline_at.nil?
+          state.pending_write_deadline_at = Time.now + WRITE_DEADLINE_S
+        end
+        # Attempt to drain right now — avoids wasting one tick when the
+        # kernel send-buffer is ready.
+        flush_pending_write(state)
+      end
+
+      # Cooperative non-blocking drain of the per-client pending-write buffer.
+      # Called both from write_response (right after appending a new frame)
+      # and from flush_pending_writes_all_clients (each tick). On full drain
+      # honours close_after_response (used by handshake rejection).
+      def flush_pending_write(state)
+        return if state.closed?
+        return if state.pending_write_empty?
+
+        if state.pending_write_deadline_at &&
+           Time.now > state.pending_write_deadline_at
           Logger.log_tool("server", "write_timeout",
             client_label: state.label)
           close_client(state, "write_timeout")
           return
         end
-        state.sock.write(frame)
-        state.sock.flush
-        if state.close_after_response
-          close_client(state, "handshake_rejected")
+
+        loop do
+          n = state.sock.write_nonblock(state.pending_write_bytes)
+          state.consume_pending_write(n)
+          if state.pending_write_empty?
+            state.pending_write_deadline_at = nil
+            if state.close_after_response
+              close_client(state, "handshake_rejected")
+            end
+            return
+          end
+          # Defensive: if write_nonblock claimed success but wrote zero bytes,
+          # break out to avoid a tight loop. Treat it like WaitWritable —
+          # retry next tick.
+          return if n <= 0
         end
+      rescue IO::WaitWritable
+        # Kernel send-buffer full — preserve buffer + deadline; retry next tick.
+        return
       rescue Errno::EPIPE, Errno::ECONNRESET, IOError
         close_client(state, "write_failed")
-      end
-
-      # Indirection lets test code stub IO.select cleanly.
-      def io_select_writable?(sock)
-        IO.select(nil, [sock], nil, WRITE_SELECT_TIMEOUT_S)
+      rescue StandardError => e
+        # Defense-in-depth: any other unexpected exception (encoding error
+        # on a misbehaving socket, etc.) must close the offending client so
+        # the per-client isolation invariant holds.
+        Logger.log_error("server.flush_pending_write", e, client_label: state.label)
+        close_client(state, "write_error: #{e.class.name}")
       end
 
       def encode_response_body(response)
