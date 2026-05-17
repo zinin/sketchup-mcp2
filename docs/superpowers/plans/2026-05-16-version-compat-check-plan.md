@@ -162,47 +162,19 @@ Production code handles both scenarios correctly; tests are regression guards on
 
 ## Task 12: Final verification
 
-**12.1 Python test suite** — ✅ green: `115 passed, 0 failed, 1 pre-existing deprecation warning`.
+✅ Done — see commits: `c0a8680` (external review auto-fixes, lifted Python tests to 119 / Ruby to 189 / 428), `aaaca02` (smoke step 18 split-host fix + smoke step 22 raw-payload verdict + CLAUDE.md single-client / split-host constraints).
 
-**12.2 Ruby test suite** — ✅ green: `180 runs / 419 assertions / 0 failures / 0 errors / 0 skips`.
-
-**12.3 Manual `.rbz` rebuild + SketchUp reinstall + Claude Code restart** — ⏳ pending user.
-
-```bash
-cd /opt/github/zinin/sketchup-mcp2/su_mcp && ruby package.rb && cd ..
-ls -la su_mcp/su_mcp_v0.0.3.rbz
-```
-
-Then:
-1. SketchUp Extension Manager → uninstall the previous `su_mcp` → install the freshly built `.rbz`.
-2. Restart SketchUp (or Plugins → MCP Server → Start Server).
-3. Restart the Claude Code session so it picks up the freshly built `uv pip install -e .` Python side.
-
-**12.4 Live `get_version()` call** — ⏳ pending user (depends on 12.3).
-
-Expected payload:
-```json
-{
-  "python_version": "0.0.3",
-  "ruby_version": "0.0.3",
-  "min_compatible_ruby": "0.0.3",
-  "max_compatible_ruby": "0.0.3",
-  "compatible": true,
-  "error": null
-}
-```
-
-**12.5 Live `python examples/smoke_check.py`** — ⏳ pending user.
-
-Expected: all 22 steps green, including the new step 22 `versions: python=0.0.3 ruby=0.0.3`.
+Live verification was performed against remote SketchUp 2026 at `192.168.20.20:9876` (split-host setup). All 22 smoke steps green; the matched-pair `0.0.3 ↔ 0.0.3` handshake reports `compatible=true` both via the MCP `get_version` tool (enriched payload from `tools.py::get_version`) and via direct-socket smoke step 22 (two-way verdict computed locally).
 
 ---
 
 ## Implementation Summary
 
-11 atomic commits, each spec-reviewed + code-quality-reviewed:
+13 atomic commits on `feature/viewport-screenshot-and-prompt`:
 
 ```
+aaaca02 chore: support split-host smoke check + document constraints
+c0a8680 review: auto-fix valid issues from external review
 9d67ab7 docs(readme): mention version handshake feature + get_version tool
 3b0f000 docs(claude-md): document version handshake + get_version tool
 8b30bd0 docs(release): grow version bump list 5 → 7 places (compat.py + compat.rb)
@@ -216,4 +188,4 @@ b6887ce feat(compat): add Python-side version compatibility module
 a80cef4 feat(errors): add IncompatibleVersionError for -32001 mismatches
 ```
 
-After steps 12.3-12.5 pass, the branch is ready for `superpowers:finishing-a-development-branch` (separate session — also performs `git rm` of design/plan docs per global CLAUDE.md rule).
+Branch is ready for `superpowers:finishing-a-development-branch` (separate session — also performs `git rm` of design/plan docs for both viewport-screenshot AND version-compat-check per global CLAUDE.md rule before opening the PR to `master`).
