@@ -118,8 +118,9 @@ class TestDispatchPostHandshake < Minitest::Test
     req = make_request(method: "tools/call",
       params: { "name" => "get_version", "arguments" => {} }, id: 1)
     resp = SU_MCP::Handlers::Dispatch.handle(req)
-    # server_version injection moves into Server#encode_response_body
-    # — Dispatch returns a pure JSON-RPC envelope.
+    # server_version is no longer injected per-request — it's delivered once
+    # in Server#handle_pre_handshake's hello reply. Dispatch returns a pure
+    # JSON-RPC envelope with no version field.
     refute resp.key?("server_version"),
       "Dispatch must not embed server_version; that lives in Server now"
   end

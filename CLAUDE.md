@@ -20,7 +20,9 @@ SketchupMCP bridges Claude AI and SketchUp via the Model Context Protocol (MCP).
   `@clients` (sock → ClientState) and a global FIFO `@frame_queue`.
   Each timer tick: accept pending connections, drain reads from every
   client into per-client `FrameReader`, dispatch queued frames in
-  arrival order. Operations are still serialised on the SketchUp UI
+  FIFO decode-arrival order (accept-order across clients, decode-order
+  within each client — single shared queue, not round-robin).
+  Operations are still serialised on the SketchUp UI
   thread (single-threaded Ruby API). Per-client errors close only the
   offending client; other clients keep running. **Logical races between
   clients on the model are the user's responsibility** — the server

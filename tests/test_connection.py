@@ -148,7 +148,10 @@ async def test_send_command_incomplete_read_disconnects(make_connection, fake_st
 async def test_send_command_retries_on_zero_byte_eof_for_readonly(make_connection, fake_streams):
     """Stale-socket для read-only tool: peer закрыл соединение, 0 байт ответа.
 
-    Сценарий — Ruby-side idle_timeout убил клиента в простое между tool-вызовами.
+    Сценарий — Ruby server (или сетевой layer) закрыл сокет в простое между
+    tool-вызовами; idle deadline сам по себе удалён в multi-client редизайне,
+    но half-open detection / explicit server.stop / OS-level RST дают тот же
+    эффект — peer закрыл, клиент об этом ещё не знает.
     asyncio.StreamWriter.is_closing() от peer-side FIN не становится True, поэтому
     send_command идёт в _send_frame → drain ok → _recv_frame → readexactly(4) →
     IncompleteReadError(partial=b"", expected=4). Для READ-ONLY tools повтор
@@ -677,7 +680,8 @@ async def test_stale_socket_retry_redoes_handshake():
         "id": 2,
     }).encode("utf-8"))
     async with FakeServerMulti([
-        # client 1: handshake then close (simulates Ruby idle_timeout kill)
+        # client 1: handshake then close (simulates Ruby server-side close
+        # — explicit stop, half-open detection, OS RST, etc.)
         ([hello_success(compat.MAX_RUBY)], True),
         # client 2: handshake; stay open to accept tool/call, then reply
         ([hello_success(compat.MAX_RUBY), tool_reply], False),

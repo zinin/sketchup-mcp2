@@ -8,10 +8,11 @@ a short scripted workload. Asserts all workers complete without error.
 Pre-conditions:
   1. SketchUp is running with the multi-client Ruby plugin installed
      and started via Plugins → MCP Server → Start.
-  2. NO other client is attached (`sketchup` MCP must be detached from
-     Claude Code, or the Ruby plugin restarted) — the server still
-     enforces queueing per connection, but we want a clean baseline.
-  3. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT env vars.
+  2. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT env vars.
+
+Other clients (e.g. an attached Claude Code MCP session) may coexist
+with this smoke run — the new multi-client server multiplexes them on
+the SketchUp UI thread; no detach/restart workaround is needed.
 
 Usage:
     python examples/smoke_multi_client.py                 # 2 workers

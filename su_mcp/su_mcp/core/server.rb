@@ -102,7 +102,8 @@ module SU_MCP
       # design §5.3 / §13.1 for the rationale (round-robin reads were
       # considered and explicitly rejected).
       def drain_reads_all_clients
-        # snapshot — close_client may modify @clients mid-iteration
+        # `Hash#values` returns a fresh array — iteration is safe even when
+        # drain_one_client triggers close_client, which mutates @clients.
         @clients.values.each do |state|
           drain_one_client(state)
         end
@@ -145,9 +146,9 @@ module SU_MCP
 
       def handle_frame(state, body)
         request = JSON.parse(body)
-        is_notification = request.is_a?(Hash) && !request.key?("id")
 
         if !state.handshaked
+          is_notification = request.is_a?(Hash) && !request.key?("id")
           if is_notification
             # JSON-RPC §4.1: notifications never receive a response. Pre-handshake
             # notifications are a protocol violation; close silently.
