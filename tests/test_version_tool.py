@@ -32,8 +32,8 @@ async def test_get_version_compatible_payload(monkeypatch):
                 "type": "text",
                 "text": json.dumps({
                     "ruby_version": compat.MAX_RUBY,
-                    "min_compatible_python": "0.0.3",
-                    "max_compatible_python": "0.0.3",
+                    "min_compatible_python": compat.CLIENT_VERSION,
+                    "max_compatible_python": compat.CLIENT_VERSION,
                 }),
             }],
             "isError": False,
@@ -149,8 +149,8 @@ async def test_two_way_compat_drift_detected(monkeypatch):
                 "type": "text",
                 "text": json.dumps({
                     "ruby_version": "1.0.0",
-                    # Ruby's advertised Python range excludes CLIENT_VERSION
-                    # (currently 0.0.3) — that's the drift case.
+                    # Ruby's advertised Python range excludes CLIENT_VERSION —
+                    # that's the drift case.
                     "min_compatible_python": "2.0.0",
                     "max_compatible_python": "2.0.0",
                 }),

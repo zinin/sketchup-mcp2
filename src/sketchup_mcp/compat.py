@@ -14,8 +14,8 @@ from sketchup_mcp.errors import IncompatibleVersionError
 # Policy: MAX_* tracks the new release; MIN_* moves only on a release
 # that breaks wire/handler contract with the previous counterpart.
 # Initial dev state: MIN == MAX (exact match) — bumped together at 0.1.0.
-MIN_RUBY = "0.0.3"
-MAX_RUBY = "0.0.3"
+MIN_RUBY = "0.1.0"
+MAX_RUBY = "0.1.0"
 
 _PART_RE = re.compile(r"\A[0-9]+\Z")
 

@@ -5,9 +5,9 @@ module SU_MCP
       # SERVER_VERSION mirrors the wire-field `server_version` and avoids
       # shadowing Ruby's global `::RUBY_VERSION` (the interpreter version).
       # This is the SketchUp PLUGIN version, bumped at release time.
-      SERVER_VERSION = "0.0.3"
-      MIN_PYTHON   = "0.0.3"
-      MAX_PYTHON   = "0.0.3"
+      SERVER_VERSION = "0.1.0"
+      MIN_PYTHON   = "0.1.0"
+      MAX_PYTHON   = "0.1.0"
 
       PART_RE = /\A[0-9]+\z/.freeze
 

@@ -2,7 +2,7 @@
 
 Step-by-step for the next PyPI/GitHub release. PyPI tokens live in `~/.pypirc` (chmod 600); `twine` reads them automatically.
 
-## Breaking changes (next release)
+## Breaking changes (v0.1.0)
 
 - **Wire protocol: one-time handshake on connect.** Every TCP connection
   must now begin with a JSON-RPC `hello` request carrying
