@@ -2,6 +2,20 @@
 
 Step-by-step for the next PyPI/GitHub release. PyPI tokens live in `~/.pypirc` (chmod 600); `twine` reads them automatically.
 
+## Breaking changes (next release)
+
+- **Wire protocol: one-time handshake on connect.** Every TCP connection
+  must now begin with a JSON-RPC `hello` request carrying
+  `params.client_version`; the server replies with `server_version` and
+  `client_id`. Per-request `client_version` / per-response
+  `server_version` envelopes are **removed**. Old Python clients
+  (`sketchup-mcp2 <= 0.1.x`) fail the handshake against this server and
+  must be upgraded in lockstep with the `.rbz`.
+- **Multi-client support.** The Ruby plugin now accepts N concurrent TCP
+  clients; the previous "first client wins, rest time out" behavior is
+  gone. The `restart plugin between smoke checks` workaround is no
+  longer necessary.
+
 ## 0. Pre-flight
 
 ```bash
