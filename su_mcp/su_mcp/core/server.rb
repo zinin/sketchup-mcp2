@@ -145,7 +145,19 @@ module SU_MCP
 
       def handle_frame(state, body)
         request = JSON.parse(body)
-        Handlers::Dispatch.handle(request)
+        is_notification = request.is_a?(Hash) && !request.key?("id")
+
+        if !state.handshaked
+          if is_notification
+            # JSON-RPC §4.1: notifications never receive a response. Pre-handshake
+            # notifications are a protocol violation; close silently.
+            close_client(state, "pre_handshake_notification")
+            return nil
+          end
+          handle_pre_handshake(state, request)
+        else
+          Handlers::Dispatch.handle(request)
+        end
       rescue JSON::ParserError => e
         Logger.log_error("server.parse", e, client_label: state.label)
         # JSON-RPC §5.1: parse-error responses use id=null.
@@ -160,9 +172,88 @@ module SU_MCP
           Errors.exception_to_data(e, "?", {}), rid)
       end
 
+      def handle_pre_handshake(state, request)
+        unless request.is_a?(Hash) && request["jsonrpc"] == "2.0"
+          return reject_handshake(state, request,
+            StructuredError.new(-32600, "invalid envelope (pre-handshake)"))
+        end
+        method = request["method"]
+
+        unless method == "hello"
+          return reject_handshake(state, request,
+            StructuredError.new(-32600,
+              "first method must be 'hello' (got: #{method.inspect})"))
+        end
+
+        params = request["params"]
+        unless params.is_a?(Hash) && params["client_version"].is_a?(String)
+          return reject_handshake(state, request,
+            StructuredError.new(-32602,
+              "hello requires params.client_version (string)"))
+        end
+
+        begin
+          Core::Compat.check_python_version(params["client_version"])
+        rescue StructuredError => e
+          return reject_handshake(state, request, e)
+        end
+
+        state.handshaked     = true
+        state.client_version = params["client_version"]
+        Logger.log_tool("server", "handshake_ok",
+          "client_version=#{state.client_version}",
+          client_label: state.label)
+
+        # Build a raw JSON-RPC envelope inline — do NOT use
+        # Handlers::Dispatch.build_success_response. That wrapper turns
+        # `result` into the MCP `tools/call` shape
+        # `{content:[{type:text,text:...}], isError:false}`, which would
+        # break the Python client's `result.server_version` / `result.client_id`
+        # reads on the handshake response.
+        {
+          "jsonrpc" => "2.0",
+          "result"  => {
+            "server_version" => Core::Compat::SERVER_VERSION,
+            "client_id"      => state.id,
+          },
+          "id"      => request["id"],
+        }
+      end
+
+      def reject_handshake(state, request, structured_error)
+        rid = request.is_a?(Hash) ? request["id"] : nil
+        Logger.log_tool("server", "handshake_rejected",
+          "code=#{structured_error.code} msg=#{structured_error.message}",
+          client_label: state.label)
+        state.close_after_response = true
+        Errors.build_error_response(structured_error.code,
+          structured_error.message,
+          Errors.exception_to_data(structured_error, "hello", {}), rid)
+      end
+
       def write_response(state, response)
-        body = encode_response_body(response)
-        frame = Framing.encode_frame(body)
+        body  = encode_response_body(response)
+        frame =
+          begin
+            Framing.encode_frame(body)
+          rescue StructuredError => e
+            # Body exceeded the 64 MiB framing cap (or was unexpectedly empty).
+            # Per the per-client isolation invariant we still owe the caller a
+            # response. Try a small fallback envelope; if that won't encode
+            # either, close this client and continue serving the rest.
+            Logger.log_error("server.encode_frame", e, client_label: state.label)
+            rid = response.is_a?(Hash) ? response["id"] : nil
+            fallback = Errors.build_error_response(-32603,
+              "response too large for transport",
+              Errors.exception_to_data(e, "?", {}), rid)
+            begin
+              Framing.encode_frame(JSON.generate(fallback))
+            rescue StandardError
+              close_client(state, "encode_frame_failed")
+              return
+            end
+          end
+
         unless io_select_writable?(state.sock)
           Logger.log_tool("server", "write_timeout",
             client_label: state.label)
@@ -171,6 +262,9 @@ module SU_MCP
         end
         state.sock.write(frame)
         state.sock.flush
+        if state.close_after_response
+          close_client(state, "handshake_rejected")
+        end
       rescue Errno::EPIPE, Errno::ECONNRESET, IOError
         close_client(state, "write_failed")
       end
@@ -181,7 +275,6 @@ module SU_MCP
       end
 
       def encode_response_body(response)
-        response["server_version"] = Core::Compat::SERVER_VERSION if response.is_a?(Hash)
         JSON.generate(response)
       rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
         Logger.log_error("server.encode", e)
@@ -190,7 +283,6 @@ module SU_MCP
         fallback = Errors.build_error_response(-32603,
           "response not serializable: #{e.class.name}",
           { "error" => safe_msg }, rid)
-        fallback["server_version"] = Core::Compat::SERVER_VERSION
         JSON.generate(fallback)
       end
 

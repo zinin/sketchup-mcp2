@@ -55,20 +55,21 @@ module SU_MCP
 
       def self.msg_python_too_old(cv)
         "sketchup-mcp2 v#{cv} is too old for SketchUp plugin v#{SERVER_VERSION} " \
-        "(requires v#{MIN_PYTHON}..v#{MAX_PYTHON}). " \
+        "(requires v#{MIN_PYTHON}..v#{MAX_PYTHON}). Handshake rejected. " \
         "Run: uv pip install --upgrade sketchup-mcp2. " \
         "Call `get_version` to inspect handshake state."
       end
 
       def self.msg_python_too_new(cv)
         "sketchup-mcp2 v#{cv} is newer than SketchUp plugin v#{SERVER_VERSION} " \
-        "supports (max v#{MAX_PYTHON}). " \
+        "supports (max v#{MAX_PYTHON}). Handshake rejected. " \
         "Reinstall su_mcp_v#{MAX_PYTHON}.rbz from the GitHub release. " \
         "Call `get_version` to inspect handshake state."
       end
 
       def self.msg_python_missing
         "sketchup-mcp2 client pre-dates version-compat checking. " \
+        "Handshake rejected. " \
         "Run: uv pip install --upgrade sketchup-mcp2. " \
         "Call `get_version` to inspect handshake state."
       end
