@@ -39,7 +39,8 @@ def parse(v: str) -> tuple[int, int, int]:
 
 def check_ruby_version(server_version: str | None) -> None:
     """Raise IncompatibleVersionError if the SketchUp plugin version is
-    outside [MIN_RUBY, MAX_RUBY] or absent (pre-handshake plugin)."""
+    outside [MIN_RUBY, MAX_RUBY] or absent (handshake reply missing
+    ``server_version``)."""
     if server_version is None:
         raise IncompatibleVersionError(_msg_ruby_missing())
     try:

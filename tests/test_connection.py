@@ -6,28 +6,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sketchup_mcp import config
-from sketchup_mcp.errors import SketchUpError
+from sketchup_mcp import compat, config
+from sketchup_mcp.connection import SketchUpConnection
+from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError
 
 pytestmark = pytest.mark.asyncio
 
 
-_INJECT_MAX = object()  # sentinel: inject compat.MAX_RUBY by default
-
-
-def encode_response(payload: dict, *, server_version=_INJECT_MAX) -> bytes:
-    """Build a fake 4-byte-length-prefixed JSON-RPC response frame.
-
-    server_version defaults to compat.MAX_RUBY so existing tests don't
-    trip the new inbound handshake check inside _send_once. Pass
-    server_version=None explicitly for tests verifying "missing-field
-    treated as pre-0.1.0" behavior.
-    """
-    from sketchup_mcp import compat
-    if server_version is _INJECT_MAX:
-        server_version = compat.MAX_RUBY
-    if server_version is not None and isinstance(payload, dict):
-        payload = {**payload, "server_version": server_version}
+def encode_response(payload: dict) -> bytes:
+    """Build a fake 4-byte-length-prefixed JSON-RPC response frame."""
     body = json.dumps(payload).encode("utf-8")
     return struct.pack(">I", len(body)) + body
 
@@ -383,6 +370,14 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
     open_call_count = 0
     gate = asyncio.Event()
 
+    # Build a handshake-success frame that get_connection's connect() will
+    # consume during the hello roundtrip (one-time handshake protocol).
+    hello_ok_frame = encode_response({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {"server_version": compat.MAX_RUBY, "client_id": 0},
+    })
+
     async def slow_open(*_args, **_kwargs):
         nonlocal open_call_count
         open_call_count += 1
@@ -390,13 +385,21 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
         # вызову шанс пройти cold-start path параллельно — без lock'а он бы
         # тоже инициировал open_connection.
         await gate.wait()
+        reader = asyncio.StreamReader()
+        reader.feed_data(hello_ok_frame)
         writer = MagicMock()
+        # write/drain must be present so _handshake's outbound hello write
+        # succeeds before the reader supplies the response.
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
         # is_closing() должен явно вернуть False, иначе второй get_connection
         # увидит «writer is closing» и инициирует второй connect() уже не
         # из-за cold-start race, а из-за реконнекта. Это замаскировало бы
         # настоящий cold-start race в проверяемом коде.
         writer.is_closing = MagicMock(return_value=False)
-        return asyncio.StreamReader(), writer
+        return reader, writer
 
     with patch("sketchup_mcp.connection.asyncio.open_connection", side_effect=slow_open):
         t1 = asyncio.create_task(conn_module.get_connection())
@@ -422,3 +425,275 @@ async def test_get_viewport_screenshot_is_retry_safe():
     removal from the retry whitelist."""
     from sketchup_mcp.connection import _RETRY_SAFE_TOOLS
     assert "get_viewport_screenshot" in _RETRY_SAFE_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# One-time handshake tests (Task 6 — protocol change from per-request to
+# one-time hello roundtrip on connect()).
+# ---------------------------------------------------------------------------
+
+
+def encode_frame(body_bytes: bytes) -> bytes:
+    return struct.pack(">I", len(body_bytes)) + body_bytes
+
+
+def hello_success(server_version: str, client_id: int = 0) -> bytes:
+    return encode_frame(json.dumps({
+        "jsonrpc": "2.0",
+        "result": {"server_version": server_version, "client_id": client_id},
+        "id": 0,
+    }).encode("utf-8"))
+
+
+def hello_error(code: int, message: str) -> bytes:
+    return encode_frame(json.dumps({
+        "jsonrpc": "2.0",
+        "error": {"code": code, "message": message},
+        "id": 0,
+    }).encode("utf-8"))
+
+
+class FakeServer:
+    """In-process TCP server that scripts the byte stream for one client."""
+
+    def __init__(self, script: list[bytes]):
+        self._script = script
+        self._received = bytearray()
+        self._server: asyncio.base_events.Server | None = None
+        self.host = "127.0.0.1"
+        self.port = 0
+
+    async def __aenter__(self):
+        self._server = await asyncio.start_server(
+            self._handle, host=self.host, port=0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._server.close()
+        await self._server.wait_closed()
+
+    async def _handle(self, reader, writer):
+        for chunk in self._script:
+            writer.write(chunk)
+            await writer.drain()
+        try:
+            while True:
+                data = await reader.read(4096)
+                if not data:
+                    break
+                self._received.extend(data)
+        except Exception:
+            pass
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+    @property
+    def received(self) -> bytes:
+        return bytes(self._received)
+
+
+class FakeServerMulti:
+    """Like FakeServer but serves each new TCP connection with its own script.
+
+    Each script entry is ``(chunks, close_immediately)``: ``chunks`` is the
+    list of byte frames to send; ``close_immediately=True`` closes the
+    socket right after the writes (simulates a server that dropped us),
+    ``False`` keeps the socket open while draining the client's outbound
+    traffic (simulates a server that wants the next request from us).
+    """
+
+    def __init__(self, scripts: list[tuple[list[bytes], bool]]):
+        self._scripts = list(scripts)
+        self._idx = 0
+        self._server: asyncio.base_events.Server | None = None
+        self.host = "127.0.0.1"
+        self.port = 0
+        # Per-connection captured-bytes log; indexed by connection order.
+        self.received: list[bytes] = []
+
+    async def __aenter__(self):
+        self._server = await asyncio.start_server(
+            self._handle, host=self.host, port=0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._server.close()
+        await self._server.wait_closed()
+
+    async def _handle(self, reader, writer):
+        if self._idx >= len(self._scripts):
+            writer.close()
+            return
+        chunks, close_immediately = self._scripts[self._idx]
+        self._idx += 1
+        my_log_idx = len(self.received)
+        self.received.append(b"")
+        for chunk in chunks:
+            writer.write(chunk)
+            await writer.drain()
+        if not close_immediately:
+            # Stay open and drain the client's outbound traffic so it can
+            # send follow-up frames (e.g., tool/call after handshake reply).
+            try:
+                buf = bytearray()
+                while True:
+                    data = await reader.read(4096)
+                    if not data:
+                        break
+                    buf.extend(data)
+                self.received[my_log_idx] = bytes(buf)
+            except Exception:
+                pass
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+async def test_handshake_happy_path_populates_server_version_and_client_id():
+    script = [hello_success(compat.MAX_RUBY, client_id=7)]
+    async with FakeServer(script) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        await conn.connect()
+        assert conn._server_version == compat.MAX_RUBY
+        assert conn._client_id == 7
+        await conn.disconnect()
+
+
+async def test_handshake_version_mismatch_raises_incompatible_version_error():
+    script = [hello_error(-32001, "client too old")]
+    async with FakeServer(script) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        with pytest.raises(IncompatibleVersionError):
+            await conn.connect()
+
+
+async def test_handshake_generic_error_raises_sketchup_error():
+    script = [hello_error(-32602, "handshake malformed")]
+    async with FakeServer(script) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+        assert ei.value.code == -32602
+
+
+async def test_connect_sends_hello_first_with_client_version():
+    script = [hello_success(compat.MAX_RUBY)]
+    async with FakeServer(script) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        await conn.connect()
+        await conn.disconnect()
+        # Bounded busy-loop to wait for the server to receive the hello body.
+        # Avoid hardcoded sleep — flaky on slow CI.
+        def _hello_received() -> bool:
+            buf = fs.received
+            if len(buf) < 4:
+                return False
+            body_len = int.from_bytes(buf[:4], "big")
+            return len(buf) >= 4 + body_len
+        for _ in range(100):
+            if _hello_received():
+                break
+            await asyncio.sleep(0.01)
+        assert _hello_received(), "server never received hello"
+        body_len = int.from_bytes(fs.received[:4], "big")
+        body = json.loads(fs.received[4:4 + body_len])
+        assert body["method"] == "hello"
+        assert body["params"]["client_version"] == compat.CLIENT_VERSION
+        assert body["id"] == 0
+
+
+async def test_send_once_does_not_include_client_version():
+    tool_reply = encode_frame(json.dumps({
+        "jsonrpc": "2.0",
+        "result": {"content": [{"type": "text", "text": "ok"}], "isError": False},
+        "id": 1,
+    }).encode("utf-8"))
+    script = [hello_success(compat.MAX_RUBY), tool_reply]
+    async with FakeServer(script) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        await conn.connect()
+        await conn.send_command("get_version", {})
+        await conn.disconnect()
+        # Bounded wait for the server's read loop to drain both client
+        # frames into fs.received. The disconnect above sends FIN, the
+        # server's reader.read() returns b"" and the handler completes
+        # — but that happens on a separate asyncio task that may not
+        # have run yet by the time disconnect() returns to us.
+        def _two_frames_present() -> bool:
+            buf = fs.received
+            if len(buf) < 4:
+                return False
+            l1 = int.from_bytes(buf[:4], "big")
+            if len(buf) < 4 + l1 + 4:
+                return False
+            l2 = int.from_bytes(buf[4 + l1:4 + l1 + 4], "big")
+            return len(buf) >= 4 + l1 + 4 + l2
+        for _ in range(100):
+            if _two_frames_present():
+                break
+            await asyncio.sleep(0.01)
+        assert _two_frames_present(), \
+            f"server never received both client frames (got {len(fs.received)} bytes)"
+        buf = fs.received
+        # frame 1: hello — skip
+        l1 = int.from_bytes(buf[:4], "big")
+        offset = 4 + l1
+        # frame 2: tools/call
+        l2 = int.from_bytes(buf[offset:offset + 4], "big")
+        body = json.loads(buf[offset + 4:offset + 4 + l2])
+        assert body["method"] == "tools/call"
+        assert "client_version" not in body, \
+            "post-handshake request must not carry client_version"
+
+
+async def test_send_once_does_not_require_server_version_in_response():
+    """Response without server_version field must still parse successfully."""
+    tool_reply = encode_frame(json.dumps({
+        "jsonrpc": "2.0",
+        "result": {"content": [{"type": "text", "text": "ok"}], "isError": False},
+        "id": 1,
+    }).encode("utf-8"))
+    script = [hello_success(compat.MAX_RUBY), tool_reply]
+    async with FakeServer(script) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        await conn.connect()
+        result = await conn.send_command("some_tool", {})
+        assert result["isError"] is False
+        await conn.disconnect()
+
+
+async def test_stale_socket_retry_redoes_handshake():
+    """After a stale socket is detected, retry must re-handshake on the new socket."""
+    tool_reply = encode_frame(json.dumps({
+        "jsonrpc": "2.0",
+        "result": {"content": [{"type": "text", "text": "ok"}], "isError": False},
+        "id": 2,
+    }).encode("utf-8"))
+    async with FakeServerMulti([
+        # client 1: handshake then close (simulates Ruby idle_timeout kill)
+        ([hello_success(compat.MAX_RUBY)], True),
+        # client 2: handshake; stay open to accept tool/call, then reply
+        ([hello_success(compat.MAX_RUBY), tool_reply], False),
+    ]) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        await conn.connect()
+        # Stale socket detected on next send; retry should re-handshake on second connection
+        result = await conn.send_command("get_model_info", {})
+        assert result["isError"] is False
+        await conn.disconnect()
+
+
+async def test_handshake_timeout_raises_sketchup_error():
+    """Ruby that accepts TCP but never replies must surface as timeout, not a hang."""
+    async with FakeServer([]) as fs:   # no script — server never writes
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=0.5)
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+        assert "timed out" in str(ei.value).lower()

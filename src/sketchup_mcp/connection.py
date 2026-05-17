@@ -64,6 +64,8 @@ class SketchUpConnection:
     _writer: asyncio.StreamWriter | None = None
     _lock: asyncio.Lock | None = field(default=None, init=False, repr=False)
     _next_id: int = 1
+    _server_version: str | None = field(default=None, init=False, repr=False)
+    _client_id: int | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Lock создаётся при инстанциации (всегда внутри running event loop —
@@ -73,9 +75,88 @@ class SketchUpConnection:
         self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
+        """Open TCP socket and perform the one-time `hello` handshake.
+
+        On success ``_server_version`` and ``_client_id`` are populated.
+        On failure the socket is closed and the original exception is
+        re-raised (``IncompatibleVersionError`` if Ruby replied -32001,
+        ``SketchUpError`` for any other malformed/erroring envelope or
+        for timeout).
+
+        CRITICAL: the handshake roundtrip is wrapped in
+        ``asyncio.wait_for(..., timeout=self.timeout)`` — without it, a
+        Ruby that accepted TCP but never replied would block this
+        coroutine forever.
+        """
         self._reader, self._writer = await asyncio.open_connection(
             self.host, self.port
         )
+        try:
+            await asyncio.wait_for(self._handshake(), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            await self.disconnect()
+            raise SketchUpError(
+                -32000, f"handshake timed out after {self.timeout}s"
+            ) from None
+        except BaseException:
+            # Any failure (IncompatibleVersionError, SketchUpError,
+            # ConnectionError, CancelledError, ...) must leave the
+            # socket cleanly closed so callers don't observe a
+            # half-open connection.
+            await self.disconnect()
+            raise
+
+    async def _handshake(self) -> None:
+        """Send `hello` + parse the server's first response.
+
+        Every malformed-envelope path (non-dict response, missing
+        result/error dict, JSON decode failure, parse failure) is
+        funneled into ``SketchUpError`` so callers catch a single class.
+        ``IncompatibleVersionError`` is raised only for Ruby's
+        ``-32001`` verdict.
+        """
+        request = {
+            "jsonrpc": "2.0",
+            "method": "hello",
+            "params": {"client_version": compat.CLIENT_VERSION},
+            "id": 0,
+        }
+        body = json.dumps(request).encode("utf-8")
+        if self._writer is None:
+            raise SketchUpError(-32603, "internal: writer is None in _handshake")
+        self._writer.write(struct.pack(">I", len(body)) + body)
+        await self._writer.drain()
+        response_body = await self._recv_frame()
+        try:
+            response = json.loads(response_body)
+        except json.JSONDecodeError as e:
+            raise SketchUpError(-32700, f"handshake parse error: {e}") from e
+        if not isinstance(response, dict):
+            raise SketchUpError(
+                -32603,
+                f"malformed handshake response: {type(response).__name__}",
+            )
+        if "error" in response:
+            err = response["error"] if isinstance(response.get("error"), dict) else {}
+            code = err.get("code", -32000)
+            if code == -32001:
+                raise IncompatibleVersionError(err.get("message", "version mismatch"))
+            raise SketchUpError(
+                code, err.get("message", "handshake failed"), err.get("data")
+            )
+        result = response.get("result") or {}
+        if not isinstance(result, dict):
+            raise SketchUpError(
+                -32603,
+                f"malformed handshake result: {type(result).__name__}",
+            )
+        server_version = result.get("server_version")
+        self._server_version = server_version
+        self._client_id = result.get("client_id")
+        # Belt-and-suspenders: Ruby validated, we validate too. Cheap.
+        # Drift between Python and Ruby compat tables could let one side
+        # accept a peer the other side would reject; this catches it.
+        compat.check_ruby_version(server_version)
 
     async def disconnect(self) -> None:
         if self._writer is not None:
@@ -132,7 +213,6 @@ class SketchUpConnection:
             "method": "tools/call",
             "params": {"name": name, "arguments": args},
             "id": rid,
-            "client_version": compat.CLIENT_VERSION,
         }
         body = json.dumps(request).encode("utf-8")
         if len(body) > config.MAX_MESSAGE_SIZE:
@@ -201,10 +281,9 @@ class SketchUpConnection:
             raise SketchUpError(
                 -32603, f"id mismatch: sent {rid}, got {response.get('id')}"
             )
-        # Version handshake — bypassed for the diagnostic tool get_version so users
-        # on mismatched versions can still query the verdict.
-        if name != "get_version":
-            compat.check_ruby_version(response.get("server_version"))
+        # Version compatibility is validated once at handshake time
+        # (see ``_handshake``); per-response checks were removed when the
+        # protocol moved to a single hello roundtrip on connect.
         if "error" in response:
             err = response["error"]
             # Promote Ruby-detected version mismatches from generic SketchUpError

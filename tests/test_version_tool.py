@@ -1,6 +1,6 @@
 """Tests for the get_version MCP tool — registration, payload shape on
-compatible/incompatible Ruby responses, bypass works when ordinary tools
-would have raised."""
+compatible/incompatible Ruby responses, and that it always returns a
+payload (never raises) even when the underlying call fails."""
 import json
 
 import pytest

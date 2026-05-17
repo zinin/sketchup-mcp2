@@ -452,15 +452,13 @@ async def undo(ctx: Context) -> str:
 
 @mcp.tool()
 async def get_version(ctx: Context) -> str:
-    """Return Python + Ruby SketchUp-MCP versions and a compatibility verdict.
+    """Return the server version and Python↔Ruby compatibility verdict.
 
-    Diagnostic tool — always returns a payload even when versions are
-    incompatible (ordinary tools hard-fail in that case). Use this to
-    inspect the version handshake state when other tools surface
-    `IncompatibleVersionError`. The result is a JSON string with fields:
-    python_version, ruby_version, min_compatible_ruby, max_compatible_ruby,
-    ruby_min_compatible_python, ruby_max_compatible_python,
-    compatible (bool), error (string | null).
+    Useful as a runtime sanity probe — always returns a payload, even
+    when the connection or other tools surface errors. The result is a
+    JSON string with fields: python_version, ruby_version,
+    min_compatible_ruby, max_compatible_ruby, ruby_min_compatible_python,
+    ruby_max_compatible_python, compatible (bool), error (string | null).
     """
     def _payload(ruby_version, ruby_min, ruby_max, compatible, error_msg):
         return json.dumps({
@@ -480,11 +478,11 @@ async def get_version(ctx: Context) -> str:
         return _payload(None, None, None, False,
                         f"SketchUp not running or extension not started: {e}")
     except SketchUpError as e:
-        # Covers old Ruby returning -32601 "unknown tool: get_version",
-        # any other JSON-RPC error envelope. IncompatibleVersionError
-        # would inherit from SketchUpError but here name=='get_version'
-        # bypasses check_ruby_version inside _send_once, so this branch
-        # fires only on Ruby-side errors that survive the bypass.
+        # Covers old Ruby returning -32601 "unknown tool: get_version"
+        # and any other JSON-RPC error envelope. Version compatibility is
+        # validated once at connect-time in ``_handshake``; once a
+        # connection survives that, tool-level errors here come from the
+        # Ruby handler itself (not from per-request version checks).
         return _payload(None, None, None, False, str(e))
 
     # Defensive parse: any unexpected shape (missing keys, non-list content,
