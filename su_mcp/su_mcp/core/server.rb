@@ -130,6 +130,13 @@ module SU_MCP
         # framing error (zero-length / oversize) — stream desynced.
         send_transport_error(state, e, nil)
         close_client(state, "framing_error: #{e.message}")
+      rescue StandardError => e
+        # Defense-in-depth: any other unexpected exception (e.g. SystemCallError
+        # from a bad fd, encoding error, etc.) must close the offending client
+        # so the per-client isolation invariant holds — otherwise the bad
+        # state stays in @clients and the same error fires every tick.
+        Logger.log_error("server.drain", e, client_label: state.label)
+        close_client(state, "drain_error: #{e.class.name}")
       end
 
       def process_frame_queue

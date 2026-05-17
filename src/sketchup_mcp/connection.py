@@ -126,7 +126,20 @@ class SketchUpConnection:
             raise SketchUpError(-32603, "internal: writer is None in _handshake")
         self._writer.write(struct.pack(">I", len(body)) + body)
         await self._writer.drain()
-        response_body = await self._recv_frame()
+        try:
+            response_body = await self._recv_frame()
+        except asyncio.IncompleteReadError as e:
+            # Peer accepted TCP but closed before sending the hello reply
+            # (network blip, Ruby crash, sigkill between accept and write).
+            # Surface as SketchUpError so callers don't see raw asyncio exns.
+            raise SketchUpError(
+                -32000, f"peer closed before handshake reply: {e}"
+            ) from e
+        except ConnectionError as e:
+            # ECONNRESET / EPIPE on the recv path mid-handshake. Same as above.
+            raise SketchUpError(
+                -32000, f"connection error during handshake: {e}"
+            ) from e
         try:
             response = json.loads(response_body)
         except json.JSONDecodeError as e:
@@ -151,6 +164,14 @@ class SketchUpConnection:
                 f"malformed handshake result: {type(result).__name__}",
             )
         server_version = result.get("server_version")
+        if server_version is None:
+            # New-protocol server replied success but omitted server_version.
+            # Distinct from the "old plugin pre-dates handshake" case that
+            # check_ruby_version handles — surface a clear protocol-violation
+            # error instead of misleading "plugin pre-dates" wording.
+            raise SketchUpError(
+                -32603, "handshake reply missing server_version"
+            )
         self._server_version = server_version
         self._client_id = result.get("client_id")
         # Belt-and-suspenders: Ruby validated, we validate too. Cheap.
