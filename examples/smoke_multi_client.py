@@ -37,13 +37,15 @@ WORKER_PER_OPERATION_BUDGET = 10.0   # seconds — per workload step
 
 # Each worker is a freshly-spawned Python subprocess so we exercise the
 # real multi-connection path (NOT asyncio.gather over one socket).
-# The worker script is fed as -c source text; %(...)r interpolation
+# Worker scripts are fed as -c source text; %(...)r interpolation
 # emits repr() of each value, which is round-trip-safe for str/list/dict
-# of JSON-friendly primitives. The %% in printf-style format strings
-# would conflict with any literal `%` inside the body, so the worker
-# body contains no literal `%`.
-WORKER_SCRIPT = '''
-import asyncio, json, os, sys, time
+# of JSON-friendly primitives. Worker bodies therefore contain no
+# literal `%`.
+#
+# LIGHT worker — read-only loop over a list of {tool, args} dicts
+# interpolated verbatim.
+LIGHT_WORKER_SCRIPT = '''
+import asyncio, sys, time
 
 sys.path.insert(0, %(src_dir)r)
 
@@ -54,40 +56,74 @@ WORKLOAD = %(workload)r
 LABEL    = %(label)r
 
 
-def _text_of(result):
-    """Unwrap MCP-shape {content: [{text: ...}]} to raw text."""
-    if isinstance(result, dict) and isinstance(result.get("content"), list):
-        first = result["content"][0]
-        if isinstance(first, dict):
-            return first.get("text", "")
-    return json.dumps(result)
+async def main():
+    conn = SketchUpConnection(
+        host=config.HOST, port=config.PORT, timeout=config.TIMEOUT)
+    await conn.connect()
+    try:
+        for step in WORKLOAD:
+            tool = step["tool"]
+            args = step["args"]
+            t0 = time.monotonic()
+            await conn.send_command(tool, args)
+            dt = time.monotonic() - t0
+            print(f"[{LABEL}] {tool:30s} ok dt={dt:.3f}s")
+    finally:
+        await conn.disconnect()
 
 
-def _resolve(value, captured):
-    """Replace {"$ref": "slot_name"} markers with captured ids."""
-    if isinstance(value, dict) and "$ref" in value:
-        return captured[value["$ref"]]
-    return value
+asyncio.run(main())
+'''
+
+
+# HEAVY worker — imperative routine: create two boxes, get_model_info,
+# delete the boxes by id. create_component returns `{id, name, type,
+# bbox_mm}` (Ruby auto-assigns the name; no `name` parameter accepted)
+# wrapped in MCP shape `{content: [{text: "<json>"}]}`; the worker
+# decodes that and feeds `id` straight back to delete_component. The
+# "heavy" label is about exercising start_operation/commit_operation,
+# which create + delete already do.
+HEAVY_WORKER_SCRIPT = '''
+import asyncio, json, sys, time
+
+sys.path.insert(0, %(src_dir)r)
+
+from sketchup_mcp.connection import SketchUpConnection
+from sketchup_mcp import config
+
+LABEL = %(label)r
 
 
 async def main():
     conn = SketchUpConnection(
         host=config.HOST, port=config.PORT, timeout=config.TIMEOUT)
     await conn.connect()
-    captured = {}
     try:
-        for step in WORKLOAD:
-            tool = step["tool"]
-            args = {k: _resolve(v, captured) for k, v in step["args"].items()}
+        ids = []
+        creates = [
+            {"type": "cube", "position": [0, 0, 0],
+             "dimensions": [1000, 1000, 1000]},
+            {"type": "cube", "position": [400, 400, 400],
+             "dimensions": [800, 800, 800]},
+        ]
+        for args in creates:
             t0 = time.monotonic()
-            result = await conn.send_command(tool, args)
+            result = await conn.send_command("create_component", args)
             dt = time.monotonic() - t0
-            # Capture id from response if the step requests it
-            capture_slot = step.get("capture")
-            if capture_slot:
-                payload = json.loads(_text_of(result))
-                captured[capture_slot] = payload["id"]
-            print(f"[{LABEL}] {tool:30s} ok dt={dt:.3f}s")
+            payload = json.loads(result["content"][0]["text"])
+            ids.append(payload["id"])
+            print(f"[{LABEL}] create_component               ok dt={dt:.3f}s")
+
+        t0 = time.monotonic()
+        await conn.send_command("get_model_info", {})
+        dt = time.monotonic() - t0
+        print(f"[{LABEL}] get_model_info                 ok dt={dt:.3f}s")
+
+        for entity_id in ids:
+            t0 = time.monotonic()
+            await conn.send_command("delete_component", {"id": entity_id})
+            dt = time.monotonic() - t0
+            print(f"[{LABEL}] delete_component               ok dt={dt:.3f}s")
     finally:
         await conn.disconnect()
 
@@ -103,45 +139,23 @@ LIGHT_WORKLOAD = (
     [{"tool": "list_components", "args": {}} for _ in range(5)]
 )
 
-# Heavy / mutating sequence — exercises start_operation / commit_operation
-# paths while staying self-contained.
-#
-# NB: this workload intentionally avoids `boolean_operation` because that
-# tool takes entity-id strings (`target_id` / `tool_id`), which would
-# force the worker to resolve ids via `find_components` first. The goal
-# here is to exercise the multi-client server, not to test boolean ops;
-# the work is "heavy" because `create_component` on a 1 m cube is a
-# slower handler than `get_model_info`.
-#
-# `create_component` returns `{id, name, type, bbox_mm}`; we capture the
-# id into a named slot and reference it by `{"$ref": "<slot>"}` in the
-# matching `delete_component` step. The Ruby `create_component` handler
-# does NOT accept a `name` parameter — entity names are auto-assigned by
-# SketchUp — so the `name` parameter from earlier drafts has been
-# removed.
-HEAVY_WORKLOAD = [
-    {"tool": "create_component",
-     "args": {"type": "cube",
-              "position": [0, 0, 0],
-              "dimensions": [1000, 1000, 1000]},
-     "capture": "box_a_id"},
-    {"tool": "create_component",
-     "args": {"type": "cube",
-              "position": [400, 400, 400],
-              "dimensions": [800, 800, 800]},
-     "capture": "box_b_id"},
-    {"tool": "get_model_info", "args": {}},
-    {"tool": "delete_component", "args": {"id": {"$ref": "box_a_id"}}},
-    {"tool": "delete_component", "args": {"id": {"$ref": "box_b_id"}}},
-]
+# HEAVY is fully encoded in HEAVY_WORKER_SCRIPT (no list); expose its
+# step count so the global per-worker timeout stays proportional.
+HEAVY_STEP_COUNT = 5   # 2 creates + 1 get_model_info + 2 deletes
 
 
-def spawn_worker(label: str, workload: list[dict]) -> subprocess.Popen:
-    script = WORKER_SCRIPT % {
-        "src_dir": str(PROJECT_ROOT / "src"),
-        "workload": workload,
-        "label": label,
-    }
+def spawn_worker(label: str, heavy: bool) -> subprocess.Popen:
+    if heavy:
+        script = HEAVY_WORKER_SCRIPT % {
+            "src_dir": str(PROJECT_ROOT / "src"),
+            "label": label,
+        }
+    else:
+        script = LIGHT_WORKER_SCRIPT % {
+            "src_dir": str(PROJECT_ROOT / "src"),
+            "workload": LIGHT_WORKLOAD,
+            "label": label,
+        }
     return subprocess.Popen(
         [sys.executable, "-c", script],
         stdout=subprocess.PIPE,
@@ -159,18 +173,19 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Worker 0 is light/read-only; the rest run the heavier sequence so
+    # we get a real mix of contention on Ruby's per-connection
+    # serialization queue.
     workers = []
     for i in range(args.n):
-        # Worker 0 is light/read-only; the rest run the heavier sequence
-        # so we get a real mix of contention on Ruby's per-connection
-        # serialization queue.
-        wl = LIGHT_WORKLOAD if i == 0 else HEAVY_WORKLOAD
-        workers.append((f"w{i}", spawn_worker(f"w{i}", wl), wl))
+        heavy = i != 0
+        step_count = HEAVY_STEP_COUNT if heavy else len(LIGHT_WORKLOAD)
+        workers.append((f"w{i}", spawn_worker(f"w{i}", heavy), step_count))
 
     t_start = time.monotonic()
     failures = []
-    for label, proc, wl in workers:
-        global_budget = WORKER_PER_OPERATION_BUDGET * len(wl)
+    for label, proc, step_count in workers:
+        global_budget = WORKER_PER_OPERATION_BUDGET * step_count
         try:
             out, _ = proc.communicate(timeout=global_budget * 2)
         except subprocess.TimeoutExpired:
