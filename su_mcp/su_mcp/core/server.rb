@@ -7,22 +7,18 @@ module SU_MCP
     class Server
       TIMER_INTERVAL          = 0.1     # seconds between ticks
       READ_CHUNK              = 64 * 1024
-      READ_MAX_ITERATIONS     = 50      # ≈3.2MB max drained per tick (50 × 64KB)
-      # 30s оказался слишком агрессивен для интерактивных LLM-сессий: между
-      # двумя tool-call'ами легко проходит больше времени (генерация модели,
-      # ввод пользователя). Python-сторона дополнительно умеет reconnect+retry
-      # один раз при stale-socket — это даёт «belt-and-suspenders».
-      IDLE_DEADLINE_S         = 300.0   # without progress → reset_client
-      WRITE_SELECT_TIMEOUT_S  = 1.0     # if writer not ready within this → reset
+      READ_MAX_ITERATIONS     = 50      # per client per tick
+      WRITE_SELECT_TIMEOUT_S  = 1.0     # write probe (per client per write)
+      ACCEPT_ABORTED_MAX      = 10      # defensive cap on ECONNABORTED churn
 
       def initialize
-        @server = nil
-        @client = nil
-        @reader = nil
-        @running = false
-        @timer_id = nil
-        @processing = false
-        @last_progress_at = nil
+        @server         = nil
+        @clients        = {}    # sock => ClientState
+        @frame_queue    = []    # [[ClientState, body_bytes], ...]
+        @next_client_id = 0
+        @running        = false
+        @timer_id       = nil
+        @processing     = false
       end
 
       def start
@@ -36,7 +32,7 @@ module SU_MCP
         @running = false
         ::UI.stop_timer(@timer_id) if @timer_id
         @timer_id = nil
-        reset_client  # closes @client cleanly
+        @clients.values.each { |state| close_client(state, "server_stop") }
         if @server
           begin
             @server.close
@@ -51,126 +47,145 @@ module SU_MCP
 
       def on_timer_tick
         return unless @running
-        return if @processing  # reentrance guard (timer schedules ticks even while previous in-flight)
+        return if @processing
         @processing = true
         begin
-          if @client.nil?
-            accept_one_client
-            return
-          end
-          enforce_idle_deadline!
-          # idle deadline may have just reset @client — skip read attempt this
-          # tick to avoid noisy NoMethodError → caught-by-outer-rescue path.
-          return if @client.nil?
-          read_pending_chunks
+          accept_pending_clients
+          drain_reads_all_clients
+          process_frame_queue
         rescue StandardError => e
+          # Server-level error — log only. Do NOT reset clients.
           Logger.log_error("server.timer", e)
-          reset_client
         ensure
           @processing = false
         end
       end
 
-      def accept_one_client
-        ready = IO.select([@server], nil, nil, 0)
-        return unless ready
-        @client = @server.accept_nonblock
-        @reader = Framing::FrameReader.new
-        @last_progress_at = Time.now
-        Logger.log_tool("server", "client_connected")
-      rescue IO::WaitReadable, Errno::ECONNABORTED
-        # nothing pending or transient Windows abort; retry on next tick
+      def accept_pending_clients
+        aborted = 0
+        loop do
+          begin
+            sock = @server.accept_nonblock
+          rescue IO::WaitReadable
+            return
+          rescue Errno::ECONNABORTED
+            aborted += 1
+            return if aborted >= ACCEPT_ABORTED_MAX
+            next
+          end
+          begin
+            sock.setsockopt(Socket::SOL_SOCKET, Socket::SO_KEEPALIVE, true)
+          rescue StandardError => e
+            # accept succeeded but the socket is unusable. Close it; do NOT
+            # register — registered-or-closed is the invariant we keep.
+            begin
+              sock.close
+            rescue StandardError
+              # best-effort
+            end
+            Logger.log_error("server.accept_setsockopt", e)
+            next
+          end
+          state = ClientState.new(@next_client_id, sock)
+          @next_client_id += 1
+          @clients[sock] = state
+          Logger.log_tool("server", "client_connected", client_label: state.label)
+        end
       end
 
-      def enforce_idle_deadline!
-        return unless @last_progress_at
-        return if Time.now - @last_progress_at < IDLE_DEADLINE_S
-        Logger.log_tool("server", "idle_timeout", "after #{IDLE_DEADLINE_S}s without progress")
-        reset_client
+      # Global FIFO: `@clients` is a Hash, whose iteration order in Ruby 1.9+
+      # is the *insertion order* (i.e. the order in which TCP accept assigned
+      # each client). For each client we drain reads in that order, appending
+      # decoded frames to `@frame_queue` as they become available. The
+      # resulting dispatch order is therefore "FIFO by (accept-order, then
+      # decoded-frame arrival within that client)". This is deliberate — see
+      # design §5.3 / §13.1 for the rationale (round-robin reads were
+      # considered and explicitly rejected).
+      def drain_reads_all_clients
+        # snapshot — close_client may modify @clients mid-iteration
+        @clients.values.each do |state|
+          drain_one_client(state)
+        end
       end
 
-      def read_pending_chunks
+      def drain_one_client(state)
+        return if state.closed?
         iterations = 0
         loop do
           if iterations >= READ_MAX_ITERATIONS
-            # Bounded — process the rest on next tick. Don't block SketchUp UI.
-            return
+            return    # process the rest on next tick
           end
-          chunk = @client.read_nonblock(READ_CHUNK)
-          @last_progress_at = Time.now
-          # FrameReader#feed may yield several decoded bodies in one chunk
-          # (pipelined frames). If any handle_frame triggers reset_client
-          # (parse error, write timeout, broken pipe), the remaining frames
-          # must NOT execute — their handlers would mutate the model with no
-          # live client to receive a response.
-          @reader.feed(chunk).each do |body|
-            handle_frame(body)
-            return if @client.nil?
+          chunk = state.sock.read_nonblock(READ_CHUNK)
+          state.reader.feed(chunk).each do |body|
+            @frame_queue << [state, body]
           end
           iterations += 1
         end
       rescue IO::WaitReadable
-        # buffer drained; wait for next tick
+        # kernel buffer drained; move on
       rescue EOFError, Errno::ECONNRESET, Errno::EPIPE
-        Logger.log_tool("server", "client_disconnected")
-        reset_client
+        close_client(state, "client_disconnected")
       rescue StructuredError => e
-        # framing error (zero-length / oversize) — stream is desynced.
-        send_transport_error(e, nil)
-        reset_client
+        # framing error (zero-length / oversize) — stream desynced.
+        send_transport_error(state, e, nil)
+        close_client(state, "framing_error: #{e.message}")
       end
 
-      def handle_frame(body)
-        request = nil  # initialize before parse so rescue below is safe even on JSON errors
+      def process_frame_queue
+        until @frame_queue.empty?
+          state, body = @frame_queue.shift
+          next if state.closed?
+
+          response = handle_frame(state, body)
+          if response
+            write_response(state, response)
+          end
+        end
+      end
+
+      def handle_frame(state, body)
         request = JSON.parse(body)
-        response = Handlers::Dispatch.handle(request)
-        return if response.nil?  # JSON-RPC notification — no reply
-        write_response(response)
+        Handlers::Dispatch.handle(request)
       rescue JSON::ParserError => e
-        # Cannot trust stream after parse error; drop the client.
-        Logger.log_error("server.parse", e)
-        send_transport_error(StructuredError.new(-32700, "parse error: #{e.message}"), nil)
-        reset_client
+        Logger.log_error("server.parse", e, client_label: state.label)
+        # JSON-RPC §5.1: parse-error responses use id=null.
+        send_transport_error(state,
+          StructuredError.new(-32700, "parse error: #{e.message}"), nil)
+        close_client(state, "parse_error")
+        nil
       rescue StandardError => e
-        # Handler-level catch-all (defensive — Dispatch already wraps everything).
-        Logger.log_error("server.handler", e)
+        Logger.log_error("server.handler", e, client_label: state.label)
         rid = request.is_a?(Hash) ? request["id"] : nil
-        err_response = Errors.build_error_response(-32603, e.message,
+        Errors.build_error_response(-32603, e.message,
           Errors.exception_to_data(e, "?", {}), rid)
-        write_response(err_response)
       end
 
-      def write_response(response)
+      def write_response(state, response)
         body = encode_response_body(response)
         frame = Framing.encode_frame(body)
-        # Probe writability before blocking write — protects against client
-        # that stops reading (full kernel buffer would otherwise hang us).
-        ready = IO.select(nil, [@client], nil, WRITE_SELECT_TIMEOUT_S)
-        unless ready
-          Logger.log_tool("server", "write_timeout")
-          reset_client
+        unless io_select_writable?(state.sock)
+          Logger.log_tool("server", "write_timeout",
+            client_label: state.label)
+          close_client(state, "write_timeout")
           return
         end
-        @client.write(frame)
-        @client.flush
+        state.sock.write(frame)
+        state.sock.flush
       rescue Errno::EPIPE, Errno::ECONNRESET, IOError
-        # client gone mid-write — drop it, server stays up
-        reset_client
+        close_client(state, "write_failed")
       end
 
-      # JSON.generate may raise on unencodable values (e.g. binary strings,
-      # NaN/Infinity, ill-formed UTF-8) — raised once, the caller would have
-      # no response to send and the client would hang waiting for one.
-      # Fall back to a generic -32603 envelope referencing the original id.
+      # Indirection lets test code stub IO.select cleanly.
+      def io_select_writable?(sock)
+        IO.select(nil, [sock], nil, WRITE_SELECT_TIMEOUT_S)
+      end
+
       def encode_response_body(response)
         response["server_version"] = Core::Compat::SERVER_VERSION if response.is_a?(Hash)
         JSON.generate(response)
       rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
         Logger.log_error("server.encode", e)
         rid = response.is_a?(Hash) ? response["id"] : nil
-        # Sanitize e.message so this fallback can't itself trip on ill-formed
-        # bytes inherited from the original response (which is what brought
-        # us here in the first place).
         safe_msg = e.message.encode("utf-8", invalid: :replace, undef: :replace)
         fallback = Errors.build_error_response(-32603,
           "response not serializable: #{e.class.name}",
@@ -179,28 +194,34 @@ module SU_MCP
         JSON.generate(fallback)
       end
 
-      def send_transport_error(structured_error, request_id)
-        return unless @client
+      def send_transport_error(state, structured_error, request_id)
+        return if state.closed?
         response = Errors.build_error_response(structured_error.code,
                                                structured_error.message,
                                                structured_error.data,
                                                request_id)
-        write_response(response)
+        write_response(state, response)
       rescue StandardError => e
-        Logger.log_error("server.send_transport_error", e)
+        Logger.log_error("server.send_transport_error", e,
+          client_label: state.label)
       end
 
-      def reset_client
-        if @client
-          begin
-            @client.close
-          rescue StandardError
-            # ignore
-          end
+      def close_client(state, reason)
+        # Idempotent. `@clients` membership is the source of truth for
+        # "still tracked"; `state.closed?` only decides whether sock.close
+        # is needed. A second call (e.g. drain_one_client after a
+        # write_response rescue already evicted the client) is a no-op
+        # and does NOT log a duplicate "client_disconnected" line.
+        return unless @clients.key?(state.sock)
+        @clients.delete(state.sock)
+        begin
+          state.sock.close unless state.closed?
+        rescue StandardError
+          # best-effort
         end
-        @client = nil
-        @reader = nil
-        @last_progress_at = nil
+        Logger.log_tool("server", "client_disconnected",
+          "reason=#{reason}",
+          client_label: state.label)
       end
     end
   end
