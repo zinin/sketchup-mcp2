@@ -24,7 +24,7 @@ module MCPforSketchUp
         oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
 
         model = E.active_model!
-        model.start_operation("mortise_tenon", true)
+        model.start_operation("Mortise and Tenon", true)
         begin
           mortise_board = E.find!(mortise_id)
           tenon_board   = E.find!(tenon_id)
@@ -64,7 +64,7 @@ module MCPforSketchUp
         oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
 
         model = E.active_model!
-        model.start_operation("dovetail", true)
+        model.start_operation("Dovetail Joint", true)
         begin
           tail = E.find!(tail_id)
           pin  = E.find!(pin_id)
@@ -99,7 +99,7 @@ module MCPforSketchUp
         oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
 
         model = E.active_model!
-        model.start_operation("finger_joint", true)
+        model.start_operation("Finger Joint", true)
         begin
           b1 = E.find!(b1_id)
           b2 = E.find!(b2_id)

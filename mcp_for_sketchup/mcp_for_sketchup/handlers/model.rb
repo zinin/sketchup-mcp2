@@ -166,7 +166,7 @@ module MCPforSketchUp
       def self.create_layer(params)
         name = V.require_string(params, "name")
         m = E.active_model!
-        m.start_operation("create_layer:#{name}", true)
+        m.start_operation("Create Layer (#{name})", true)
         begin
           layer = m.layers.add(name)
           m.commit_operation

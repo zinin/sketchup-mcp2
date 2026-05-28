@@ -53,7 +53,10 @@ module MCPforSketchUp
       def peer_label(sock)
         peer = sock.peeraddr
         "#{peer[2]}:#{peer[1]}"
-      rescue StandardError
+      rescue StandardError => e
+        MCPforSketchUp::Core::Logger.log("DEBUG",
+          "ClientState#peer_label: peer probe raised: " \
+          "#{e.class}: #{e.message}")
         "unknown"
       end
     end

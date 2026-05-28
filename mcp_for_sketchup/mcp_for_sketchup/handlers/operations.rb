@@ -27,7 +27,7 @@ module MCPforSketchUp
         delete_originals = V.optional_bool(params, "delete_originals", false)
 
         model = E.active_model!
-        model.start_operation("boolean_operation:#{operation}", true)
+        model.start_operation("Boolean #{operation.capitalize}", true)
         begin
           target = E.find!(target_id)
           tool   = E.find!(tool_id)
@@ -106,7 +106,7 @@ module MCPforSketchUp
         entity_id = V.require_id(params, "entity_id")
         distance_in = U.mm_to_inch(V.require_positive(params, "distance"))
         edge_indices = params["edge_indices"]
-        run_edge_op(entity_id, edge_indices, "chamfer_edges", distance_in * 2) do |cutter_entities, spec|
+        run_edge_op(entity_id, edge_indices, "Chamfer Edges", distance_in * 2) do |cutter_entities, spec|
           build_chamfer_profile(cutter_entities, spec, distance_in)
         end.merge("edges_chamfered" => last_edges_done, "stats" => last_stats)
       end
@@ -116,7 +116,7 @@ module MCPforSketchUp
         radius_in = U.mm_to_inch(V.require_positive(params, "radius"))
         segments  = V.optional_int_positive(params, "segments", 8)
         edge_indices = params["edge_indices"]
-        run_edge_op(entity_id, edge_indices, "fillet_edges", radius_in * 2) do |cutter_entities, spec|
+        run_edge_op(entity_id, edge_indices, "Fillet Edges", radius_in * 2) do |cutter_entities, spec|
           build_fillet_profile(cutter_entities, spec, radius_in, segments)
         end.merge("edges_filleted" => last_edges_done, "stats" => last_stats)
       end
@@ -148,7 +148,7 @@ module MCPforSketchUp
           edges = filter_edges(edges, edge_indices) if edge_indices
           if edges.empty?
             raise Core::StructuredError.new(-32602,
-              "no edges to #{op_name.sub('_edges','')} on target_id=#{entity_id} " \
+              "no edges to #{op_name} on target_id=#{entity_id} " \
               "(check edge_indices or geometry)")
           end
 

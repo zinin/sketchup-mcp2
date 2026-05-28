@@ -37,8 +37,9 @@ module MCPforSketchUp
         if @server
           begin
             @server.close
-          rescue StandardError
-            # ignore — best-effort cleanup
+          rescue StandardError => e
+            Logger.log("DEBUG",
+              "Server.stop: tcpserver close raised: #{e.class}: #{e.message}")
           end
         end
         @server = nil
@@ -91,8 +92,9 @@ module MCPforSketchUp
             # register — registered-or-closed is the invariant we keep.
             begin
               sock.close
-            rescue StandardError
-              # best-effort
+            rescue StandardError => close_err
+              Logger.log("DEBUG",
+                "Server.accept: post-setsockopt-failure close raised: #{close_err.class}: #{close_err.message}")
             end
             Logger.log_error("server.accept_setsockopt", e)
             next
@@ -373,8 +375,9 @@ module MCPforSketchUp
         @clients.delete(state.sock)
         begin
           state.sock.close unless state.closed?
-        rescue StandardError
-          # best-effort
+        rescue StandardError => e
+          Logger.log("DEBUG",
+            "Server.close_client: sock close raised: #{e.class}: #{e.message}")
         end
         Logger.log_tool("server", "client_disconnected",
           "reason=#{reason}",

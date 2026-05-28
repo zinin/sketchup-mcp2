@@ -12,8 +12,10 @@ module MCPforSketchUp
       # original handler exception.
       def self.safe_abort(model)
         model.abort_operation if model.respond_to?(:abort_operation)
-      rescue StandardError
-        # ignore — original exception is what caller cares about
+      rescue StandardError => e
+        MCPforSketchUp::Core::Logger.log("DEBUG",
+          "Geometry.safe_abort: model.abort_operation raised: " \
+          "#{e.class}: #{e.message}")
       end
 
       def self.create_component(params)
@@ -26,7 +28,7 @@ module MCPforSketchUp
         segments = V.optional_int_positive(params, "segments", default_segments_for(type))
 
         model = E.active_model!
-        model.start_operation("create_component:#{type}", true)
+        model.start_operation("Create Component (#{type.capitalize})", true)
         begin
           group = case type
                   when "cube"     then build_cube(model.active_entities, pos, dims)
@@ -59,7 +61,7 @@ module MCPforSketchUp
       def self.delete_component(params)
         id = V.require_id(params)
         model = E.active_model!
-        model.start_operation("delete_component", true)
+        model.start_operation("Delete Component", true)
         begin
           entity = E.find!(id)
           entity.erase!
@@ -84,7 +86,7 @@ module MCPforSketchUp
         position    = position_mm&.map { |v| U.mm_to_inch(v) }
 
         model = E.active_model!
-        model.start_operation("transform_component", true)
+        model.start_operation("Transform Component", true)
         begin
           entity = E.find!(id)
           if position
@@ -171,8 +173,9 @@ module MCPforSketchUp
             i4 = i3 + 1
             begin
               group.entities.add_face(points[i1], points[i2], points[i4], points[i3])
-            rescue StandardError
-              # пропускаем faces которые SketchUp отказался создать (полюса)
+            rescue StandardError => e
+              MCPforSketchUp::Core::Logger.log("DEBUG",
+                "build_sphere: skipped degenerate face at pole: #{e.class}: #{e.message}")
             end
           end
         end

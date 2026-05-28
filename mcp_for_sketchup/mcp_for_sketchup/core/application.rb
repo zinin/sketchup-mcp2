@@ -42,7 +42,12 @@ module MCPforSketchUp
           Logger.log_error("application.start", e)
           ::UI.messagebox("MCP Server failed to start:\n\n#{e.message}\n\n" \
                           "Check Plugins → MCP Server → Show Log for details.")
-          @server&.stop rescue nil
+          begin
+            @server&.stop
+          rescue StandardError => stop_err
+            Logger.log("DEBUG",
+              "Application.start cleanup: server.stop raised: #{stop_err.class}: #{stop_err.message}")
+          end
           @server = nil
           @running = false
           @running_config = nil

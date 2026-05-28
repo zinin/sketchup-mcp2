@@ -29,7 +29,7 @@ module MCPforSketchUp
         name = V.require_string(params, "material")
 
         model = E.active_model!
-        model.start_operation("set_material:#{name}", true)
+        model.start_operation("Set Material (#{name.capitalize})", true)
         begin
           entity = E.find!(id)
           material = ensure_material(model, name)
