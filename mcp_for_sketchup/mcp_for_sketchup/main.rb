@@ -1,0 +1,72 @@
+# su_mcp/su_mcp/main.rb
+require "sketchup"
+require "json"
+require "socket"
+require "fileutils"
+require "time"
+require "tmpdir"
+
+module MCPforSketchUp
+  PLUGIN_ROOT = File.dirname(__FILE__)
+
+  # Load order: core/config + core/errors first (they have NO module-level
+  # references and provide constants used by everyone). helpers/units before
+  # logger (logger uses Config). Then helpers (validation/entities reference
+  # Core::StructuredError on module load). Then framing (uses Config+Errors).
+  # Then handlers (depend on helpers + core). Server and application last.
+  LOAD_ORDER = %w[
+    core/config
+    core/errors
+    core/compat
+    helpers/units
+    core/logger
+    helpers/validation
+    helpers/entities
+    helpers/geometry
+    core/framing
+    core/client_state
+    handlers/dispatch
+    handlers/geometry
+    handlers/operations
+    handlers/joints
+    handlers/materials
+    handlers/export
+    handlers/model
+    handlers/eval
+    handlers/system
+    handlers/view
+    core/server
+    core/application
+    ui/settings_validator
+    ui/settings_dialog
+  ].freeze
+
+  LOAD_ORDER.each { |path| Sketchup.require(File.join(PLUGIN_ROOT, path)) }
+
+  # Hydrate Config from SketchUp preferences (replaces ENV-based config).
+  MCPforSketchUp::Core::Config.load_from_defaults!
+
+  def self.install_menu
+    menu = ::UI.menu("Plugins").add_submenu("MCP Server")
+
+    start_item = menu.add_item("Start Server") { MCPforSketchUp::Core::Application.start }
+    menu.set_validation_proc(start_item) {
+      MCPforSketchUp::Core::Application.running? ? MF_GRAYED : MF_ENABLED
+    }
+
+    stop_item = menu.add_item("Stop Server") { MCPforSketchUp::Core::Application.stop }
+    menu.set_validation_proc(stop_item) {
+      MCPforSketchUp::Core::Application.running? ? MF_ENABLED : MF_GRAYED
+    }
+
+    menu.add_item("Restart Server") { MCPforSketchUp::Core::Application.restart }
+    menu.add_separator
+    menu.add_item("Settings...") { MCPforSketchUp::UI::SettingsDialog.show }
+    menu.add_item("Show Log") { MCPforSketchUp::Core::Application.show_log }
+  end
+
+  unless file_loaded?(__FILE__)
+    install_menu
+    file_loaded(__FILE__)
+  end
+end

@@ -1,9 +1,9 @@
 # test/test_settings_validation.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/ui/settings_validator"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/ui/settings_validator"
 
 class TestSettingsValidator < Minitest::Test
-  V = SU_MCP::UI::SettingsValidator
+  V = MCPforSketchUp::UI::SettingsValidator
 
   def test_accepts_valid_payload
     result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "INFO")

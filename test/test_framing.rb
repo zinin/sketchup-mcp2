@@ -1,12 +1,12 @@
 # test/test_framing.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/core/errors"
-require_relative "../su_mcp/su_mcp/core/config"
-require_relative "../su_mcp/su_mcp/core/framing"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/framing"
 
 class TestEncodeFrame < Minitest::Test
-  F = SU_MCP::Core::Framing
-  E = SU_MCP::Core::StructuredError
+  F = MCPforSketchUp::Core::Framing
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_short_body
     frame = F.encode_frame("ABC")
@@ -29,15 +29,15 @@ class TestEncodeFrame < Minitest::Test
   end
 
   def test_response_too_large_raises
-    body = "x" * (SU_MCP::Core::Config::MAX_MESSAGE_SIZE + 1)
+    body = "x" * (MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 1)
     err = assert_raises(E) { F.encode_frame(body) }
     assert_equal(-32600, err.code)
     assert_match(/response too large/, err.message)
   end
 
   def test_at_limit_succeeds
-    body = "x" * SU_MCP::Core::Config::MAX_MESSAGE_SIZE
+    body = "x" * MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE
     frame = F.encode_frame(body)
-    assert_equal SU_MCP::Core::Config::MAX_MESSAGE_SIZE + 4, frame.bytesize
+    assert_equal MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 4, frame.bytesize
   end
 end

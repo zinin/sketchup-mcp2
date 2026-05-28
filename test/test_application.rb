@@ -1,6 +1,6 @@
 # test/test_application.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
 
 # Stub the slice of the SketchUp Ruby API surface that Application touches at
 # runtime so we can exercise lifecycle + running_config without a live SketchUp.
@@ -8,8 +8,8 @@ module Sketchup; def self.status_text=(_); end; end unless defined?(Sketchup)
 module UI;       def self.messagebox(*); end;    end unless defined?(UI)
 SKETCHUP_CONSOLE = nil unless defined?(SKETCHUP_CONSOLE)
 
-require_relative "../su_mcp/su_mcp/core/logger"
-require_relative "../su_mcp/su_mcp/core/application"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/application"
 
 class StubServer
   attr_reader :start_called, :stop_called
@@ -24,14 +24,14 @@ class StubServerThatFails
 end
 
 class TestApplication < Minitest::Test
-  A = SU_MCP::Core::Application
+  A = MCPforSketchUp::Core::Application
 
   def setup
     A.stop if A.running?
     A.server_class = StubServer
-    SU_MCP::Core::Config.host      = "127.0.0.1"
-    SU_MCP::Core::Config.port      = 9876
-    SU_MCP::Core::Config.log_level = "INFO"
+    MCPforSketchUp::Core::Config.host      = "127.0.0.1"
+    MCPforSketchUp::Core::Config.port      = 9876
+    MCPforSketchUp::Core::Config.log_level = "INFO"
   end
 
   def teardown

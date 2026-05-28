@@ -1,15 +1,15 @@
 # test/test_settings_dialog.rb
 require "minitest/autorun"
 require "json"
-require_relative "../su_mcp/su_mcp/core/config"
-require_relative "../su_mcp/su_mcp/ui/settings_dialog"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog"
 
 # Focused on the only pure function in SettingsDialog: js_safe_json.
 # show / on_load_state / on_save depend on UI::HtmlDialog (SketchUp Ruby API),
 # which is not available outside SketchUp; covering them requires integration
 # tests, not unit tests.
 class TestSettingsDialogJsSafeJson < Minitest::Test
-  S = SU_MCP::UI::SettingsDialog
+  S = MCPforSketchUp::UI::SettingsDialog
 
   def test_passes_through_plain_payload
     out = S.js_safe_json({ host: "127.0.0.1", port: 9876, log_level: "INFO" })

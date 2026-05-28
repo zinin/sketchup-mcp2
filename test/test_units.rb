@@ -1,9 +1,9 @@
 # test/test_units.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/helpers/units"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 
 class TestUnits < Minitest::Test
-  U = SU_MCP::Helpers::Units
+  U = MCPforSketchUp::Helpers::Units
 
   def test_mm_constant
     assert_equal 25.4, U::MM

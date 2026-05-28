@@ -2,31 +2,31 @@
 require "minitest/autorun"
 require "json"
 
-require_relative "../su_mcp/su_mcp/core/errors"
-require_relative "../su_mcp/su_mcp/core/compat"
-require_relative "../su_mcp/su_mcp/core/config"
-require_relative "../su_mcp/su_mcp/core/logger"
-require_relative "../su_mcp/su_mcp/core/framing"
-require_relative "../su_mcp/su_mcp/core/client_state"
-require_relative "../su_mcp/su_mcp/core/server"
-require_relative "../su_mcp/su_mcp/handlers/dispatch"
-require_relative "../su_mcp/su_mcp/handlers/system"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/compat"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/framing"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/client_state"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/server"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/system"
 require_relative "support/fake_socket"
 require_relative "support/frame_helpers"
 
 class TestServerHandshake < Minitest::Test
   include FrameHelpers
 
-  COMPAT_PYTHON = SU_MCP::Core::Compat::MIN_PYTHON
+  COMPAT_PYTHON = MCPforSketchUp::Core::Compat::MIN_PYTHON
 
   def setup
-    SU_MCP::Core::Config.host      = "127.0.0.1"
-    SU_MCP::Core::Config.port      = 9876
-    SU_MCP::Core::Config.log_level = "ERROR"
+    MCPforSketchUp::Core::Config.host      = "127.0.0.1"
+    MCPforSketchUp::Core::Config.port      = 9876
+    MCPforSketchUp::Core::Config.log_level = "ERROR"
   end
 
   def run_one_tick(fake_server)
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fake_server)
     srv.instance_variable_set(:@running, true)
     srv.send(:on_timer_tick)
@@ -53,7 +53,7 @@ class TestServerHandshake < Minitest::Test
     assert_equal 1, frames.size
     assert_equal 0, frames[0]["id"]
     refute frames[0].key?("error")
-    assert_equal SU_MCP::Core::Compat::SERVER_VERSION, frames[0]["result"]["server_version"]
+    assert_equal MCPforSketchUp::Core::Compat::SERVER_VERSION, frames[0]["result"]["server_version"]
     refute_nil frames[0]["result"]["client_id"]
     refute sock.closed?
     state = srv.instance_variable_get(:@clients).values.first
@@ -90,7 +90,7 @@ class TestServerHandshake < Minitest::Test
     fs = FakeServer.new([sock])
     run_one_tick(fs)
     frames = all_frames(sock.written)
-    assert_equal SU_MCP::Core::Compat::SERVER_VERSION,
+    assert_equal MCPforSketchUp::Core::Compat::SERVER_VERSION,
       frames[0]["result"]["server_version"],
       "handshake reply must carry server_version"
     refute frames[1].key?("server_version"),
@@ -177,7 +177,7 @@ class TestServerHandshake < Minitest::Test
     bad = hello_frame(version: "0.0.0", id: 0)
     sock = FakeSocket.new(read_chunks: [bad])
     fs = FakeServer.new([sock])
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
     sock.define_singleton_method(:write_nonblock) { |_| raise Errno::EPIPE, "synthetic" }

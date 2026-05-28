@@ -1,11 +1,11 @@
 # test/test_validation.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/core/errors"
-require_relative "../su_mcp/su_mcp/helpers/validation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 
 class TestValidationRequireString < Minitest::Test
-  V = SU_MCP::Helpers::Validation
-  E = SU_MCP::Core::StructuredError
+  V = MCPforSketchUp::Helpers::Validation
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_present_string
     assert_equal "x", V.require_string({ "k" => "x" }, "k")
@@ -29,8 +29,8 @@ class TestValidationRequireString < Minitest::Test
 end
 
 class TestValidationRequirePositive < Minitest::Test
-  V = SU_MCP::Helpers::Validation
-  E = SU_MCP::Core::StructuredError
+  V = MCPforSketchUp::Helpers::Validation
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_positive_int
     assert_equal 5, V.require_positive({ "k" => 5 }, "k")
@@ -62,8 +62,8 @@ class TestValidationRequirePositive < Minitest::Test
 end
 
 class TestValidationRequireEnum < Minitest::Test
-  V = SU_MCP::Helpers::Validation
-  E = SU_MCP::Core::StructuredError
+  V = MCPforSketchUp::Helpers::Validation
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_in_list
     assert_equal "cube", V.require_enum({ "type" => "cube" }, "type", %w[cube cylinder])
@@ -82,8 +82,8 @@ class TestValidationRequireEnum < Minitest::Test
 end
 
 class TestValidationRequireCoords3 < Minitest::Test
-  V = SU_MCP::Helpers::Validation
-  E = SU_MCP::Core::StructuredError
+  V = MCPforSketchUp::Helpers::Validation
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_three_numbers
     assert_equal [1, 2, 3], V.require_coords3({ "p" => [1, 2, 3] }, "p")
@@ -114,8 +114,8 @@ class TestValidationRequireCoords3 < Minitest::Test
 end
 
 class TestValidationRequireDimensions3 < Minitest::Test
-  V = SU_MCP::Helpers::Validation
-  E = SU_MCP::Core::StructuredError
+  V = MCPforSketchUp::Helpers::Validation
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_all_positive
     assert_equal [1, 2, 3], V.require_dimensions3({ "d" => [1, 2, 3] }, "d")
@@ -133,8 +133,8 @@ class TestValidationRequireDimensions3 < Minitest::Test
 end
 
 class TestValidationRequireId < Minitest::Test
-  V = SU_MCP::Helpers::Validation
-  E = SU_MCP::Core::StructuredError
+  V = MCPforSketchUp::Helpers::Validation
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_integer
     assert_equal 42, V.require_id({ "id" => 42 })
@@ -160,8 +160,8 @@ class TestValidationRequireId < Minitest::Test
 end
 
 class TestValidationOptional < Minitest::Test
-  V = SU_MCP::Helpers::Validation
-  E = SU_MCP::Core::StructuredError
+  V = MCPforSketchUp::Helpers::Validation
+  E = MCPforSketchUp::Core::StructuredError
 
   def test_optional_coords3_missing
     assert_nil V.optional_coords3({}, "p")

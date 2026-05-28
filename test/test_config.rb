@@ -1,6 +1,6 @@
 # test/test_config.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
 
 class StubReader
   def initialize(data = {})
@@ -44,7 +44,7 @@ class FailingWriter
 end
 
 class TestConfig < Minitest::Test
-  C = SU_MCP::Core::Config
+  C = MCPforSketchUp::Core::Config
 
   def setup
     C.host = nil
@@ -53,7 +53,7 @@ class TestConfig < Minitest::Test
   end
 
   def test_section_constant
-    assert_equal "SU_MCP", C::SECTION
+    assert_equal "MCPforSketchUp", C::SECTION
   end
 
   def test_max_message_size_constant
@@ -108,9 +108,9 @@ class TestConfig < Minitest::Test
   def test_update_persists_to_writer
     writer = StubWriter.new
     C.update!(host: "10.0.0.5", port: 9999, log_level: "WARN", writer: writer)
-    assert_equal ["SU_MCP", "host",      "10.0.0.5"], writer.writes[0]
-    assert_equal ["SU_MCP", "port",      9999       ], writer.writes[1]
-    assert_equal ["SU_MCP", "log_level", "WARN"     ], writer.writes[2]
+    assert_equal ["MCPforSketchUp", "host",      "10.0.0.5"], writer.writes[0]
+    assert_equal ["MCPforSketchUp", "port",      9999       ], writer.writes[1]
+    assert_equal ["MCPforSketchUp", "log_level", "WARN"     ], writer.writes[2]
   end
 
   def test_update_mutates_runtime_state

@@ -1,0 +1,193 @@
+# su_mcp/su_mcp/handlers/geometry.rb
+module MCPforSketchUp
+  module Handlers
+    module Geometry
+      V = MCPforSketchUp::Helpers::Validation
+      E = MCPforSketchUp::Helpers::Entities
+      G = MCPforSketchUp::Helpers::Geometry
+      U = MCPforSketchUp::Helpers::Units
+
+      # Wrap abort_operation so its own potential exception (NoMethodError on
+      # older SU, "no operation active" if double-abort) never shadows the
+      # original handler exception.
+      def self.safe_abort(model)
+        model.abort_operation if model.respond_to?(:abort_operation)
+      rescue StandardError
+        # ignore — original exception is what caller cares about
+      end
+
+      def self.create_component(params)
+        type = V.require_enum(params, "type", %w[cube cylinder cone sphere])
+        # mm → inches for SketchUp internal API
+        pos_mm  = V.optional_coords3(params, "position") || [0, 0, 0]
+        dims_mm = V.require_dimensions3(params, "dimensions")
+        pos  = pos_mm.map  { |v| U.mm_to_inch(v) }
+        dims = dims_mm.map { |v| U.mm_to_inch(v) }
+        segments = V.optional_int_positive(params, "segments", default_segments_for(type))
+
+        model = E.active_model!
+        model.start_operation("create_component:#{type}", true)
+        begin
+          group = case type
+                  when "cube"     then build_cube(model.active_entities, pos, dims)
+                  when "cylinder" then build_cylinder(model.active_entities, pos, dims, segments)
+                  when "cone"     then build_cone(model.active_entities, pos, dims, segments)
+                  when "sphere"   then build_sphere(model.active_entities, pos, dims, segments)
+                  end
+          model.commit_operation
+          describe_entity(group)
+        rescue StandardError
+          safe_abort(model)
+          raise
+        end
+      end
+
+      # Returns {id, name, type, bbox_mm} so Claude can re-locate after destructive ops.
+      def self.describe_entity(entity)
+        bb = entity.bounds
+        {
+          "id"   => entity.entityID,
+          "name" => entity.name,
+          "type" => entity.is_a?(Sketchup::Group) ? "group" : "component",
+          "bbox_mm" => {
+            "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
+            "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
+          }
+        }
+      end
+
+      def self.delete_component(params)
+        id = V.require_id(params)
+        model = E.active_model!
+        model.start_operation("delete_component", true)
+        begin
+          entity = E.find!(id)
+          entity.erase!
+          model.commit_operation
+          { "ok" => true }
+        rescue StandardError
+          safe_abort(model)
+          raise
+        end
+      end
+
+      # NOTE: transform_component on a ComponentInstance modifies ONLY the
+      # selected instance (its transformation matrix), not the underlying
+      # ComponentDefinition. Other instances of the same definition are
+      # unchanged. To modify the definition, use eval_ruby.
+      def self.transform_component(params)
+        id = V.require_id(params)
+        # position/scale in mm (rotation in degrees — not a size)
+        position_mm = V.optional_coords3(params, "position")
+        rotation    = V.optional_coords3(params, "rotation")
+        scale       = V.optional_coords3(params, "scale")
+        position    = position_mm&.map { |v| U.mm_to_inch(v) }
+
+        model = E.active_model!
+        model.start_operation("transform_component", true)
+        begin
+          entity = E.find!(id)
+          if position
+            entity.transform!(Geom::Transformation.translation(
+              Geom::Point3d.new(position[0], position[1], position[2])))
+          end
+          if rotation
+            apply_rotation(entity, rotation)
+          end
+          if scale
+            center = entity.bounds.center
+            entity.transform!(Geom::Transformation.scaling(center, scale[0], scale[1], scale[2]))
+          end
+          model.commit_operation
+          describe_entity(entity)
+        rescue StandardError
+          safe_abort(model)
+          raise
+        end
+      end
+
+      # ----- private builders ----------------------------------------------
+
+      def self.default_segments_for(type)
+        case type
+        when "cylinder", "cone" then 24
+        when "sphere"           then 16
+        else nil
+        end
+      end
+
+      def self.build_cube(entities, pos, dims)
+        G.make_box(entities, pos[0], pos[1], pos[2], dims[0], dims[1], dims[2])
+      end
+
+      def self.build_cylinder(entities, pos, dims, segments)
+        radius = dims[0] / 2.0
+        height = dims[2]
+        center = [pos[0] + radius, pos[1] + radius, pos[2]]
+        group = entities.add_group
+        face = group.entities.add_face(G.circle_points(center, radius, segments))
+        sign = face.normal.z >= 0 ? 1 : -1
+        face.pushpull(sign * height)
+        group
+      end
+
+      def self.build_cone(entities, pos, dims, segments)
+        radius = dims[0] / 2.0
+        height = dims[2]
+        center = [pos[0] + radius, pos[1] + radius, pos[2]]
+        apex   = [center[0], center[1], center[2] + height]
+        group = entities.add_group
+        circle = G.circle_points(center, radius, segments)
+        group.entities.add_face(circle)
+        (0...segments).each do |i|
+          j = (i + 1) % segments
+          group.entities.add_face(circle[i], circle[j], apex)
+        end
+        group
+      end
+
+      def self.build_sphere(entities, pos, dims, segments)
+        radius = dims[0] / 2.0
+        center = [pos[0] + radius, pos[1] + radius, pos[2] + radius]
+        group = entities.add_group
+        # UV-sphere: latitude × longitude grid
+        points = []
+        (0..segments).each do |lat_i|
+          lat = Math::PI * lat_i / segments
+          (0..segments).each do |lon_i|
+            lon = 2 * Math::PI * lon_i / segments
+            points << [
+              center[0] + radius * Math.sin(lat) * Math.cos(lon),
+              center[1] + radius * Math.sin(lat) * Math.sin(lon),
+              center[2] + radius * Math.cos(lat)
+            ]
+          end
+        end
+        (0...segments).each do |lat_i|
+          (0...segments).each do |lon_i|
+            i1 = lat_i * (segments + 1) + lon_i
+            i2 = i1 + 1
+            i3 = i1 + segments + 1
+            i4 = i3 + 1
+            begin
+              group.entities.add_face(points[i1], points[i2], points[i4], points[i3])
+            rescue StandardError
+              # пропускаем faces которые SketchUp отказался создать (полюса)
+            end
+          end
+        end
+        group
+      end
+
+      def self.apply_rotation(entity, rot_degrees)
+        center = entity.bounds.center
+        axes = [Geom::Vector3d.new(1, 0, 0), Geom::Vector3d.new(0, 1, 0), Geom::Vector3d.new(0, 0, 1)]
+        rot_degrees.each_with_index do |deg, i|
+          next if deg == 0
+          rad = deg * Math::PI / 180
+          entity.transform!(Geom::Transformation.rotation(center, axes[i], rad))
+        end
+      end
+    end
+  end
+end

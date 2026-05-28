@@ -5,15 +5,15 @@
 require "minitest/autorun"
 require "json"
 
-require_relative "../su_mcp/su_mcp/core/errors"
-require_relative "../su_mcp/su_mcp/core/compat"
-require_relative "../su_mcp/su_mcp/core/config"
-require_relative "../su_mcp/su_mcp/core/logger"
-require_relative "../su_mcp/su_mcp/core/framing"
-require_relative "../su_mcp/su_mcp/core/client_state"
-require_relative "../su_mcp/su_mcp/core/server"
-require_relative "../su_mcp/su_mcp/handlers/dispatch"
-require_relative "../su_mcp/su_mcp/handlers/system"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/compat"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/framing"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/client_state"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/server"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/system"
 require_relative "support/fake_socket"
 require_relative "support/frame_helpers"
 
@@ -25,20 +25,20 @@ class TestServerMultiClient < Minitest::Test
   # from any client to be a JSON-RPC `hello` carrying client_version.
   def hello_frame
     fr("jsonrpc" => "2.0", "method" => "hello",
-       "params" => { "client_version" => SU_MCP::Core::Compat::MIN_PYTHON },
+       "params" => { "client_version" => MCPforSketchUp::Core::Compat::MIN_PYTHON },
        "id" => 0)
   end
 
   def setup
-    SU_MCP::Core::Config.host      = "127.0.0.1"
-    SU_MCP::Core::Config.port      = 9876
-    SU_MCP::Core::Config.log_level = "ERROR"   # silence INFO chatter
+    MCPforSketchUp::Core::Config.host      = "127.0.0.1"
+    MCPforSketchUp::Core::Config.port      = 9876
+    MCPforSketchUp::Core::Config.log_level = "ERROR"   # silence INFO chatter
   end
 
   # Build a Server with a FakeServer in place of TCPServer and run a
   # single tick. Returns the server instance for further inspection.
   def run_one_tick(fake_server)
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fake_server)
     srv.instance_variable_set(:@running, true)
     srv.send(:on_timer_tick)
@@ -154,7 +154,7 @@ class TestServerMultiClient < Minitest::Test
   end
 
   def test_framing_oversize_closes_only_that_client
-    over = SU_MCP::Core::Config::MAX_MESSAGE_SIZE + 1
+    over = MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 1
     bad_frame = [over].pack("N")
     # A: framing error closes A before any handshake; no hello needed.
     a = FakeSocket.new(read_chunks: [bad_frame])
@@ -177,7 +177,7 @@ class TestServerMultiClient < Minitest::Test
     }
     a = FakeSocket.new(read_chunks: [hello_frame + a_chunks.join])
     fs = FakeServer.new([a])
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
 
@@ -185,8 +185,8 @@ class TestServerMultiClient < Minitest::Test
     # write. Hello reply (id=0) is allowed through; A1 (id=1) is the trigger;
     # A2 and A3 should be skipped because state.closed? becomes true.
     closed_after = nil
-    orig = SU_MCP::Core::Server.instance_method(:write_response)
-    SU_MCP::Core::Server.send(:define_method, :write_response) do |state, response|
+    orig = MCPforSketchUp::Core::Server.instance_method(:write_response)
+    MCPforSketchUp::Core::Server.send(:define_method, :write_response) do |state, response|
       orig.bind(self).call(state, response)
       if closed_after.nil? && response["id"] != 0
         closed_after = response["id"]
@@ -197,7 +197,7 @@ class TestServerMultiClient < Minitest::Test
     begin
       srv.send(:on_timer_tick)
     ensure
-      SU_MCP::Core::Server.send(:define_method, :write_response, orig)
+      MCPforSketchUp::Core::Server.send(:define_method, :write_response, orig)
     end
 
     assert_equal [0, 1], all_frames(a.written).map { |f| f["id"] },
@@ -211,10 +211,10 @@ class TestServerMultiClient < Minitest::Test
       raise StandardError, "synthetic"
     end
     sock = FakeSocket.new
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
-    state = SU_MCP::Core::ClientState.new(0, sock)
+    state = MCPforSketchUp::Core::ClientState.new(0, sock)
     srv.instance_variable_get(:@clients)[sock] = state
 
     srv.send(:on_timer_tick)
@@ -244,7 +244,7 @@ class TestServerMultiClient < Minitest::Test
 
   # ----- Addendum E: framing oversize delivers envelope BEFORE close -----
   def test_framing_oversize_writes_envelope_before_close
-    over = SU_MCP::Core::Config::MAX_MESSAGE_SIZE + 1
+    over = MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 1
     bad_frame = [over].pack("N")
     a = FakeSocket.new(read_chunks: [bad_frame])
     fs = FakeServer.new([a])
@@ -275,7 +275,7 @@ class TestServerMultiClient < Minitest::Test
     # Hello arrives complete in tick 1; the tools/call frame is split.
     a = FakeSocket.new(read_chunks: [hello_frame + prefix])
     fs = FakeServer.new([a])
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
     srv.send(:on_timer_tick)
@@ -338,7 +338,7 @@ class TestServerMultiClient < Minitest::Test
   def test_write_deadline_closes_client_after_timeout
     sock = FakeSocket.new(read_chunks: [hello_frame])
     fs = FakeServer.new([sock])
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
 
@@ -387,13 +387,13 @@ class TestServerMultiClient < Minitest::Test
     # such that the next write would tip the buffer past the 16 MiB cap.
     sock = FakeSocket.new
     fs = FakeServer.new([sock])
-    srv = SU_MCP::Core::Server.new
+    srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
     srv.send(:accept_pending_clients)
     state = srv.instance_variable_get(:@clients).values.first
 
-    cap     = SU_MCP::Core::Server::PENDING_WRITE_MAX_BYTES
+    cap     = MCPforSketchUp::Core::Server::PENDING_WRITE_MAX_BYTES
     near    = "x" * (cap - 64)   # just below the cap; can't trigger overflow alone
     state.append_pending_write(near)
     state.pending_write_deadline_at = Time.now + 60   # don't deadline during test

@@ -1,6 +1,6 @@
 # test/test_helpers_geometry.rb
 #
-# Direct unit tests for SU_MCP::Helpers::Geometry.visible_bounds.
+# Direct unit tests for MCPforSketchUp::Helpers::Geometry.visible_bounds.
 # The handler-level (test_view.rb) tests only cover this method through a
 # method spy -- the hidden/layer-visibility filter logic ships untested
 # without these.
@@ -37,10 +37,10 @@ module Geom
   end
 end
 
-require_relative "../su_mcp/su_mcp/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 
 class TestHelpersGeometry < Minitest::Test
-  G = SU_MCP::Helpers::Geometry
+  G = MCPforSketchUp::Helpers::Geometry
 
   # ---------------------------------------------------------------------------
   # Runtime BoundingBox patching.

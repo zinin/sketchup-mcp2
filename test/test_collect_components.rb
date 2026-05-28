@@ -1,6 +1,6 @@
 # test/test_collect_components.rb
 #
-# Regression tests for SU_MCP::Handlers::Model.collect_components.
+# Regression tests for MCPforSketchUp::Handlers::Model.collect_components.
 # Verifies that the cycle-guard `seen` set is path-local: distinct
 # instances of the same ComponentDefinition each get their children
 # enumerated, while genuine self-references are still bounded.
@@ -61,14 +61,14 @@ module Geom
   end
 end
 
-require_relative "../su_mcp/su_mcp/core/errors"
-require_relative "../su_mcp/su_mcp/helpers/units"
-require_relative "../su_mcp/su_mcp/helpers/validation"
-require_relative "../su_mcp/su_mcp/helpers/entities"
-require_relative "../su_mcp/su_mcp/handlers/model"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/model"
 
 class TestCollectComponentsRepeatedInstances < Minitest::Test
-  M = SU_MCP::Handlers::Model
+  M = MCPforSketchUp::Handlers::Model
 
   def make_layer(name)
     layer = Object.new

@@ -1,12 +1,12 @@
 # test/test_state_machine.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/core/errors"
-require_relative "../su_mcp/su_mcp/core/config"
-require_relative "../su_mcp/su_mcp/core/framing"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/framing"
 
 class TestFrameReader < Minitest::Test
-  F = SU_MCP::Core::Framing
-  E = SU_MCP::Core::StructuredError
+  F = MCPforSketchUp::Core::Framing
+  E = MCPforSketchUp::Core::StructuredError
 
   def make_frame(body)
     F.encode_frame(body)
@@ -60,7 +60,7 @@ class TestFrameReader < Minitest::Test
 
   def test_oversize_frame_raises
     r = F::FrameReader.new
-    too_big = SU_MCP::Core::Config::MAX_MESSAGE_SIZE + 1
+    too_big = MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 1
     err = assert_raises(E) { r.feed([too_big].pack("N")) }
     assert_equal(-32600, err.code)
     assert_match(/message too large/, err.message)
