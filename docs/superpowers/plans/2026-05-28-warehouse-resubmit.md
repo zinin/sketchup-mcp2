@@ -12,6 +12,18 @@
 
 **Branch:** `feature/warehouse-resubmit` (already created and the spec is committed on it).
 
+**Commit policy (iter-1 CONCERN-7):** every commit step in this plan
+reads `git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally` as a placeholder. **Do not run that literally** — the
+worktree carries many pre-existing untracked files (session-transfer
+docs, `.gemini/`, `diff.patch`, superpowers plans/specs) that must NOT
+land in feature commits. For each commit step, replace `git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally` with
+explicit paths drawn from that task's «Files» header at the top of the
+task. Before staging, run `git status` and confirm the only modified /
+new files are those listed for the task. Examples per task:
+- Task 1 (rename): `git add mcp_for_sketchup/ test/ .gitignore`
+- Task 2 (labels + rescues): `git add mcp_for_sketchup/mcp_for_sketchup/handlers/{geometry,operations,joints,materials,model}.rb mcp_for_sketchup/mcp_for_sketchup/core/{application,server,client_state}.rb test/test_operation_names.rb`
+- Tasks 3–14: derive from each task's Files list analogously.
+
 ---
 
 ## Task ordering rationale
@@ -67,15 +79,35 @@ Expected: two more renames in `git status`.
 
 - [ ] **Step 1.4: Replace Ruby module references inside extension**
 
+Iter-1 CONCERN-8: use a word-boundary sed (`\bSU_MCP\b`) so substring occurrences
+inside larger identifiers / string literals do not get rewritten. Pre-flight
+verification grep catches any string-literal occurrences before the sed runs,
+so a surprising match is surfaced rather than silently mangled.
+
 Run:
 ```bash
+# Pre-sed verification: surface any SU_MCP occurrence that is NOT a module
+# reference (module SU_MCP, SU_MCP::, or string literal "SU_MCP"). An empty
+# result means the upcoming word-boundary sed is safe.
+git grep -nE 'SU_MCP' -- mcp_for_sketchup/ | \
+  grep -vE '(module SU_MCP|SU_MCP::|"SU_MCP")' || echo 'OK: no surprising SU_MCP occurrences'
+
+# Word-boundary rewrite for the module name (CONCERN-8).
 find mcp_for_sketchup/mcp_for_sketchup -type f -name '*.rb' \
-  -exec sed -i 's/SU_MCP/MCPforSketchUp/g' {} +
-sed -i 's/SU_MCP/MCPforSketchUp/g' mcp_for_sketchup/mcp_for_sketchup.rb
+  -exec sed -i 's/\bSU_MCP\b/MCPforSketchUp/g' {} +
+sed -i 's/\bSU_MCP\b/MCPforSketchUp/g' mcp_for_sketchup/mcp_for_sketchup.rb
+
+# Lowercase su_mcp_v filename references — Ruby file headers, Python compat
+# messages, etc. (iter-1 CRITICAL-5). \b avoids touching unrelated identifiers.
+find mcp_for_sketchup/mcp_for_sketchup -type f -name '*.rb' \
+  -exec sed -i 's|\bsu_mcp_v|mcp_for_sketchup_v|g' {} +
+sed -i 's|\bsu_mcp_v|mcp_for_sketchup_v|g' \
+  src/sketchup_mcp/compat.py mcp_for_sketchup/mcp_for_sketchup/core/compat.rb
 ```
-Expected: silent success. Verify with:
+Expected: silent success on both seds. Verify with:
 ```bash
-grep -r 'SU_MCP' mcp_for_sketchup/ || echo 'OK: no SU_MCP references inside extension'
+grep -r 'SU_MCP\|su_mcp_v' mcp_for_sketchup/ src/sketchup_mcp/compat.py \
+  || echo 'OK: no SU_MCP / su_mcp_v references in extension or compat.py'
 ```
 
 - [ ] **Step 1.5: Restore the SECTION literal**
@@ -91,14 +123,18 @@ If sed produced this exact text, no edit is needed. If anything looks off, fix i
 
 - [ ] **Step 1.6: Rewrite test/ paths**
 
+Iter-1 CRITICAL-5: include `run_all.rb` and any `*_helper.rb` files in the
+sweep — limiting to `test_*.rb` would silently skip test scaffolding.
+Word-boundary `\bSU_MCP\b` matches CONCERN-8 in Step 1.4.
+
 Run:
 ```bash
-find test -type f -name 'test_*.rb' \
-  -exec sed -i 's|\.\./su_mcp/su_mcp/|../mcp_for_sketchup/mcp_for_sketchup/|g; s/SU_MCP/MCPforSketchUp/g' {} +
+find test -type f \( -name 'test_*.rb' -o -name 'run_all.rb' -o -name '*_helper.rb' \) \
+  -exec sed -i 's|\.\./su_mcp/su_mcp/|../mcp_for_sketchup/mcp_for_sketchup/|g; s/\bSU_MCP\b/MCPforSketchUp/g' {} +
 ```
 Expected: silent success. Verify with:
 ```bash
-grep -r 'su_mcp\|SU_MCP' test/ || echo 'OK: no su_mcp/SU_MCP references in test/'
+grep -rE 'su_mcp|SU_MCP' test/ || echo 'OK: no su_mcp/SU_MCP references in test/'
 ```
 
 - [ ] **Step 1.7: Restore the SECTION literal expected by test_config.rb**
@@ -137,6 +173,12 @@ Edit `mcp_for_sketchup/extension.json`:
 }
 ```
 (Description gets the inline `SketchUp` casing fix as a bonus; `version` bump deferred to Task 11.)
+
+> Iter-1 QUESTION-6 note: `"description"` deliberately changes
+> `Sketchup` → `SketchUp` (capital U). This is a consistency fix with
+> the new display name `MCP Server for SketchUp`, NOT part of the
+> reviewer's name-rejection note. Called out here so a future reader
+> doesn't mistake it for an accidental edit and revert it.
 
 - [ ] **Step 1.10: Update loader file display name**
 
@@ -180,7 +222,7 @@ Expected: `120 passed`.
 - [ ] **Step 1.13: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 refactor: rename SU_MCP → MCPforSketchUp + filesystem prefix
 
@@ -206,6 +248,8 @@ EOF
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/handlers/model.rb` (1 label)
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/core/application.rb` (1 silent rescue)
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/core/server.rb` (3 silent rescues)
+- Modify: `mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb` — `Geometry.safe_abort` (1 silent rescue, iter-1 CONCERN-2)
+- Modify: `mcp_for_sketchup/mcp_for_sketchup/core/client_state.rb` — `#peer_label` (1 silent rescue, iter-1 CONCERN-2)
 - Create: `test/test_operation_names.rb` (regex guards for label format)
 
 - [ ] **Step 2.1: Write the new test file**
@@ -264,6 +308,13 @@ class TestOperationNames < Minitest::Test
   def test_model_create_layer_label_is_title_case
     src = source(HANDLERS, "model.rb")
     assert_op_label src, /start_operation\("Create Layer \(#\{name\}\)"/, "create_layer"
+  end
+
+  def test_handlers_dir_is_not_empty
+    # Iter-1 SUGGESTION-6: catch a stale HANDLERS path before silently
+    # passing every other assertion with a 0-file glob.
+    files = Dir[File.join(HANDLERS, "*.rb")]
+    refute_empty files, "handlers dir scan returned 0 files — check HANDLERS path: #{HANDLERS}"
   end
 
   def test_no_snake_case_op_labels_remain
@@ -394,6 +445,41 @@ Lines 374–378 (socket close in `close_client`):
         end
 ```
 
+- [ ] **Step 2.11.a: Upgrade Geometry.safe_abort silent rescue (iter-1 CONCERN-2)**
+
+Edit `mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb` around line 13
+(`Geometry.safe_abort`). Replace the bare ignore with an explicit DEBUG
+log so an abort-failure can be diagnosed when prefs or the SketchUp
+build are unusual:
+```ruby
+      def self.safe_abort(model)
+        begin
+          model.abort_operation
+        rescue StandardError => e
+          MCPforSketchUp::Core::Logger.log("DEBUG",
+            "Geometry.safe_abort: model.abort_operation raised: " \
+            "#{e.class}: #{e.message}")
+        end
+      end
+```
+
+- [ ] **Step 2.11.b: Upgrade ClientState#peer_label silent rescue (iter-1 CONCERN-2)**
+
+Edit `mcp_for_sketchup/mcp_for_sketchup/core/client_state.rb` around line 53
+(`#peer_label`). Preserve the existing fallback return `"<unknown>"` so
+callers continue to receive a string, but emit a DEBUG line so probe
+failures (e.g. closed socket race) are visible:
+```ruby
+      def peer_label
+        # ... existing peer probe logic (peeraddr / getpeername) ...
+      rescue StandardError => e
+        MCPforSketchUp::Core::Logger.log("DEBUG",
+          "ClientState#peer_label: peer probe raised: " \
+          "#{e.class}: #{e.message}")
+        "<unknown>"
+      end
+```
+
 - [ ] **Step 2.12: Run all Ruby tests**
 
 ```bash
@@ -404,7 +490,7 @@ Expected: all previous tests plus the 6 new ones in `test_operation_names.rb`. F
 - [ ] **Step 2.13: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 refactor: Title Case start_operation labels + DEBUG-log silent rescues
 
@@ -451,7 +537,14 @@ ruby test/test_logger.rb -n test_default_log_level_is_warn_in_config_defaults 2>
 ```
 Expected: both fail. The first because no prefix; the second because DEFAULTS still has `INFO`.
 
-- [ ] **Step 3.3: Add the prefix to Logger.write**
+- [ ] **Step 3.3: Add the prefix in the shared low-level emitter (iter-1 CONCERN-1)**
+
+Old `log_error` wrote backtrace lines directly via `write("    #{bt}")` — those
+lines bypassed the prefix and violated acceptance §12.7 («every console line
+includes `[MCPforSU]`»). Refactor: introduce a private `_emit` that owns
+the actual write path. Both `log` and `log_error` (including the per-line
+backtrace branch) go through `_emit`, so the prefix and any future
+write-side behaviour (file output in Task 5) live in one place.
 
 Edit `mcp_for_sketchup/mcp_for_sketchup/core/logger.rb`:
 ```ruby
@@ -467,10 +560,54 @@ module MCPforSketchUp
 
       def self.log(level, msg)
         return if Config.level_value_for(level) < Config.level_value
-        line = "[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [#{level}] #{msg}"
-        write(line)
+        _emit("[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [#{level}] #{msg}")
       end
-      # ... rest of module unchanged ...
+
+      def self.log_error(tag, error)
+        _emit("[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [ERROR] " \
+              "#{tag}: #{error.class}: #{error.message}")
+        # Backtrace continuation lines also carry the prefix (CONCERN-1).
+        # Timestamp omitted because backtrace lines are continuation of
+        # the preceding ERROR record, not independent log events.
+        (error.backtrace || []).each do |bt|
+          _emit("#{LINE_PREFIX}     #{bt}")
+        end
+      end
+
+      # Single emission point. Task 5 extends this with the log-to-file
+      # branch (`append_to_file(line) if Config.log_to_file`) — keep that
+      # extension here so the prefix invariant is preserved for file output
+      # too.
+      def self._emit(line)
+        if defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
+          SKETCHUP_CONSOLE.write(line + "\n")
+        else
+          $stdout.puts(line)
+        end
+      end
+    end
+  end
+end
+```
+
+Also extend the existing backtrace assertion in `test/test_logger.rb`
+(`test_log_error_writes_backtrace` or equivalent) to assert that
+backtrace lines carry the `[MCPforSU]` prefix — otherwise CONCERN-1
+silently regresses:
+```ruby
+def test_log_error_backtrace_lines_carry_prefix
+  begin
+    raise "boom"
+  rescue StandardError => e
+    MCPforSketchUp::Core::Logger.log_error("test_tag", e)
+  end
+  bt_lines = captured_lines.grep(/test_logger\.rb/)  # backtrace mentions this file
+  refute_empty bt_lines, "expected backtrace lines in captured output"
+  bt_lines.each do |line|
+    assert_includes line, "[MCPforSU]",
+      "backtrace line missing prefix: #{line.inspect}"
+  end
+end
 ```
 
 - [ ] **Step 3.4: Drop default log_level to WARN**
@@ -538,7 +675,7 @@ Expected: all pass. Higher count than before because we added two new tests.
 - [ ] **Step 3.9: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(logger): [MCPforSU] prefix + default log_level WARN
 
@@ -560,6 +697,49 @@ EOF
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/core/config.rb` — extend DEFAULTS, add accessors, add `eval_enabled?` getter that consults `Core::BuildProfile` when present
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/main.rb` — load `build_profile` if present (conditional, since it's gitignored and missing in test/dev runs)
 - Modify: `test/test_config.rb` — new tests for prefs + `eval_enabled?` fallback
+
+- [ ] **Step 4.0: Add shared `ConfigReset` test helper (iter-1 CONCERN-9)**
+
+Several test files (`test_config.rb`, `test_logger.rb`, `test_application.rb`)
+need to reset the module-level Config state between tests so unrelated
+runs don't leak `eval_enabled` / `log_to_file` / `log_file_path` through
+the global accessors. Centralise the reset logic in one helper so future
+fields don't get forgotten in every setup.
+
+Create `test/support/config_reset.rb`:
+```ruby
+# test/support/config_reset.rb
+# Shared helper: nil out every module-level Config accessor between tests
+# so global state does not leak across test files.
+module ConfigReset
+  def self.reset_all!
+    c = MCPforSketchUp::Core::Config
+    c.host           = nil
+    c.port           = nil
+    c.log_level      = nil
+    c.eval_enabled   = nil
+    c.log_to_file    = nil
+    c.log_file_path  = nil
+  end
+end
+```
+
+In `test/test_config.rb`, `test/test_logger.rb`, `test/test_application.rb`
+add at the top of the file:
+```ruby
+require_relative "support/config_reset"
+```
+and replace the body of each test's `setup` (or add one if missing) with:
+```ruby
+  def setup
+    ConfigReset.reset_all!
+    # ... any test-specific extra setup ...
+  end
+```
+
+This also lets us drop the ad-hoc `def setup; C.host = nil; ...` block
+from `test_config.rb` referenced in Step 4.3(f) — the shared helper
+replaces it.
 
 - [ ] **Step 4.1: Add failing tests for the new prefs and getters**
 
@@ -635,6 +815,23 @@ Append to `test/test_config.rb` (inside `TestConfig` class, before final `end`):
     assert_equal false, reader_false.read_default(C::SECTION, "eval_enabled", nil)
   end
 
+  def test_update_with_only_3_args_does_not_touch_new_fields
+    # Iter-1 CONCERN-10: legacy callers that pass only the original 3
+    # keyword args must NOT silently start emitting writes for the new
+    # eval_enabled / log_to_file / log_file_path keys — keyword-default
+    # `nil` plus `unless …nil?` guards must keep them untouched.
+    ConfigReset.reset_all!
+    writer = StubWriter.new
+    C.update!(host: "1.1.1.1", port: 1111, log_level: "INFO", writer: writer)
+    assert_nil C.eval_enabled
+    assert_nil C.log_to_file
+    assert_nil C.log_file_path
+    keys = writer.writes.map { |_section, k, _value| k }
+    refute_includes keys, "eval_enabled"
+    refute_includes keys, "log_to_file"
+    refute_includes keys, "log_file_path"
+  end
+
   def test_update_persists_new_prefs
     writer = StubWriter.new
     C.update!(
@@ -673,7 +870,7 @@ module MCPforSketchUp
         host:           "127.0.0.1",
         port:           9876,
         log_level:      "WARN",
-        eval_enabled:   false,
+        eval_enabled:   nil,  # sentinel — unset pref triggers BuildProfile fallback (spec §4.2 + iter-1 CRITICAL-1)
         log_to_file:    false,
         log_file_path:  File.join(Dir.tmpdir, "mcp_for_sketchup.log").freeze,
       }.freeze
@@ -693,14 +890,17 @@ module MCPforSketchUp
         raw_host  = reader.read_default(SECTION, "host",      DEFAULTS[:host]).to_s
         raw_port  = reader.read_default(SECTION, "port",      DEFAULTS[:port])
         raw_level = reader.read_default(SECTION, "log_level", DEFAULTS[:log_level]).to_s.upcase
-        raw_eval  = reader.read_default(SECTION, "eval_enabled",  DEFAULTS[:eval_enabled])
+        # Sentinel-nil: pass explicit nil so read_default returns nil when key is absent.
+        # That distinguishes «pref unset» (falls back to BuildProfile) from explicit `false`.
+        # See spec §4.2 + iter-1 CRITICAL-1.
+        raw_eval  = reader.read_default(SECTION, "eval_enabled",  nil)
         raw_l2f   = reader.read_default(SECTION, "log_to_file",   DEFAULTS[:log_to_file])
         raw_lpath = reader.read_default(SECTION, "log_file_path", DEFAULTS[:log_file_path]).to_s
 
         self.host          = valid_host?(raw_host)   ? raw_host       : warn_invalid_pref(:host,      raw_host)
         self.port          = valid_port?(raw_port)   ? raw_port.to_i  : warn_invalid_pref(:port,      raw_port)
         self.log_level     = LEVELS.key?(raw_level)  ? raw_level      : warn_invalid_pref(:log_level, raw_level)
-        self.eval_enabled  = !!raw_eval
+        self.eval_enabled  = raw_eval.nil? ? nil : !!raw_eval
         self.log_to_file   = !!raw_l2f
         self.log_file_path = raw_lpath.empty? ? DEFAULTS[:log_file_path] : raw_lpath
       end
@@ -797,6 +997,62 @@ Edit `mcp_for_sketchup/mcp_for_sketchup/main.rb` — the `LOAD_ORDER` constant. 
   MCPforSketchUp::Core::Config.load_from_defaults!
 ```
 
+- [ ] **Step 4.5.a: BuildProfile fixture test (iter-1 SUGGESTION-2)**
+
+The eval-gate fallback that reads `Core::BuildProfile::EVAL_ENABLED_BY_DEFAULT`
+(spec §4.1 / 4.2) is exercised only when `package.rb` has generated the
+`build_profile.rb` file — which never happens in unit tests. Without a
+test that loads a fixture build_profile, the github-variant code path
+has zero coverage and CRITICAL-1 could silently regress. Add a
+self-contained fixture test that defines + tears down the constant.
+
+Create `test/test_build_profile_fixture.rb`:
+```ruby
+# test/test_build_profile_fixture.rb
+# iter-1 SUGGESTION-2: covers the eval_enabled? fall-through to
+# Core::BuildProfile::EVAL_ENABLED_BY_DEFAULT for the github variant.
+require "minitest/autorun"
+require "tempfile"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "support/config_reset"
+
+class TestBuildProfileFixture < Minitest::Test
+  def setup
+    ConfigReset.reset_all!
+    @tmp = Tempfile.new(["build_profile", ".rb"])
+    @tmp.write(<<~RUBY)
+      module MCPforSketchUp
+        module Core
+          module BuildProfile
+            VARIANT                 = "github".freeze
+            EVAL_ENABLED_BY_DEFAULT = true
+          end
+        end
+      end
+    RUBY
+    @tmp.close
+    load @tmp.path
+  end
+
+  def teardown
+    if MCPforSketchUp::Core.const_defined?(:BuildProfile)
+      MCPforSketchUp::Core.send(:remove_const, :BuildProfile)
+    end
+    @tmp.unlink
+  end
+
+  def test_eval_enabled_question_mark_returns_true_when_pref_unset_and_build_profile_true
+    MCPforSketchUp::Core::Config.eval_enabled = nil
+    assert MCPforSketchUp::Core::Config.eval_enabled?
+  end
+
+  def test_pref_overrides_build_profile
+    MCPforSketchUp::Core::Config.eval_enabled = false
+    refute MCPforSketchUp::Core::Config.eval_enabled?
+  end
+end
+```
+
 - [ ] **Step 4.6: Run all Ruby tests**
 
 ```bash
@@ -807,7 +1063,7 @@ Expected: all pass.
 - [ ] **Step 4.7: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(config): new prefs eval_enabled, log_to_file, log_file_path + build_profile hook
 
@@ -913,16 +1169,18 @@ ruby test/test_logger.rb -n "/log_to_file/" 2>&1 | tail -15
 ```
 Expected: the "disabled does not create" passes by accident (log_to_file is false); the rest fail because there is no file-output path.
 
-- [ ] **Step 5.3: Extend Logger.write to append to file when enabled**
+- [ ] **Step 5.3: Extend Logger._emit to append to file when enabled**
 
-Edit `mcp_for_sketchup/mcp_for_sketchup/core/logger.rb` — replace the `write` method:
+Iter-1 CONCERN-1: the shared emitter introduced in Step 3.3 is
+`_emit`, not `write`. Extend it (not a new `write` method) so the
+file-output branch automatically inherits the `[MCPforSU]` prefix for
+both log lines and backtrace continuation lines.
+
+Edit `mcp_for_sketchup/mcp_for_sketchup/core/logger.rb` — replace the
+`_emit` from Step 3.3 with this extended form:
 ```ruby
-      def self.write(line)
-        if defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
-          SKETCHUP_CONSOLE.write(line + "\n")
-        else
-          $stdout.puts(line)
-        end
+      def self._emit(line)
+        _emit_console(line)
         append_to_file(line) if Config.log_to_file
       end
 
@@ -933,13 +1191,13 @@ Edit `mcp_for_sketchup/mcp_for_sketchup/core/logger.rb` — replace the `write` 
       rescue StandardError => e
         # Best-effort. Logging must never break the data path. Surface the
         # failure as a one-shot DEBUG line in the console without re-entering
-        # append_to_file (we explicitly call write_console directly here).
-        write_console("[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [DEBUG] " \
+        # append_to_file (we explicitly call _emit_console directly here).
+        _emit_console("[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [DEBUG] " \
                       "log file write failed (#{e.class}: #{e.message}); " \
                       "reverting to console only for this line")
       end
 
-      def self.write_console(line)
+      def self._emit_console(line)
         if defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
           SKETCHUP_CONSOLE.write(line + "\n")
         else
@@ -948,7 +1206,9 @@ Edit `mcp_for_sketchup/mcp_for_sketchup/core/logger.rb` — replace the `write` 
       end
 ```
 
-(Refactor: `write` keeps the original console path; `append_to_file` is the new branch; `write_console` is a private helper for use *inside* the file-failure rescue, avoiding infinite recursion.)
+(Refactor: `_emit` from Step 3.3 grows the file branch; `append_to_file`
+is the new branch; `_emit_console` is a private helper used inside the
+file-failure rescue, avoiding infinite recursion.)
 
 - [ ] **Step 5.4: Run logger tests**
 
@@ -967,7 +1227,7 @@ Expected: all pass.
 - [ ] **Step 5.6: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(logger): optional log-to-file mode
 
@@ -993,9 +1253,12 @@ EOF
 Append to `test/test_dispatch_post_handshake.rb` (inside `TestDispatchPostHandshake`):
 ```ruby
   # --- eval_ruby gate (warehouse compliance) ---
+  # Iter-1 CRITICAL-8: `saved_eval` is a local var (lowercase). The previous
+  # name `SU_MCP_save_eval` started with uppercase and would be parsed as a
+  # constant — Ruby raises `dynamic constant assignment` inside method bodies.
 
   def test_eval_ruby_returns_32010_when_disabled
-    SU_MCP_save_eval = MCPforSketchUp::Core::Config.eval_enabled
+    saved_eval = MCPforSketchUp::Core::Config.eval_enabled
     MCPforSketchUp::Core::Config.eval_enabled = false
     begin
       req = make_request(
@@ -1010,12 +1273,12 @@ Append to `test/test_dispatch_post_handshake.rb` (inside `TestDispatchPostHandsh
       assert_match(/disabled/i, resp["error"]["message"])
       assert_match(/Settings/, resp["error"]["message"])
     ensure
-      MCPforSketchUp::Core::Config.eval_enabled = SU_MCP_save_eval
+      MCPforSketchUp::Core::Config.eval_enabled = saved_eval
     end
   end
 
   def test_eval_ruby_succeeds_when_enabled
-    SU_MCP_save_eval = MCPforSketchUp::Core::Config.eval_enabled
+    saved_eval = MCPforSketchUp::Core::Config.eval_enabled
     MCPforSketchUp::Core::Config.eval_enabled = true
     begin
       req = make_request(
@@ -1029,14 +1292,23 @@ Append to `test/test_dispatch_post_handshake.rb` (inside `TestDispatchPostHandsh
       text = resp.dig("result", "content", 0, "text")
       assert_equal "42", text
     ensure
-      MCPforSketchUp::Core::Config.eval_enabled = SU_MCP_save_eval
+      MCPforSketchUp::Core::Config.eval_enabled = saved_eval
     end
   end
 ```
 
-Note `eval_ruby` is invoked via dispatch which loads handlers/eval. Make sure the dispatch test file already requires it:
+Iter-1 CRITICAL-8: `handlers/eval.rb` requires `helpers/validation` for the
+`V = ...::Helpers::Validation` alias, so the dispatch test file must require
+both modules — not just `handlers/eval` — otherwise the constant lookup
+fails at load time. Add to the requires block at the top of
+`test/test_dispatch_post_handshake.rb` if absent:
+```ruby
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/eval"
+```
+Confirm with:
 ```bash
-grep handlers/eval test/test_dispatch_post_handshake.rb
+grep -E 'helpers/validation|handlers/eval' test/test_dispatch_post_handshake.rb
 ```
 If not present, add `require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/eval"` to the requires block at the top.
 
@@ -1105,7 +1377,7 @@ Expected: all pass.
 - [ ] **Step 6.6: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(eval): gate eval_ruby behind Config.eval_enabled? (-32010)
 
@@ -1226,8 +1498,19 @@ module MCPforSketchUp
         log_to_file  = truthy?(payload["log_to_file"])
         log_path     = payload["log_file_path"].to_s
 
-        if log_to_file && log_path.empty?
-          errors[:log_file_path] = "Log file path must not be empty when 'Log to file' is enabled"
+        if log_to_file
+          if log_path.empty?
+            errors[:log_file_path] = "Log file path must not be empty when 'Log to file' is enabled"
+          else
+            # Iter-1 CONCERN-5: design §5.2 requires the parent directory to exist
+            # before enabling log-to-file. We do NOT auto-create user-facing log
+            # directories — surface the misconfiguration here so the dialog
+            # rejects the Save instead of silently swallowing every write.
+            parent = File.dirname(File.expand_path(log_path))
+            unless Dir.exist?(parent)
+              errors[:log_file_path] = "Log file parent directory does not exist: #{parent}"
+            end
+          end
         end
 
         if errors.empty?
@@ -1278,7 +1561,7 @@ Expected: all pass.
 - [ ] **Step 7.6: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(settings): validator accepts eval_enabled, log_to_file, log_file_path
 
@@ -1372,6 +1655,7 @@ Replace the body content of `mcp_for_sketchup/mcp_for_sketchup/ui/settings.html`
     <input type="checkbox" id="eval_enabled">
     <label for="eval_enabled">Enable Ruby evaluation (DANGEROUS)</label>
   </div>
+  <div class="error" id="eval_enabled-error"></div>
   <div class="warning" id="eval-warning" style="margin-left: 0;">
     Allows connected MCP clients to run arbitrary Ruby with full file/shell access. Off by default in this build.
   </div>
@@ -1391,7 +1675,7 @@ Replace the body content of `mcp_for_sketchup/mcp_for_sketchup/ui/settings.html`
     var lastState  = null;
 
     function clearErrors() {
-      ['host', 'port', 'log_level', 'log_file_path'].forEach(function (k) {
+      ['host', 'port', 'log_level', 'log_file_path', 'eval_enabled'].forEach(function (k) {
         var el = document.getElementById(k + '-error');
         if (el) el.textContent = '';
       });
@@ -1524,20 +1808,41 @@ Edit `mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog.rb`. Change `DIALOG_T
       DIALOG_TITLE = "MCP Server for SketchUp Settings"
 ```
 
-Extend `on_load_state` to push the new fields:
+Also change the `UI::HtmlDialog.new` constructor call to accommodate the
+new fields (iter-1 CONCERN-4) — the previous `height: 360, scrollable: false`
+truncates the Logging + Ruby Evaluation sections on Windows display scaling:
 ```ruby
-      def self.on_load_state(dialog)
-        state = {
+      # was: height: 360, scrollable: false
+      ::UI::HtmlDialog.new(
+        # ... existing keyword args ...
+        height:     480,
+        scrollable: true,
+      )
+```
+
+Extract a `load_state_payload` helper so `on_load_state` and the two-phase `on_save`
+deferred branch share the same state-building logic (iter-1 CRITICAL-3):
+```ruby
+      # Build the state payload pushed to the dialog. Extracted so the
+      # two-phase confirm flow in `on_save` can also use it to revert
+      # the UI to the previously-saved state when the user declines.
+      def self.load_state_payload
+        {
           host:           MCPforSketchUp::Core::Config.host,
           port:           MCPforSketchUp::Core::Config.port,
           log_level:      MCPforSketchUp::Core::Config.log_level,
           log_to_file:    MCPforSketchUp::Core::Config.log_to_file,
           log_file_path:  MCPforSketchUp::Core::Config.log_file_path,
-          eval_enabled:   MCPforSketchUp::Core::Config.eval_enabled,
+          # Use eval_enabled? (not raw accessor) so sentinel-nil unset state
+          # falls through to BuildProfile::EVAL_ENABLED_BY_DEFAULT — iter-1 CRITICAL-2.
+          eval_enabled:   MCPforSketchUp::Core::Config.eval_enabled?,
           running:        MCPforSketchUp::Core::Application.running?,
           current:        MCPforSketchUp::Core::Application.running_config,
         }
-        dialog.execute_script("window.applyState(#{js_safe_json(state)})")
+      end
+
+      def self.on_load_state(dialog)
+        dialog.execute_script("window.applyState(#{js_safe_json(load_state_payload)})")
       rescue StandardError => e
         MCPforSketchUp::Core::Logger.log_error("settings_dialog.load_state", e)
       end
@@ -1557,19 +1862,44 @@ Extend `on_save` to do the confirm flow + persistence of the three new fields. R
         end
 
         normalized = result[:normalized]
-        previous_eval_enabled = MCPforSketchUp::Core::Config.eval_enabled
+        # Effective previous state — uses `eval_enabled?` so a sentinel-nil
+        # unset pref properly resolves through BuildProfile (iter-1 CRITICAL-2).
+        previous_eval_enabled = MCPforSketchUp::Core::Config.eval_enabled?
 
         # Eval transition off → on requires a blocking confirm with a security
-        # warning. If the user clicks No, we silently roll the request back
-        # and tell the dialog the save did NOT succeed for the eval field.
+        # warning. Two-phase flow (iter-1 CRITICAL-3): we MUST leave the
+        # action_callback frame before showing ::UI.messagebox — on Windows
+        # a messagebox inside the callback hangs (same quirk handled at
+        # settings_dialog.rb:100 for host/port restart). Defer via
+        # ::UI.start_timer(0, false), then either persist (Yes) or revert
+        # UI to the previously-saved state (No).
         if normalized[:eval_enabled] && !previous_eval_enabled
-          unless confirm_eval_enable
-            dialog.execute_script(
-              "window.onSaveResult(#{js_safe_json({ ok: false,
-                errors: { eval_enabled: 'Cancelled by user' } })})"
-            )
-            return
+          ::UI.start_timer(0, false) do
+            if confirm_eval_enable
+              # User confirmed; persist now.
+              MCPforSketchUp::Core::Config.update!(
+                host:           normalized[:host],
+                port:           normalized[:port],
+                log_level:      normalized[:log_level],
+                eval_enabled:   true,
+                log_to_file:    normalized[:log_to_file],
+                log_file_path:  normalized[:log_file_path],
+              )
+              dialog.execute_script(
+                "window.onSaveResult(#{js_safe_json({ ok: true })}); " \
+                "window.applyState(#{js_safe_json(load_state_payload)})"
+              )
+            else
+              # User declined; revert UI to the previously-saved state and
+              # surface a one-line error so the dialog shows what happened.
+              dialog.execute_script(
+                "window.applyState(#{js_safe_json(load_state_payload)}); " \
+                "window.onSaveResult(#{js_safe_json({ ok: false,
+                  errors: { eval_enabled: 'Cancelled — Ruby evaluation remains disabled' } })})"
+              )
+            end
           end
+          return
         end
 
         current_runtime = MCPforSketchUp::Core::Application.running_config
@@ -1610,10 +1940,9 @@ Extend `on_save` to do the confirm flow + persistence of the three new fields. R
       end
 
       # Blocking native confirm. Yes → returns true. No → returns false.
-      # Defer via UI.start_timer(0, ...) to escape the action_callback frame
-      # on Windows (same quirk as the host/port restart prompt). Sync flag
-      # captured through a closure since the timer callback runs the same
-      # stack synchronously.
+      # Caller (`on_save`) is responsible for deferring via UI.start_timer
+      # to escape the action_callback frame on Windows; this method itself
+      # only shows the messagebox (iter-1 CRITICAL-3).
       def self.confirm_eval_enable
         answer = ::UI.messagebox(
           "You are about to enable Ruby evaluation.\n\n" \
@@ -1629,12 +1958,21 @@ Extend `on_save` to do the confirm flow + persistence of the three new fields. R
 
 - [ ] **Step 8.3: Update main.rb menu — open log file when log_to_file is on**
 
-Edit `mcp_for_sketchup/mcp_for_sketchup/core/application.rb` — replace `show_log`:
+Edit `mcp_for_sketchup/mcp_for_sketchup/core/application.rb` — replace `show_log`.
+
+Iter-1 CONCERN-5: bare `"file://#{path}"` interpolation breaks on Windows
+paths with spaces or non-ASCII characters and on Windows drive-letter
+paths. `URI::File.build(path: …).to_s` performs proper RFC 8089 escaping.
+Requires Ruby's `uri` stdlib (loaded via `require "uri"` at the top of
+the file if absent — `Sketchup`'s embedded Ruby ships it).
 ```ruby
+require "uri"  # iter-1 CONCERN-5
+
       def self.show_log
         if MCPforSketchUp::Core::Config.log_to_file &&
            File.exist?(MCPforSketchUp::Core::Config.log_file_path)
-          ::UI.openURL("file://#{MCPforSketchUp::Core::Config.log_file_path}")
+          expanded = File.expand_path(MCPforSketchUp::Core::Config.log_file_path)
+          ::UI.openURL(URI::File.build(path: expanded).to_s)
         elsif defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
           SKETCHUP_CONSOLE.show
         end
@@ -1685,7 +2023,7 @@ Add a checklist comment to commit message — manual verification (after Step 14
 - [ ] **Step 8.8: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(settings): UI for eval_enabled, log_to_file, log_file_path
 
@@ -1746,11 +2084,24 @@ Expected: fails. Currently `eval_ruby` goes through `_call` which calls `format_
 
 - [ ] **Step 9.3: Implement -32010 routing**
 
-Edit `src/sketchup_mcp/tools.py` — replace the existing `eval_ruby` wrapper with:
+Iter-1 SUGGESTION-1: define the `-32010` constant once in `compat.py`
+(canonical compat surface) and import it from `tools.py`. The smoke
+helper (Task 13) imports the same constant, so Python/Ruby drift is
+caught at module load instead of by silent code mismatch.
+
+First, in `src/sketchup_mcp/compat.py` add at the top (after the version
+constants):
 ```python
-# JSON-RPC code returned by the Ruby handler when eval is disabled in
-# Settings. Documented contract: spec §4.4 and Task 6.
-_EVAL_DISABLED_CODE = -32010
+# JSON-RPC application-error code returned by the Ruby handler when the
+# eval gate is closed. Single source of truth for Python callers — see
+# spec §4.4 and Ruby `handlers/eval.rb::EVAL_DISABLED_CODE`.
+EVAL_DISABLED_CODE = -32010
+```
+
+Then edit `src/sketchup_mcp/tools.py` — replace the existing `eval_ruby`
+wrapper with:
+```python
+from sketchup_mcp.compat import EVAL_DISABLED_CODE  # iter-1 SUGGESTION-1
 
 
 @mcp.tool()
@@ -1771,7 +2122,7 @@ async def eval_ruby(
     except ConnectionError as e:
         return f"SketchUp not running or extension not started: {e}"
     except SketchUpError as e:
-        if e.code == _EVAL_DISABLED_CODE:
+        if e.code == EVAL_DISABLED_CODE:
             return e.message
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
 
@@ -1813,7 +2164,7 @@ Expected: pass.
 - [ ] **Step 9.7: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(python): route -32010 from eval_ruby as actionable text
 
@@ -1855,6 +2206,7 @@ Edit `mcp_for_sketchup/package.rb`:
 #!/usr/bin/env ruby
 require 'zip'
 require 'fileutils'
+require 'json'   # iter-1 SUGGESTION-3: parse extension.json from the built .rbz
 
 EXTENSION_NAME = 'mcp_for_sketchup'
 VERSION = '0.1.0'   # bumped to 0.2.0 in Task 11
@@ -1885,31 +2237,54 @@ File.write(build_profile_path, <<~RUBY)
 RUBY
 puts "Generated #{build_profile_path}: VARIANT=#{VARIANT}, EVAL_ENABLED_BY_DEFAULT=#{EVAL_DEFAULT}"
 
-# 2. Prepare a temp staging directory.
+# Iter-1 CRITICAL-6: wrap staging + zip in begin/ensure so a mid-build
+# crash (out-of-space, signal, zip exception) does NOT leave the
+# gitignored build_profile.rb in the source tree where it would silently
+# change the dev-runtime default on the next launch.
 temp_dir = "#{EXTENSION_NAME}_temp"
-FileUtils.rm_rf(temp_dir) if Dir.exist?(temp_dir)
-FileUtils.mkdir_p(temp_dir)
+begin
+  # 2. Prepare a temp staging directory.
+  FileUtils.rm_rf(temp_dir) if Dir.exist?(temp_dir)
+  FileUtils.mkdir_p(temp_dir)
 
-# .rbz package must contain exactly one root .rb file (the loader) and a
-# directory of the same name (the extension subfolder). The Trimble
-# Extension Signature service rejects anything else at root with
-# "Extra files found." extension.json lives INSIDE the extension subfolder.
-FileUtils.cp_r(EXTENSION_NAME, temp_dir)
-FileUtils.cp("#{EXTENSION_NAME}.rb", temp_dir)
+  # .rbz package must contain exactly one root .rb file (the loader) and a
+  # directory of the same name (the extension subfolder). The Trimble
+  # Extension Signature service rejects anything else at root with
+  # "Extra files found." extension.json lives INSIDE the extension subfolder.
+  FileUtils.cp_r(EXTENSION_NAME, temp_dir)
+  FileUtils.cp("#{EXTENSION_NAME}.rb", temp_dir)
 
-# 3. Zip everything into the .rbz file.
-FileUtils.rm(OUTPUT_NAME) if File.exist?(OUTPUT_NAME)
-Zip::File.open(OUTPUT_NAME, create: true) do |zipfile|
-  Dir["#{temp_dir}/**/**"].each do |file|
-    next if File.directory?(file)
-    puts "Adding: #{file}"
-    zipfile.add(file.sub("#{temp_dir}/", ''), file)
+  # 3. Zip everything into the .rbz file.
+  FileUtils.rm(OUTPUT_NAME) if File.exist?(OUTPUT_NAME)
+  Zip::File.open(OUTPUT_NAME, create: true) do |zipfile|
+    Dir["#{temp_dir}/**/**"].each do |file|
+      next if File.directory?(file)
+      puts "Adding: #{file}"
+      zipfile.add(file.sub("#{temp_dir}/", ''), file)
+    end
   end
+ensure
+  # 4. Clean up — always runs, even on failure.
+  FileUtils.rm_rf(temp_dir) if Dir.exist?(temp_dir)
+  FileUtils.rm_f(build_profile_path)
 end
 
-# 4. Clean up.
-FileUtils.rm_rf(temp_dir)
-FileUtils.rm(build_profile_path) if File.exist?(build_profile_path)
+# 5. Iter-1 SUGGESTION-3: post-build verification — parse extension.json
+# out of the produced .rbz and confirm the warehouse-relevant identity
+# fields. Cheap insurance against re-submitting a build with a stale
+# product_id or a forgotten version bump.
+Zip::File.open(OUTPUT_NAME) do |zf|
+  entry = zf.find_entry(File.join(EXTENSION_NAME, "extension.json"))
+  raise "post-build: extension.json missing from #{OUTPUT_NAME}" unless entry
+  meta = JSON.parse(entry.get_input_stream.read)
+  unless meta["product_id"] == "MCP_FOR_SKETCHUP"
+    raise "post-build: product_id mismatch — got #{meta['product_id'].inspect}, expected \"MCP_FOR_SKETCHUP\""
+  end
+  unless meta["version"] == VERSION
+    raise "post-build: version mismatch — got #{meta['version'].inspect}, expected #{VERSION.inspect}"
+  end
+  puts "extension.json verified: product_id=#{meta['product_id']}, version=#{meta['version']}"
+end
 
 puts "Created #{OUTPUT_NAME} (variant=#{VARIANT}, eval_default=#{EVAL_DEFAULT})"
 ```
@@ -1949,6 +2324,34 @@ cd ..
 ```
 Expected: non-zero exit + message `invalid --variant 'bogus'; expected 'warehouse' or 'github'`.
 
+- [ ] **Step 10.6.a: Default-variant test (iter-1 SUGGESTION-5 #3)**
+
+Cover the contract that omitting `--variant` yields the warehouse build.
+A regression here would silently submit the wrong default to Trimble.
+
+Add to `test/test_package_default_variant.rb`:
+```ruby
+require "minitest/autorun"
+
+class TestPackageDefaultVariant < Minitest::Test
+  def test_default_variant_produces_warehouse_rbz
+    Dir.chdir(File.expand_path("../mcp_for_sketchup", __dir__)) do
+      # Clean any prior build artifacts so the assertion checks THIS run.
+      Dir.glob("mcp_for_sketchup_v*.rbz").each { |f| File.delete(f) }
+      ok = system({ "RUBYOPT" => nil }, "ruby", "package.rb",
+                  out: File::NULL, err: File::NULL)
+      assert ok, "package.rb without --variant exited non-zero"
+      files = Dir.glob("mcp_for_sketchup_v*-warehouse.rbz")
+      refute_empty files, "default variant should produce *-warehouse.rbz"
+      Dir.glob("mcp_for_sketchup_v*.rbz").each { |f| File.delete(f) }
+    end
+  end
+end
+```
+
+Note: this is the only test that shells out — keep it in its own file so
+slow build-side tests don't fan out to the rest of the suite.
+
 - [ ] **Step 10.7: Confirm build_profile.rb is not committed**
 
 ```bash
@@ -1966,7 +2369,7 @@ rm -f mcp_for_sketchup/*.rbz
 - [ ] **Step 10.9: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 feat(package): dual-variant build (--variant=warehouse|github)
 
@@ -2040,13 +2443,23 @@ Edit `mcp_for_sketchup/package.rb` — `VERSION = '0.2.0'`.
 
 Edit `mcp_for_sketchup/mcp_for_sketchup.rb` — `ext.version = '0.2.0'`.
 
-- [ ] **Step 11.9: Refresh uv.lock with the new project version**
+- [ ] **Step 11.9: Refresh uv.lock with the new project version (if tracked)**
+
+Iter-1 QUESTION-5: `uv.lock` is committed for some projects and
+ignored for others. Branch on the actual git state to avoid creating
+an untracked artifact that the next commit step would skip.
 
 Run:
 ```bash
-uv lock 2>&1 | tail -5
+if git ls-files --error-unmatch uv.lock >/dev/null 2>&1; then
+  uv lock 2>&1 | tail -5
+  git add uv.lock
+else
+  echo "uv.lock not tracked; skipping lockfile regenerate"
+fi
 ```
-Expected: `uv.lock` updated; small diff in git status.
+Expected: when tracked — `uv.lock` updated and staged; when ignored —
+a one-line skip message and no change.
 
 - [ ] **Step 11.10: Run both test suites**
 
@@ -2059,7 +2472,7 @@ Expected: both pass.
 - [ ] **Step 11.11: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 chore: bump to v0.2.0
 
@@ -2133,16 +2546,29 @@ Find the row for `eval_ruby` in the Tool catalogue table and update:
 | **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above. **Disabled by default in the warehouse build; enable via Plugins → MCP Server → Settings...** See [Distribution variants](#distribution-variants). |
 ```
 
-- [ ] **Step 12.4: CLAUDE.md — global text replacements**
+- [ ] **Step 12.4: CLAUDE.md — manual replacements (NO sed)**
 
-```bash
-sed -i 's|su_mcp/su_mcp|mcp_for_sketchup/mcp_for_sketchup|g; s|su_mcp/|mcp_for_sketchup/|g; s|`SU_MCP`|`MCPforSketchUp`|g; s|SU_MCP::|MCPforSketchUp::|g; s|Sketchup MCP Server|MCP Server for SketchUp|g' CLAUDE.md
-```
+Iter-1 CRITICAL-5 + SUGGESTION-7: sed mangles the «to be renamed»
+annotations into nonsense like «mcp_for_sketchup/ — to be renamed
+mcp_for_sketchup/». Apply explicit Edit operations instead.
+
+Open `CLAUDE.md` and apply these targeted substitutions one by one
+(use the `Edit` tool with `replace_all: true` where the substring is
+strictly path-like and unambiguous):
+
+1. `su_mcp/su_mcp` → `mcp_for_sketchup/mcp_for_sketchup` (literal path; safe to replace_all)
+2. `su_mcp/` → `mcp_for_sketchup/` (only where it refers to actual paths; INSPECT each occurrence — skip any «to be renamed» annotation, edit by-hand)
+3. `` `SU_MCP` `` → `` `MCPforSketchUp` `` (replace_all)
+4. `SU_MCP::` → `MCPforSketchUp::` (replace_all)
+5. `Sketchup MCP Server` → `MCP Server for SketchUp` (replace_all)
+6. Audit and remove any leftover «to be renamed» phrases — after the rename
+   the annotation is obsolete. Read each occurrence in context and rewrite.
+
 Verify:
 ```bash
-grep -nE 'su_mcp/|SU_MCP|Sketchup MCP' CLAUDE.md || echo OK
+grep -nE 'su_mcp/|SU_MCP|Sketchup MCP|to be renamed' CLAUDE.md || echo OK
 ```
-Expected: `OK`.
+Expected: `OK` (no legacy markers AND no stale «to be renamed» phrases).
 
 - [ ] **Step 12.5: CLAUDE.md — add build variants and eval-gate notes**
 
@@ -2170,7 +2596,19 @@ cd mcp_for_sketchup && ruby package.rb --variant=github && cd ..
 
 (Replace the existing single `ruby package.rb` line in CLAUDE.md's Dev Commands.)
 
-- [ ] **Step 12.6: docs/release.md — two-variant build step**
+- [ ] **Step 12.6: docs/release.md — two-variant build step + rewrite legacy EW notes**
+
+Iter-1 CONCERN-3 + QUESTION-1: the current `docs/release.md` (in the §
+about Extension Warehouse) states that EW «rejects pre-encrypted /
+signed .rbz files and requires plain source». That note contradicts
+the new strategy — both v0.2.0 artifacts go through the Trimble
+extension-signing service. Find and DELETE the legacy note before
+making the additions below (a grep like
+`grep -n 'pre-encrypted\|plain source\|reject' docs/release.md`
+surfaces the lines to remove). Replace it with the new
+«Submitting via Extension Warehouse» subsection from §«Warehouse vs
+GitHub release» added at the bottom of this step. The two-variant
+build step below is unchanged.
 
 Edit `docs/release.md` §3 "Build artifacts". Replace the existing `(cd su_mcp && ruby package.rb)` line block with:
 ```bash
@@ -2210,6 +2648,17 @@ Two artifacts ship from the same source commit:
 
 Both are signed via the Trimble signing service.
 
+### Submitting via Extension Warehouse (v0.2.0+)
+
+1. Build the warehouse variant: `(cd mcp_for_sketchup && ruby package.rb --variant=warehouse)`
+2. Sign via the Trimble extension-signing service: <https://extensions.sketchup.com/developer/sign-extension>
+3. Submit the signed file through the Extension Warehouse intake form.
+4. `product_id` is `MCP_FOR_SKETCHUP` — this is a NEW product, not an
+   update to the dead v0.1.0 `SU_MCP_SERVER` listing.
+
+For the GitHub-Release variant, run the same flow with `--variant=github`
+and upload the signed `.rbz` alongside the Python wheel/sdist.
+
 Release notes template (GitHub Releases):
 
 > ## v0.2.0 — Warehouse-compliant rebrand
@@ -2243,17 +2692,34 @@ grep -nE 'su_mcp/|SU_MCP' docs/sketchup-ruby-cookbook.md || echo OK
 ```
 Expected: `OK`.
 
-- [ ] **Step 12.8: Global sanity grep**
+- [ ] **Step 12.8: Strict tracked-grep over all legacy markers**
+
+Iter-1 SUGGESTION-4 + CRITICAL-5: include both case-variants of the
+prefix AND every display-name string AND the dead Trimble product_id.
+Exit non-zero if ANY match is found in non-historical paths — historical
+docs (`docs/superpowers/*`, session-transfer files, CHANGELOGs, lock
+files) are excluded by glob.
 
 ```bash
-git grep -in 'su_mcp\|SU_MCP\|Sketchup MCP Server' -- ':!docs/superpowers/specs/*' ':!docs/session-transfer-*' ':!docs/superpowers/plans/*' ':!CHANGELOG*' ':!*.lock'
+PATTERNS='su_mcp|SU_MCP|Sketchup MCP Server|SketchupMCP|SU_MCP_SERVER'
+git grep -inE "$PATTERNS" \
+  -- ':!docs/superpowers/specs/*' \
+     ':!docs/superpowers/plans/*' \
+     ':!docs/session-transfer-*' \
+     ':!CHANGELOG*' \
+     ':!*.lock' && {
+  echo "FAIL: legacy markers still present in tracked files"
+  exit 1
+}
+echo "OK: no legacy markers in user-facing tracked files"
 ```
-Expected: empty output (or only matches inside spec/plan/session-transfer files, which are historical and not user-facing).
+Expected: prints `OK: no legacy markers in user-facing tracked files`
+and exits 0. Any other outcome blocks the release.
 
 - [ ] **Step 12.9: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 docs: update README, CLAUDE, release.md, cookbook for v0.2.0
 
@@ -2287,28 +2753,27 @@ Note each call site. There should be at least one explicit eval step in the 22-s
 
 Add immediately after the existing imports (top of file):
 ```python
-# Sentinel constant: SketchUp side returns this code when the eval_ruby
-# gate is closed (warehouse-variant default). The smoke run treats this
-# as a "skip" rather than a failure so it works against any variant.
-_EVAL_DISABLED_CODE = -32010
+from sketchup_mcp.compat import EVAL_DISABLED_CODE  # iter-1 SUGGESTION-1: shared constant
+from sketchup_mcp.errors import SketchUpError       # iter-1 CRITICAL-4
 
 
 async def _maybe_skip_eval(label, coro):
-    """Run an eval_ruby-dependent step; if it returns -32010, skip and tally.
+    """Run an eval_ruby-dependent step; if Ruby returns -32010, skip and tally.
 
-    Both the Python `eval_ruby` wrapper (which converts -32010 to a plain
-    string) and `_call`-wrapped tools (which use format_error and produce
-    "[-32010] ...") can surface the disabled state — match either form.
+    smoke_check uses raw SketchUpConnection.send_command (see `call()` in
+    examples/smoke_check.py), which raises SketchUpError on a JSON-RPC error
+    envelope. We MUST catch that exception and inspect `e.code`, not look
+    for text in a string result — the textual route only fires for the
+    FastMCP-wrapped client (iter-1 CRITICAL-4).
     """
-    result = await coro
-    text = result if isinstance(result, str) else json.dumps(result)
-    if "eval_ruby is disabled" in text or "[-32010]" in text:
-        print(f"  ⚠ {label}: skipped (eval_ruby disabled in extension settings)")
-        return None
-    return result
+    try:
+        return await coro
+    except SketchUpError as e:
+        if e.code == EVAL_DISABLED_CODE:
+            print(f"  ⚠ {label}: skipped (eval_ruby disabled in extension settings)")
+            return None
+        raise
 ```
-
-Note: `json` may not be imported yet; add `import json` to the imports block if absent.
 
 - [ ] **Step 13.3: Wrap each direct eval_ruby call**
 
@@ -2349,6 +2814,52 @@ grep -n eval_ruby examples/smoke_multi_client.py
 ```
 If results — apply the same `_maybe_skip_eval` pattern (copy the helper or import it). If no results — no change needed.
 
+- [ ] **Step 13.4.a: Pytest covering _maybe_skip_eval -32010 path (iter-1 SUGGESTION-5 #4)**
+
+Without a unit test the helper's behaviour on a SketchUpError(-32010)
+exception is checked only by live smoke. Add a hermetic test that
+monkeypatches `send_command` (or the helper's awaited coroutine) so the
+-32010 path runs without SketchUp.
+
+Add to `tests/test_smoke_helpers.py`:
+```python
+import asyncio
+import pytest
+
+from sketchup_mcp.compat import EVAL_DISABLED_CODE
+from sketchup_mcp.errors import SketchUpError
+
+# The helper lives in examples/smoke_check.py; importing the module
+# directly keeps the test out of the package import path.
+from importlib import util
+from pathlib import Path
+
+_SMOKE_PATH = Path(__file__).resolve().parents[1] / "examples" / "smoke_check.py"
+_spec = util.spec_from_file_location("smoke_check", _SMOKE_PATH)
+_smoke = util.module_from_spec(_spec)
+_spec.loader.exec_module(_smoke)  # type: ignore[union-attr]
+
+
+def test_maybe_skip_eval_returns_none_on_disabled_code(capsys):
+    async def boom():
+        raise SketchUpError(EVAL_DISABLED_CODE, "eval_ruby is disabled")
+
+    result = asyncio.run(_smoke._maybe_skip_eval("step 5", boom()))
+    assert result is None
+    captured = capsys.readouterr().out
+    assert "step 5" in captured
+    assert "skipped" in captured
+
+
+def test_maybe_skip_eval_re_raises_other_codes():
+    async def boom():
+        raise SketchUpError(-32000, "other error")
+
+    with pytest.raises(SketchUpError) as ei:
+        asyncio.run(_smoke._maybe_skip_eval("step 6", boom()))
+    assert ei.value.code == -32000
+```
+
 - [ ] **Step 13.5: Lint/quick syntax check Python files**
 
 ```bash
@@ -2360,7 +2871,7 @@ Expected: `ok` twice.
 - [ ] **Step 13.6: Commit**
 
 ```bash
-git add -A
+git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — derive from this task's Files header; do NOT run `git add -A` literally
 git commit -m "$(cat <<'EOF'
 fix(examples): smoke_check skips eval_ruby steps when gate is closed
 
@@ -2379,6 +2890,25 @@ EOF
 **Why last:** every prior task verified its own slice; this task asserts the whole-system invariants from the spec.
 
 **Files:** none modified. This is verification only.
+
+- [ ] **Step 14.0: Trimble intake pre-check (iter-1 QUESTION-4)**
+
+Before building artifacts, verify the Extension Warehouse intake form
+accepts the v0.2.0 identity — a surprise gate at submission time forces
+a rebuild + re-sign cycle and is the slowest possible feedback path.
+
+Open <https://extensions.sketchup.com/developer/submit> and confirm:
+1. The form accepts a brand-new `product_id` (`MCP_FOR_SKETCHUP`) without
+   requiring a link to the dead v0.1.0 `SU_MCP_SERVER` submission.
+2. The form accepts the Trimble extension-signing service flow as the
+   source of the `.rbz` (matches §«Submitting via Extension Warehouse»
+   in `docs/release.md`).
+
+If either is gated behind a manual approval queue or product-id linking
+requirement, surface this to the user BEFORE running Step 14.1+ so the
+submission sequence can be adjusted (e.g. request an approval window,
+or open a ticket with Trimble to re-list the product) instead of
+rebuilding twice.
 
 - [ ] **Step 14.1: Full Ruby suite**
 
@@ -2440,6 +2970,15 @@ Open SketchUp:
 5. `Plugins → MCP Server → Settings...` — verify dialog has sections Network / Logging / Ruby Evaluation. The three new fields are present and bool defaults match.
 6. Run `uvx sketchup-mcp2` from a terminal, attach via Claude Desktop.
 7. Ask Claude "create a 100mm cube" — succeeds. Edit → Undo shows "Create Component (Cube)" — accept.
+7a. **Clear `eval_enabled` pref to force the BuildProfile default (iter-1 QUESTION-3).** Open the Ruby Console and run:
+    ```ruby
+    Sketchup.write_default("MCPforSketchUp", "eval_enabled", nil)
+    ```
+    Close and reopen `Plugins → MCP Server → Settings...` and verify the
+    «Enable Ruby evaluation» checkbox reflects the variant's build-time
+    default: off for warehouse, on for github. Without this step a
+    persisted pref from a prior session would mask the BuildProfile
+    fall-through and the variant default would not actually be exercised.
 8. Ask Claude to do something via eval_ruby — Claude reports the actionable disabled-text to you. Open Settings, toggle Enable Ruby evaluation, click Save. Confirm messagebox appears with security warning; click Yes. Retry — succeeds.
 9. Toggle Log to file in Settings, save, exercise a tool — verify `$TMPDIR/mcp_for_sketchup.log` exists and contains `[MCPforSU]` lines.
 10. `Plugins → MCP Server → Show Log` — verifies the file opens in OS viewer (with log-to-file on) or SKETCHUP_CONSOLE (off).
