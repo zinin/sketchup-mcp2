@@ -115,4 +115,55 @@ class TestSettingsValidator < Minitest::Test
     refute result[:ok]
     assert_match(/invalid characters/i, result[:errors][:host])
   end
+
+  # --- new v0.2.0 fields ---
+
+  def test_normalizes_eval_enabled_true_string
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "eval_enabled" => "true")
+    assert result[:ok]
+    assert_equal true, result[:normalized][:eval_enabled]
+  end
+
+  def test_normalizes_eval_enabled_false_string
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "eval_enabled" => "false")
+    assert result[:ok]
+    assert_equal false, result[:normalized][:eval_enabled]
+  end
+
+  def test_eval_enabled_default_is_false_when_missing
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN")
+    assert result[:ok]
+    assert_equal false, result[:normalized][:eval_enabled]
+  end
+
+  def test_log_to_file_normalizes_boolean
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "/tmp/x.log")
+    assert result[:ok]
+    assert_equal true,         result[:normalized][:log_to_file]
+    assert_equal "/tmp/x.log", result[:normalized][:log_file_path]
+  end
+
+  def test_log_to_file_true_requires_non_empty_path
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "")
+    refute result[:ok]
+    assert_match(/path/i, result[:errors][:log_file_path])
+  end
+
+  def test_log_to_file_false_allows_empty_path
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "false", "log_file_path" => "")
+    assert result[:ok]
+    assert_equal false, result[:normalized][:log_to_file]
+  end
+
+  def test_log_to_file_true_rejects_path_whose_parent_dir_is_missing
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "/nonexistent_dir_xyz/app.log")
+    refute result[:ok]
+    assert_match(/parent directory does not exist/i, result[:errors][:log_file_path])
+  end
 end

@@ -12,7 +12,7 @@ module MCPforSketchUp
       # from JSON sent by the HtmlDialog).
       #
       # Returns:
-      #   {ok: true,  errors: {}, normalized: {host:, port:, log_level:}}
+      #   {ok: true,  errors: {}, normalized: {host:, port:, log_level:, eval_enabled:, log_to_file:, log_file_path:}}
       #   {ok: false, errors: {host?: msg, port?: msg, log_level?: msg}}
       def self.validate(payload)
         return { ok: false, errors: { _general: "Bad payload format" } } unless payload.is_a?(Hash)
@@ -42,11 +42,56 @@ module MCPforSketchUp
           errors[:log_level] = "Invalid log level"
         end
 
+        eval_enabled = truthy?(payload["eval_enabled"])
+        log_to_file  = truthy?(payload["log_to_file"])
+        log_path     = payload["log_file_path"].to_s
+
+        if log_to_file
+          if log_path.empty?
+            errors[:log_file_path] = "Log file path must not be empty when 'Log to file' is enabled"
+          else
+            # Iter-1 CONCERN-5: design §5.2 requires the parent directory to exist
+            # before enabling log-to-file. We do NOT auto-create user-facing log
+            # directories — surface the misconfiguration here so the dialog
+            # rejects the Save instead of silently swallowing every write.
+            parent = File.dirname(File.expand_path(log_path))
+            unless Dir.exist?(parent)
+              errors[:log_file_path] = "Log file parent directory does not exist: #{parent}"
+            end
+          end
+        end
+
         if errors.empty?
-          { ok: true, errors: {}, normalized: { host: host, port: port_int, log_level: level } }
+          {
+            ok: true,
+            errors: {},
+            normalized: {
+              host:           host,
+              port:           port_int,
+              log_level:      level,
+              eval_enabled:   eval_enabled,
+              log_to_file:    log_to_file,
+              log_file_path:  log_path,
+            },
+          }
         else
           { ok: false, errors: errors }
         end
+      end
+
+      # Accept the strings "true"/"false" (used by the HTML dialog) as well
+      # as native booleans (used by Ruby callers and tests). Anything else
+      # — including the empty string and nil — is false. Strict by design:
+      # we don't accept "1"/"yes"/"on" forms; the dialog is the only producer.
+      # iter-2 SUGGESTION-3: nil normalises to `false` here because the
+      # dialog never sends nil. Semantically a missing pref means «unset»,
+      # not «false» — that distinction matters at the Config layer (sentinel-
+      # nil → BuildProfile fallback) but not in this validator, which only
+      # sees fully-populated dialog payloads. Don't reuse this helper from
+      # Config code.
+      def self.truthy?(value)
+        return value if value == true || value == false
+        value.to_s == "true"
       end
     end
   end
