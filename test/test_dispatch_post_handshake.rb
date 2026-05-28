@@ -14,6 +14,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/framing"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/system"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/eval"
 
 class TestDispatchPostHandshake < Minitest::Test
   def setup
@@ -123,5 +125,49 @@ class TestDispatchPostHandshake < Minitest::Test
     # JSON-RPC envelope with no version field.
     refute resp.key?("server_version"),
       "Dispatch must not embed server_version; that lives in Server now"
+  end
+
+  # --- eval_ruby gate (warehouse compliance) ---
+  # Iter-1 CRITICAL-8: `saved_eval` is a local var (lowercase). The previous
+  # name `SU_MCP_save_eval` started with uppercase and would be parsed as a
+  # constant — Ruby raises `dynamic constant assignment` inside method bodies.
+
+  def test_eval_ruby_returns_32010_when_disabled
+    saved_eval = MCPforSketchUp::Core::Config.eval_enabled
+    MCPforSketchUp::Core::Config.eval_enabled = false
+    begin
+      req = make_request(
+        method: "tools/call",
+        params: { "name" => "eval_ruby", "arguments" => { "code" => "1+1" } },
+        id: 99,
+      )
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      assert_equal 99, resp["id"]
+      refute_nil resp["error"], "expected error envelope when eval disabled"
+      assert_equal(-32010, resp["error"]["code"])
+      assert_match(/disabled/i, resp["error"]["message"])
+      assert_match(/Settings/, resp["error"]["message"])
+    ensure
+      MCPforSketchUp::Core::Config.eval_enabled = saved_eval
+    end
+  end
+
+  def test_eval_ruby_succeeds_when_enabled
+    saved_eval = MCPforSketchUp::Core::Config.eval_enabled
+    MCPforSketchUp::Core::Config.eval_enabled = true
+    begin
+      req = make_request(
+        method: "tools/call",
+        params: { "name" => "eval_ruby", "arguments" => { "code" => "21*2" } },
+        id: 100,
+      )
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      assert_equal 100, resp["id"]
+      refute resp.key?("error"), "expected no error when eval enabled"
+      text = resp.dig("result", "content", 0, "text")
+      assert_equal "42", text
+    ensure
+      MCPforSketchUp::Core::Config.eval_enabled = saved_eval
+    end
   end
 end
