@@ -69,7 +69,9 @@ Two artifacts are produced:
 
 ### 4.2 Runtime gate
 
-- `Config.eval_enabled?` reads pref `eval_enabled`; if pref unset, returns `Config.eval_enabled_default` (which reads `BuildProfile::EVAL_ENABLED_BY_DEFAULT`).
+- **Sentinel-`nil` mechanism for the unset-pref state.** `Config::DEFAULTS[:eval_enabled]` is `nil` (NOT `false`). `load_from_defaults!` calls `read_default(SECTION, "eval_enabled", nil)` and assigns `self.eval_enabled = raw_eval.nil? ? nil : !!raw_eval` so that an explicit `false` is preserved as `false` but an absent pref leaves the instance variable `nil`. (This relies on SketchUp's `read_default` returning the default arg when the key is absent and the persisted value when present, including boolean `false`. The plan's CRITICAL-1 test exercises both branches; see also QUESTION-7 in iter-1 review.)
+- `Config.eval_enabled?` returns `@eval_enabled` when non-nil; when `@eval_enabled` is `nil`, falls through to `Core::BuildProfile::EVAL_ENABLED_BY_DEFAULT` when that constant is defined, otherwise returns `false` (safe warehouse default for tests / dev runs without build_profile).
+- Settings UI and all other callers MUST consult `Config.eval_enabled?`, never the raw `Config.eval_enabled` accessor — see settings_dialog `on_load_state` which uses `eval_enabled?` to populate the checkbox.
 - `handlers/eval.rb::eval_ruby` checks the gate first:
 
 ```ruby
@@ -95,7 +97,14 @@ Settings dialog adds one checkbox `Enable Ruby evaluation (DANGEROUS)`. When the
 >
 > [No] [Yes]
 
-If the user clicks No, the pref save is rolled back to its previous value before the dialog re-displays. This pattern mirrors the existing host/port restart prompt.
+**Two-phase confirmation flow (required to avoid the Windows `UI.messagebox`-inside-callback hang already documented at `settings_dialog.rb:100`):**
+
+1. `on_save` action_callback validates the payload. If the eval transition is detected (off→on), it does NOT show the messagebox synchronously. Instead it defers via `::UI.start_timer(0, false)` so the callback frame is left first.
+2. The deferred block shows the messagebox.
+3. On **Yes**: persist via `Config.update!`, then `applyState(saved + eval_enabled: true)` to confirm the new state in the dialog.
+4. On **No**: do NOT persist. Call `applyState(saved)` (which sets the checkbox back to its previously-saved value) and write a one-line error into the new `<div id="eval_enabled-error">` element ("Cancelled — Ruby evaluation remains disabled"). The dialog's `clearErrors` helper MUST include `eval_enabled` in its array so the message is cleared on the next interaction.
+
+This pattern mirrors the existing host/port restart prompt (which also uses `::UI.start_timer(0, false)`).
 
 ### 4.4 Python side surface
 
@@ -115,7 +124,8 @@ Example flow:
 ### 5.1 Defaults and prefix
 
 - `Config::DEFAULTS[:log_level]` flips from `"INFO"` to `"WARN"`.
-- `Logger.write` builds `"[#{timestamp}] [MCPforSU] [#{level}] #{msg}"`.
+- The `[MCPforSU]` prefix is applied in the shared low-level `Logger.write` method — NOT only inside `Logger.log`. This is required so that backtrace lines emitted by `Logger.log_error` (which calls `write("    #{bt}")` directly per line) also carry the prefix. Acceptance §12.7 («every console line includes `[MCPforSU]`») would otherwise fail on error paths.
+- `Logger.write` builds `"[#{timestamp}] [MCPforSU] [#{level}] #{msg}"` for level-tagged lines, and `"[MCPforSU]     #{bt}"` for backtrace continuation lines (timestamp omitted because callers may emit them inside larger frames).
 - All existing `Logger.log` callers stay unchanged — only the writer's prefix format moves.
 
 ### 5.2 Optional log-to-file
@@ -124,8 +134,9 @@ Two new prefs:
 
 | Pref key | Type | Default | Constraint |
 |---|---|---|---|
+| `eval_enabled` | boolean / nil | `nil` (unset → falls back to `BuildProfile::EVAL_ENABLED_BY_DEFAULT`) | — |
 | `log_to_file` | boolean | `false` | — |
-| `log_file_path` | string | `File.join(Dir.tmpdir, "mcp_for_sketchup.log")` | Non-empty when `log_to_file=true`; parent dir must exist or be creatable. |
+| `log_file_path` | string | `File.join(Dir.tmpdir, "mcp_for_sketchup.log")` | When `log_to_file=true`: non-empty AND `File.directory?(File.dirname(File.expand_path(path)))` (parent dir must already exist — we do not auto-create user-facing log directories). Validator enforces both checks. |
 
 `Logger.write`:
 - Always emits to `SKETCHUP_CONSOLE` (or `$stdout` in tests) — unchanged behaviour.
@@ -138,7 +149,7 @@ Two new prefs:
 
 Currently `Plugins → MCP Server → Show Log` calls `SKETCHUP_CONSOLE.show`. New behavior:
 
-- If `log_to_file=true` and the file exists → `UI.openURL("file://#{log_file_path}")` (opens in OS default viewer).
+- If `log_to_file=true` and the file exists → `UI.openURL(URI::File.build(path: File.expand_path(log_file_path)).to_s)` (opens in OS default viewer; the `URI::File.build` form properly escapes spaces, non-ASCII characters, and Windows drive-letter paths — bare `"file://#{path}"` interpolation breaks on Windows paths with spaces).
 - Otherwise → existing `SKETCHUP_CONSOLE.show`.
 
 ## 6. Operation labels (Title Case)
@@ -161,11 +172,13 @@ Test guard: a new `test/test_operation_names.rb` asserts the exact strings via a
 
 ## 7. Silent rescue cleanup
 
-Five locations identified by the reviewer. Each is upgraded from `rescue StandardError\n  # ignore\nend` to explicit rescue + DEBUG-log. No behavioural change for end users — these stay best-effort. The DEBUG log makes them diagnosable when prefs / SketchUp build are unusual.
+Seven locations: five identified by the reviewer plus two found during iter-1 review (`Geometry.safe_abort` and `ClientState#peer_label`). Each is upgraded from `rescue StandardError\n  # ignore\nend` to explicit rescue + DEBUG-log. No behavioural change for end users — these stay best-effort. The DEBUG log makes them diagnosable when prefs / SketchUp build are unusual.
 
 | File:line | Before | After |
 |---|---|---|
 | `handlers/geometry.rb:174-176` | `rescue StandardError; # пропускаем faces…; end` | `rescue StandardError => e; Logger.log("DEBUG", "build_sphere: skipped degenerate face at pole: #{e.class}: #{e.message}"); end` |
+| `handlers/geometry.rb:13` (`Geometry.safe_abort`) | `rescue StandardError; # ignore` | `rescue StandardError => e; Logger.log("DEBUG", "Geometry.safe_abort: model.abort_operation raised: #{e.class}: #{e.message}"); end` |
+| `core/client_state.rb:53` (`#peer_label`) | `rescue StandardError; # ignore` | `rescue StandardError => e; Logger.log("DEBUG", "ClientState#peer_label: peer probe raised: #{e.class}: #{e.message}"); "<unknown>"` |
 | `core/application.rb:45` | `@server&.stop rescue nil` | explicit `begin/rescue StandardError => e; Logger.log("DEBUG", "Application.start cleanup: server.stop raised: #{e.class}: #{e.message}"); end` |
 | `core/server.rb:39-42` | server-close `rescue StandardError; # ignore` | explicit rescue + DEBUG log "Server.stop: tcpserver close raised…" |
 | `core/server.rb:93-96` | `setsockopt` cleanup-close — same | DEBUG log "Server.accept: post-setsockopt-failure close raised…" |
