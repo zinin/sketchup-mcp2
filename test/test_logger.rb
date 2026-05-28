@@ -4,9 +4,11 @@ require "stringio"
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
+require_relative "support/config_reset"
 
 class TestLogger < Minitest::Test
   def setup
+    ConfigReset.reset_all!
     MCPforSketchUp::Core::Config.host      = "127.0.0.1"
     MCPforSketchUp::Core::Config.port      = 9876
     MCPforSketchUp::Core::Config.log_level = "INFO"

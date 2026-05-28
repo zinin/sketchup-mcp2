@@ -1,6 +1,7 @@
 # test/test_application.rb
 require "minitest/autorun"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "support/config_reset"
 
 # Stub the slice of the SketchUp Ruby API surface that Application touches at
 # runtime so we can exercise lifecycle + running_config without a live SketchUp.
@@ -27,6 +28,7 @@ class TestApplication < Minitest::Test
   A = MCPforSketchUp::Core::Application
 
   def setup
+    ConfigReset.reset_all!
     A.stop if A.running?
     A.server_class = StubServer
     MCPforSketchUp::Core::Config.host      = "127.0.0.1"

@@ -1,6 +1,7 @@
 # test/test_config.rb
 require "minitest/autorun"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "support/config_reset"
 
 class StubReader
   def initialize(data = {})
@@ -47,9 +48,7 @@ class TestConfig < Minitest::Test
   C = MCPforSketchUp::Core::Config
 
   def setup
-    C.host = nil
-    C.port = nil
-    C.log_level = nil
+    ConfigReset.reset_all!
   end
 
   def test_section_constant
@@ -191,5 +190,105 @@ class TestConfig < Minitest::Test
     assert_equal "10.0.0.5", C.host
     assert_equal 9999,       C.port
     assert_equal "WARN",     C.log_level
+  end
+
+  # --- new prefs introduced in v0.2.0 (warehouse compliance) ---
+
+  def test_defaults_include_eval_enabled_nil
+    # Sentinel-nil: unset pref triggers the BuildProfile fallback (spec §4.2).
+    # `false` here would mask the fallback and make github-variant indistinguishable
+    # from warehouse — see iter-1 CRITICAL-1.
+    assert_nil C::DEFAULTS[:eval_enabled]
+  end
+
+  def test_defaults_include_log_to_file_false
+    assert_equal false, C::DEFAULTS[:log_to_file]
+  end
+
+  def test_defaults_include_log_file_path_in_tmpdir
+    require "tmpdir"
+    expected = File.join(Dir.tmpdir, "mcp_for_sketchup.log")
+    assert_equal expected, C::DEFAULTS[:log_file_path]
+  end
+
+  def test_load_from_defaults_reads_eval_enabled
+    reader = StubReader.new("eval_enabled" => true)
+    C.load_from_defaults!(reader)
+    assert_equal true, C.eval_enabled
+  end
+
+  def test_load_from_defaults_reads_log_to_file
+    reader = StubReader.new("log_to_file" => true)
+    C.load_from_defaults!(reader)
+    assert_equal true, C.log_to_file
+  end
+
+  def test_load_from_defaults_reads_log_file_path
+    reader = StubReader.new("log_file_path" => "/tmp/custom.log")
+    C.load_from_defaults!(reader)
+    assert_equal "/tmp/custom.log", C.log_file_path
+  end
+
+  def test_eval_enabled_question_mark_when_build_profile_absent_returns_false
+    # Unset pref + no BuildProfile => safe warehouse default (false).
+    refute MCPforSketchUp::Core.const_defined?(:BuildProfile),
+      "test env should not have build_profile.rb loaded"
+    C.load_from_defaults!(StubReader.new)  # no eval_enabled key in reader
+    assert_nil C.eval_enabled,
+      "sentinel: unset pref must leave @eval_enabled at nil"
+    refute C.eval_enabled?
+  end
+
+  def test_eval_enabled_question_mark_when_pref_true
+    C.load_from_defaults!(StubReader.new("eval_enabled" => true))
+    assert C.eval_enabled?
+  end
+
+  def test_eval_enabled_question_mark_when_pref_explicit_false
+    # Explicit `false` must be honoured (not fall through to BuildProfile).
+    C.load_from_defaults!(StubReader.new("eval_enabled" => false))
+    assert_equal false, C.eval_enabled,
+      "explicit false must be preserved, not coerced to nil"
+    refute C.eval_enabled?
+  end
+
+  def test_read_default_sentinel_round_trip_for_eval_enabled
+    # StubReader contract mirror of Sketchup.read_default: when key is absent,
+    # returns the default arg (nil sentinel); when key is `false`, returns `false`.
+    # Verifies the assumption underlying CRITICAL-1's sentinel design (spec §4.2).
+    reader_unset = StubReader.new                                   # no key
+    reader_false = StubReader.new("eval_enabled" => false)
+    assert_nil   reader_unset.read_default(C::SECTION, "eval_enabled", nil)
+    assert_equal false, reader_false.read_default(C::SECTION, "eval_enabled", nil)
+  end
+
+  def test_update_with_only_3_args_does_not_touch_new_fields
+    # Iter-1 CONCERN-10: legacy callers that pass only the original 3
+    # keyword args must NOT silently start emitting writes for the new
+    # eval_enabled / log_to_file / log_file_path keys — keyword-default
+    # `nil` plus `unless …nil?` guards must keep them untouched.
+    ConfigReset.reset_all!
+    writer = StubWriter.new
+    C.update!(host: "1.1.1.1", port: 1111, log_level: "INFO", writer: writer)
+    assert_nil C.eval_enabled
+    assert_nil C.log_to_file
+    assert_nil C.log_file_path
+    keys = writer.writes.map { |_section, k, _value| k }
+    refute_includes keys, "eval_enabled"
+    refute_includes keys, "log_to_file"
+    refute_includes keys, "log_file_path"
+  end
+
+  def test_update_persists_new_prefs
+    writer = StubWriter.new
+    C.update!(
+      host: "127.0.0.1", port: 9876, log_level: "WARN",
+      eval_enabled: true, log_to_file: true, log_file_path: "/tmp/a.log",
+      writer: writer,
+    )
+    keys = writer.writes.map { |_section, key, _value| key }
+    assert_includes keys, "eval_enabled"
+    assert_includes keys, "log_to_file"
+    assert_includes keys, "log_file_path"
   end
 end
