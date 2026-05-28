@@ -2998,6 +2998,49 @@ grep -nE 'su_mcp/|SU_MCP' docs/sketchup-ruby-cookbook.md || echo OK
 ```
 Expected: `OK`.
 
+- [ ] **Step 12.7.a: Sweep source-file path comments + docstrings (iter-2 spec-review gap)**
+
+Iter-2 spec review of Task 1 commit `4415dfd` confirmed that Step 1.4's
+word-boundary sed (`\bSU_MCP\b` / `\bsu_mcp_v\b`) deliberately did not
+rewrite path substrings like `su_mcp/su_mcp/...` inside comments and
+docstrings. The legacy markers remaining in production source after
+Task 1:
+
+- 25 Ruby header comments on line 1 of files in
+  `mcp_for_sketchup/mcp_for_sketchup/{core,handlers,helpers,ui,main.rb}`
+  reading `# su_mcp/su_mcp/<dir>/<file>.rb`.
+- `src/sketchup_mcp/compat.py:3` — docstring «Mirrored in
+  su_mcp/su_mcp/core/compat.rb».
+- `src/sketchup_mcp/tools.py:164` — docstring reference to
+  `su_mcp/su_mcp/handlers/joints.rb`.
+
+Without sweeping these, Step 12.8 strict-grep fails the release. Run
+BEFORE 12.8:
+
+```bash
+# Ruby source-file header path comments (and any other stray refs).
+find mcp_for_sketchup/mcp_for_sketchup -type f -name '*.rb' \
+  -exec sed -i 's|su_mcp/su_mcp/|mcp_for_sketchup/mcp_for_sketchup/|g' {} +
+
+# Python source docstrings + comments.
+sed -i 's|su_mcp/su_mcp/|mcp_for_sketchup/mcp_for_sketchup/|g' \
+  src/sketchup_mcp/compat.py src/sketchup_mcp/tools.py
+```
+
+Verify no leftovers:
+```bash
+grep -rnE 'su_mcp/su_mcp/' mcp_for_sketchup/ src/sketchup_mcp/ 2>/dev/null \
+  || echo 'OK: no su_mcp/su_mcp/ path substrings in Ruby or Python source'
+```
+
+Expected: `OK: no su_mcp/su_mcp/ path substrings...`. Any other output
+blocks Step 12.8.
+
+Files for the Task 12 commit get extended accordingly — add
+`mcp_for_sketchup/mcp_for_sketchup/{core,handlers,helpers,ui,main.rb}`
+and `src/sketchup_mcp/{compat.py,tools.py}` to the explicit-paths
+`git add` list.
+
 - [ ] **Step 12.8: Strict tracked-grep over all legacy markers**
 
 Iter-1 SUGGESTION-4 + CRITICAL-5: include both case-variants of the
