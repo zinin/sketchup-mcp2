@@ -39,13 +39,31 @@ module MCPforSketchUp
       # extension here so the prefix invariant is preserved for file output
       # too.
       def self._emit(line)
+        _emit_console(line)
+        append_to_file(line) if Config.log_to_file
+      end
+
+      def self.append_to_file(line)
+        path = Config.log_file_path
+        return if path.nil? || path.empty?
+        File.open(path, "a") { |f| f.puts(line) }
+      rescue StandardError => e
+        # Best-effort. Logging must never break the data path. Surface the
+        # failure as a one-shot DEBUG line in the console without re-entering
+        # append_to_file (we explicitly call _emit_console directly here).
+        _emit_console("[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [DEBUG] " \
+                      "log file write failed (#{e.class}: #{e.message}); " \
+                      "reverting to console only for this line")
+      end
+
+      def self._emit_console(line)
         if defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
           SKETCHUP_CONSOLE.write(line + "\n")
         else
           $stdout.puts(line)
         end
       end
-      private_class_method :_emit
+      private_class_method :_emit, :append_to_file, :_emit_console
     end
   end
 end
