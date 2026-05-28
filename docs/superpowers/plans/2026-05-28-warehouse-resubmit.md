@@ -466,9 +466,12 @@ build are unusual:
 - [ ] **Step 2.11.b: Upgrade ClientState#peer_label silent rescue (iter-1 CONCERN-2)**
 
 Edit `mcp_for_sketchup/mcp_for_sketchup/core/client_state.rb` around line 53
-(`#peer_label`). Preserve the existing fallback return `"<unknown>"` so
-callers continue to receive a string, but emit a DEBUG line so probe
-failures (e.g. closed socket race) are visible:
+(`#peer_label`). Preserve the existing fallback return `"unknown"` exactly
+(iter-2 CRITICAL-9: client labels logged elsewhere format as `#0[unknown]`;
+changing to `"<unknown>"` would be a behavioural change masquerading as
+preservation — keep the bare word) so callers continue to receive an
+identical string, but emit a DEBUG line so probe failures (e.g. closed
+socket race) are visible:
 ```ruby
       def peer_label
         # ... existing peer probe logic (peeraddr / getpeername) ...
@@ -476,7 +479,7 @@ failures (e.g. closed socket race) are visible:
         MCPforSketchUp::Core::Logger.log("DEBUG",
           "ClientState#peer_label: peer probe raised: " \
           "#{e.class}: #{e.message}")
-        "<unknown>"
+        "unknown"
       end
 ```
 
@@ -697,6 +700,11 @@ EOF
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/core/config.rb` — extend DEFAULTS, add accessors, add `eval_enabled?` getter that consults `Core::BuildProfile` when present
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/main.rb` — load `build_profile` if present (conditional, since it's gitignored and missing in test/dev runs)
 - Modify: `test/test_config.rb` — new tests for prefs + `eval_enabled?` fallback
+- Create: `test/support/config_reset.rb` — `ConfigReset.reset_all!` helper (Step 4.0)  <!-- iter-2 CRITICAL-6 -->
+- Modify: `test/test_logger.rb` — require `support/config_reset`, replace ad-hoc setup with `ConfigReset.reset_all!` (Step 4.0)  <!-- iter-2 CRITICAL-6 -->
+- Modify: `test/test_application.rb` — require `support/config_reset`, replace ad-hoc setup with `ConfigReset.reset_all!` (Step 4.0)  <!-- iter-2 CRITICAL-6 -->
+- Create: `test/test_build_profile_fixture.rb` — github-variant fixture coverage (Step 4.5.a)  <!-- iter-2 CRITICAL-6 -->
+- Create: `test/test_extension_json.rb` — static `product_id` + `name` assertion (Step 4.7.a, iter-2 QUESTION-3)
 
 - [ ] **Step 4.0: Add shared `ConfigReset` test helper (iter-1 CONCERN-9)**
 
@@ -1581,9 +1589,10 @@ EOF
 **Files:**
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/ui/settings.html` — add 3 new fields + eval-enable warning JS
 - Modify: `mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog.rb` — push/pull new fields + confirm messagebox on eval-enable transition off→on
-- Modify: `test/test_settings_dialog.rb` — verify file size sane, regress html exists
+- Modify: `mcp_for_sketchup/mcp_for_sketchup/core/application.rb` — `show_log` rewrite to honor `log_to_file` (Step 8.3)  <!-- iter-2 CRITICAL-6 -->
+- Verify (no code change): `test/test_settings_dialog.rb` — Step 8.4 runs the existing suite to catch regressions; not "Modify"  <!-- iter-2 CONCERN-9: header earlier read "Modify" but no step modifies this file -->
 
-There are no good headless tests for the HTML side. Verification is by running SketchUp manually (Step 8.7) plus existing test_settings_dialog test coverage.
+There are no good headless tests for the HTML side. Verification is by running SketchUp manually (Step 8.7) plus existing test_settings_dialog test coverage (no new tests added in this task).
 
 - [ ] **Step 8.1: Update settings.html with the new fields**
 
@@ -2045,6 +2054,8 @@ EOF
 
 **Files:**
 - Modify: `src/sketchup_mcp/tools.py` — wrap `eval_ruby` with a -32010 catch
+- Modify: `src/sketchup_mcp/compat.py` — declare `EVAL_DISABLED_CODE = -32010` constant (Step 9.3, iter-1 SUGGESTION-1)  <!-- iter-2 CRITICAL-6 -->
+- Modify: `src/sketchup_mcp/prompts.py` — eval-gate paragraph in `sketchup_modeling_strategy` (Step 9.5.a, iter-1 QUESTION-2)  <!-- iter-2 CRITICAL-6 -->
 - Modify: `tests/test_tools.py` — new test
 
 - [ ] **Step 9.1: Add a failing test**
@@ -2216,6 +2227,7 @@ EOF
 **Files:**
 - Modify: `mcp_for_sketchup/package.rb` — add `--variant` parse, generate `build_profile.rb`, emit variant-suffixed `.rbz`
 - Modify: `.gitignore` (or create) — exclude `core/build_profile.rb`
+- Create: `test/test_package_default_variant.rb` — default-variant contract test (Step 10.6.a, iter-1 SUGGESTION-5 #3)  <!-- iter-2 CRITICAL-6 -->
 
 - [ ] **Step 10.1: Verify .gitignore exclusion for build_profile**
 
@@ -2730,7 +2742,7 @@ docs (`docs/superpowers/*`, session-transfer files, CHANGELOGs, lock
 files) are excluded by glob.
 
 ```bash
-PATTERNS='su_mcp|SU_MCP|Sketchup MCP Server|SketchupMCP|SU_MCP_SERVER'
+PATTERNS='su_mcp|SU_MCP|Sketchup MCP Server|SketchUp MCP Server|SketchupMCP|SU_MCP_SERVER'
 git grep -inE "$PATTERNS" \
   -- ':!docs/superpowers/specs/*' \
      ':!docs/superpowers/plans/*' \
@@ -2768,8 +2780,9 @@ EOF
 **Why next:** smoke runs against a real SketchUp instance, which may have eval_ruby disabled (warehouse build). The current code calls `eval_ruby` unconditionally and would abort.
 
 **Files:**
-- Modify: `examples/smoke_check.py`
+- Modify: `examples/smoke_check.py` — graceful skip helper + sys.path guard (iter-2 CONCERN-5)
 - Optional modify: `examples/smoke_multi_client.py` (only if it calls eval_ruby — verify first)
+- Create: `tests/test_smoke_helpers.py` — `_maybe_skip_eval` pytest coverage (Step 13.4.a, iter-1 SUGGESTION-5 #4)  <!-- iter-2 CRITICAL-6 -->
 
 - [ ] **Step 13.1: Locate eval_ruby calls in smoke_check.py**
 
@@ -2904,10 +2917,12 @@ git add <explicit-paths>  # iter-1 CONCERN-7: see Commit policy in preamble — 
 git commit -m "$(cat <<'EOF'
 fix(examples): smoke_check skips eval_ruby steps when gate is closed
 
-Detects either the actionable plain-text disabled message (from Python
-wrapper's -32010 routing) or the [-32010] format_error form (other
-tools), prints a skip notice, and tallies in the final report. Lets
-the smoke run finish successfully against the warehouse build.
+Catches SketchUpError with code == EVAL_DISABLED_CODE (-32010) raised
+by raw SketchUpConnection.send_command (smoke_check's call() helper),
+prints a skip notice, and tallies in the final report. Re-raises any
+other SketchUpError so unrelated failures are still surfaced. Lets the
+smoke run finish successfully against the warehouse build where
+eval_ruby is gated off.
 EOF
 )"
 ```

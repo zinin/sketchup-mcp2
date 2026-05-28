@@ -103,6 +103,19 @@ Settings dialog adds one checkbox `Enable Ruby evaluation (DANGEROUS)`. When the
 2. The deferred block shows the messagebox.
 3. On **Yes**: persist via `Config.update!`, then `applyState(saved + eval_enabled: true)` to confirm the new state in the dialog.
 4. On **No**: do NOT persist. Call `applyState(saved)` (which sets the checkbox back to its previously-saved value) and write a one-line error into the new `<div id="eval_enabled-error">` element ("Cancelled — Ruby evaluation remains disabled"). The dialog's `clearErrors` helper MUST include `eval_enabled` in its array so the message is cleared on the next interaction.
+5. **Timer-internal rescue (iter-2 CRITICAL-2).** The deferred block runs in
+   its own `begin/rescue StandardError` — exceptions raised inside the
+   timer callback do NOT propagate to `on_save`'s outer rescue (the timer
+   fires after the original action_callback frame has returned). On
+   exception inside the timer body, log via `Logger.log_error("settings_dialog.eval_confirm", e)`,
+   then `applyState(saved)` + `onSaveResult({ok:false, errors:{_general:…}})`
+   so the dialog reverts and the user sees an actionable message instead
+   of a silently-broken state.
+6. **Shared persist/restart helper (iter-2 CRITICAL-2).** Both the normal
+   path and the confirm-Yes branch run identical persist + host/port
+   restart-prompt logic. Extract a `persist_and_finalize` helper called
+   from both sites so the Yes-branch does not miss the
+   restart-needed check or `dialog.close` deferral.
 
 This pattern mirrors the existing host/port restart prompt (which also uses `::UI.start_timer(0, false)`).
 
@@ -124,9 +137,10 @@ Example flow:
 ### 5.1 Defaults and prefix
 
 - `Config::DEFAULTS[:log_level]` flips from `"INFO"` to `"WARN"`.
-- The `[MCPforSU]` prefix is applied in the shared low-level `Logger.write` method — NOT only inside `Logger.log`. This is required so that backtrace lines emitted by `Logger.log_error` (which calls `write("    #{bt}")` directly per line) also carry the prefix. Acceptance §12.7 («every console line includes `[MCPforSU]`») would otherwise fail on error paths.
-- `Logger.write` builds `"[#{timestamp}] [MCPforSU] [#{level}] #{msg}"` for level-tagged lines, and `"[MCPforSU]     #{bt}"` for backtrace continuation lines (timestamp omitted because callers may emit them inside larger frames).
-- All existing `Logger.log` callers stay unchanged — only the writer's prefix format moves.
+- The `[MCPforSU]` prefix is applied in a new shared low-level private method `Logger._emit` — NOT only inside `Logger.log`. This is required so that backtrace lines emitted by `Logger.log_error` (which calls `_emit("    #{bt}")` directly per line) also carry the prefix. Acceptance §12.7 («every console line includes `[MCPforSU]`») would otherwise fail on error paths.
+- `Logger._emit` builds `"[#{timestamp}] [MCPforSU] [#{level}] #{msg}"` for level-tagged lines, and `"[MCPforSU]     #{bt}"` for backtrace continuation lines (timestamp omitted because callers may emit them inside larger frames).
+- **All existing public Logger methods are preserved verbatim (iter-2 CRITICAL-1).** `log`, `log_tool` (used by `application.rb` + `server.rb`, 9 call sites), and `log_error` keep their signatures and gating. The only change is that they route through `_emit` instead of writing directly.
+- **Backtrace gating preserved (iter-2 CRITICAL-1).** `log_error` continues to emit backtrace lines only when `Config.log_level == "DEBUG"`, capped at `first(3)` — the current behaviour. Rewriting it to emit full backtrace at every level would violate reviewer rejection 2 («Debug info clutters shared Ruby console»).
 
 ### 5.2 Optional log-to-file
 
@@ -149,7 +163,18 @@ Two new prefs:
 
 Currently `Plugins → MCP Server → Show Log` calls `SKETCHUP_CONSOLE.show`. New behavior:
 
-- If `log_to_file=true` and the file exists → `UI.openURL(URI::File.build(path: File.expand_path(log_file_path)).to_s)` (opens in OS default viewer; the `URI::File.build` form properly escapes spaces, non-ASCII characters, and Windows drive-letter paths — bare `"file://#{path}"` interpolation breaks on Windows paths with spaces).
+- If `log_to_file=true` and the file exists → open in the OS default viewer via a small `file_uri_for(path)` helper (iter-2 CRITICAL-3):
+  ```ruby
+  def self.file_uri_for(path)
+    encoded = File.expand_path(path).gsub('\\', '/')
+    encoded = "/#{encoded}" if encoded =~ /\A[A-Za-z]:/   # Windows drive letter
+    encoded = URI::DEFAULT_PARSER.escape(encoded)
+    "file://#{encoded}"
+  end
+  # …
+  UI.openURL(file_uri_for(log_file_path))
+  ```
+  `URI::File.build(path: …)` is NOT used — it raises `URI::InvalidComponentError` on paths containing spaces or non-ASCII characters under MRI 3.2.x (verified by iter-2 codex review). The escape helper above is portable: it normalises Windows backslashes to forward slashes, prepends the leading slash for `C:` drive-letter paths required by RFC 8089, then URI-encodes the result before string-interpolating into the `file://` scheme.
 - Otherwise → existing `SKETCHUP_CONSOLE.show`.
 
 ## 6. Operation labels (Title Case)
@@ -178,7 +203,9 @@ Seven locations: five identified by the reviewer plus two found during iter-1 re
 |---|---|---|
 | `handlers/geometry.rb:174-176` | `rescue StandardError; # пропускаем faces…; end` | `rescue StandardError => e; Logger.log("DEBUG", "build_sphere: skipped degenerate face at pole: #{e.class}: #{e.message}"); end` |
 | `handlers/geometry.rb:13` (`Geometry.safe_abort`) | `rescue StandardError; # ignore` | `rescue StandardError => e; Logger.log("DEBUG", "Geometry.safe_abort: model.abort_operation raised: #{e.class}: #{e.message}"); end` |
-| `core/client_state.rb:53` (`#peer_label`) | `rescue StandardError; # ignore` | `rescue StandardError => e; Logger.log("DEBUG", "ClientState#peer_label: peer probe raised: #{e.class}: #{e.message}"); "<unknown>"` |
+| `core/client_state.rb:53` (`#peer_label`) | `rescue StandardError; "unknown"` | `rescue StandardError => e; Logger.log("DEBUG", "ClientState#peer_label: peer probe raised: #{e.class}: #{e.message}"); "unknown"` (iter-2 CRITICAL-9: preserve the existing `"unknown"` return — the previous spec draft and plan misquoted it as `"<unknown>"` which would have been a behavioural change in client labels logged everywhere) |
+| `helpers/validation.rb:57` (`Helpers::Validation` int-coerce) | `Integer(v.to_s, 10) rescue nil` | explicit `begin; Integer(v.to_s, 10); rescue ArgumentError, TypeError => e; Logger.log("DEBUG", "Validation.to_int: invalid integer #{v.inspect}: #{e.class}"); nil; end` (iter-2 CONCERN-1) |
+| `ui/settings_dialog.rb:126-127` (secondary `execute_script` in rescue) | `rescue StandardError; nil; end` | `rescue StandardError => e; Logger.log("DEBUG", "settings_dialog.save: secondary execute_script failed: #{e.class}: #{e.message}"); nil; end` (iter-2 CONCERN-1) |
 | `core/application.rb:45` | `@server&.stop rescue nil` | explicit `begin/rescue StandardError => e; Logger.log("DEBUG", "Application.start cleanup: server.stop raised: #{e.class}: #{e.message}"); end` |
 | `core/server.rb:39-42` | server-close `rescue StandardError; # ignore` | explicit rescue + DEBUG log "Server.stop: tcpserver close raised…" |
 | `core/server.rb:93-96` | `setsockopt` cleanup-close — same | DEBUG log "Server.accept: post-setsockopt-failure close raised…" |
