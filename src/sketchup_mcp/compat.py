@@ -17,6 +17,11 @@ from sketchup_mcp.errors import IncompatibleVersionError
 MIN_RUBY = "0.1.0"
 MAX_RUBY = "0.1.0"
 
+# JSON-RPC application-error code returned by the Ruby handler when the
+# eval gate is closed. Single source of truth for Python callers — see
+# spec §4.4 and Ruby `handlers/eval.rb::EVAL_DISABLED_CODE`.
+EVAL_DISABLED_CODE = -32010
+
 _PART_RE = re.compile(r"\A[0-9]+\Z")
 
 

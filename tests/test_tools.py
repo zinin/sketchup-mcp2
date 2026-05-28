@@ -260,3 +260,27 @@ async def test_eval_ruby_no_longer_returns_old_success_wrapper(
     out = await eval_ruby(mock_ctx, code="raise 'x'")
     assert out.startswith("[-32000] boom")
     assert '"success"' not in out
+
+
+async def test_eval_ruby_returns_actionable_text_on_minus32010(
+    mock_send_command, mock_ctx
+):
+    """When Ruby returns -32010 (eval gate closed), Python wrapper returns
+    a plain text suitable for Claude to surface to the end user — not a
+    raised SketchUpError. The LLM should see "eval_ruby is disabled..."
+    and pass it through verbatim. Contract pinned per spec §4.4.
+    """
+    from sketchup_mcp.tools import eval_ruby
+
+    mock_send_command.send_command.side_effect = SketchUpError(
+        -32010,
+        "eval_ruby is disabled. Open Plugins → MCP Server → Settings...",
+        {"tool": "eval_ruby", "params": {}},
+    )
+    out = await eval_ruby(mock_ctx, code="puts 'x'")
+    assert isinstance(out, str)
+    assert "eval_ruby is disabled" in out
+    assert "Settings" in out
+    # Must NOT be the [-32010] formatted-error string from format_error — the
+    # spec wants the raw human-readable message to flow through.
+    assert not out.startswith("[-32010]")

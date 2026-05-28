@@ -10,6 +10,7 @@ module MCPforSketchUp
       # LLM as an actionable hint rather than an opaque traceback. See spec
       # §4 and Task 9.
       EVAL_DISABLED_CODE = -32010
+      # Mirrored in src/sketchup_mcp/compat.py::EVAL_DISABLED_CODE (Python side).
 
       EVAL_DISABLED_MESSAGE = (
         "eval_ruby is disabled. Open Plugins → MCP Server → Settings... " \

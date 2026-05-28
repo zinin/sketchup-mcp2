@@ -242,8 +242,32 @@ async def eval_ruby(
     ctx: Context,
     code: Annotated[str, Field(min_length=1)],
 ) -> str:
-    """Evaluate arbitrary Ruby code in Sketchup."""
-    return await _call(ctx, "eval_ruby", code=code)
+    """Evaluate arbitrary Ruby code in SketchUp.
+
+    Disabled by default in the Extension Warehouse build. If disabled, the
+    SketchUp side returns JSON-RPC code -32010 with a user-facing message
+    explaining how to enable it. This wrapper surfaces that message as a
+    plain string so the LLM can repeat it to the user verbatim — without
+    the `[code]` prefix that format_error would otherwise add.
+    """
+    try:
+        result = await _raw_call(ctx, "eval_ruby", code=code)
+    except ConnectionError as e:
+        return f"SketchUp not running or extension not started: {e}"
+    except SketchUpError as e:
+        if e.code == compat.EVAL_DISABLED_CODE:
+            return e.message
+        return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
+
+    content = result.get("content") if isinstance(result, dict) else None
+    if (
+        isinstance(content, list)
+        and content
+        and isinstance(content[0], dict)
+        and "text" in content[0]
+    ):
+        return content[0]["text"]
+    return json.dumps(result)
 
 
 @mcp.tool()
