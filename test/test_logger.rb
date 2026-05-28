@@ -23,6 +23,10 @@ class TestLogger < Minitest::Test
     @captured.string.lines.last.to_s.chomp
   end
 
+  def captured_lines
+    @captured.string.lines.map(&:chomp)
+  end
+
   def test_log_tool_without_client_label_is_unchanged
     MCPforSketchUp::Core::Logger.log_tool("create_component", "ok")
     assert_match(/tool=create_component status=ok\z/, last_line)
@@ -61,5 +65,32 @@ class TestLogger < Minitest::Test
     assert_match(
       /tool=server\.parse client=#1\[127\.0\.0\.1:54321\] class=RuntimeError msg=boom\z/,
       last_line)
+  end
+
+  def test_log_line_includes_extension_prefix
+    MCPforSketchUp::Core::Logger.log("INFO", "hello")
+    assert_match(/ \[MCPforSU\] \[INFO\] hello\z/, last_line)
+  end
+
+  def test_default_log_level_is_warn_in_config_defaults
+    assert_equal "WARN", MCPforSketchUp::Core::Config::DEFAULTS[:log_level]
+  end
+
+  def test_log_error_backtrace_lines_carry_prefix
+    prev_level = MCPforSketchUp::Core::Config.log_level
+    MCPforSketchUp::Core::Config.log_level = "DEBUG"
+    begin
+      raise "boom"
+    rescue StandardError => e
+      MCPforSketchUp::Core::Logger.log_error("test_tag", e)
+    end
+    bt_lines = captured_lines.grep(/test_logger\.rb/)  # backtrace mentions this file
+    refute_empty bt_lines, "expected backtrace lines in captured output"
+    bt_lines.each do |line|
+      assert_includes line, "[MCPforSU]",
+        "backtrace line missing prefix: #{line.inspect}"
+    end
+  ensure
+    MCPforSketchUp::Core::Config.log_level = prev_level
   end
 end

@@ -7,7 +7,7 @@ module MCPforSketchUp
       DEFAULTS = {
         host:      "127.0.0.1",
         port:      9876,
-        log_level: "INFO",
+        log_level: "WARN",
       }.freeze
 
       LEVELS           = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3 }.freeze

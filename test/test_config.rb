@@ -70,14 +70,14 @@ class TestConfig < Minitest::Test
   def test_defaults_hash
     assert_equal "127.0.0.1", C::DEFAULTS[:host]
     assert_equal 9876,        C::DEFAULTS[:port]
-    assert_equal "INFO",      C::DEFAULTS[:log_level]
+    assert_equal "WARN",      C::DEFAULTS[:log_level]
   end
 
   def test_load_from_defaults_with_empty_prefs
     C.load_from_defaults!(StubReader.new)
     assert_equal "127.0.0.1", C.host
     assert_equal 9876,        C.port
-    assert_equal "INFO",      C.log_level
+    assert_equal "WARN",      C.log_level
   end
 
   def test_load_from_defaults_reads_all_three_keys
@@ -158,7 +158,7 @@ class TestConfig < Minitest::Test
   def test_load_from_defaults_falls_back_when_log_level_unknown
     reader = StubReader.new("log_level" => "VERBOSE")
     C.load_from_defaults!(reader)
-    assert_equal "INFO", C.log_level
+    assert_equal "WARN", C.log_level
   end
 
   # --- write_default → false must raise (config.rb:76 contract) ---
