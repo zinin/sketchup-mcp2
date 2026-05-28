@@ -3,7 +3,7 @@ require 'zip'
 require 'fileutils'
 
 EXTENSION_NAME = 'mcp_for_sketchup'
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 
 # Parse --variant=warehouse|github (default: warehouse).
 variant_arg = ARGV.find { |a| a.start_with?('--variant=') }

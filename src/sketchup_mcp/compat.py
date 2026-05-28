@@ -14,8 +14,8 @@ from sketchup_mcp.errors import IncompatibleVersionError
 # Policy: MAX_* tracks the new release; MIN_* moves only on a release
 # that breaks wire/handler contract with the previous counterpart.
 # Initial dev state: MIN == MAX (exact match) — bumped together at 0.1.0.
-MIN_RUBY = "0.1.0"
-MAX_RUBY = "0.1.0"
+MIN_RUBY = "0.2.0"
+MAX_RUBY = "0.2.0"
 
 # JSON-RPC application-error code returned by the Ruby handler when the
 # eval gate is closed. Single source of truth for Python callers — see
