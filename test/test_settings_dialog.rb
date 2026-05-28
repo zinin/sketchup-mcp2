@@ -2,7 +2,9 @@
 require "minitest/autorun"
 require "json"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/application"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog"
+require_relative "support/config_reset"
 
 # Focused on the only pure function in SettingsDialog: js_safe_json.
 # show / on_load_state / on_save depend on UI::HtmlDialog (SketchUp Ruby API),
@@ -47,5 +49,59 @@ class TestSettingsDialogJsSafeJson < Minitest::Test
     assert_equal false,        parsed["ok"]
     assert_equal "bad",        parsed["errors"]["host"]
     assert_equal %w[one two],  parsed["errors"]["_general"]
+  end
+end
+
+# load_state_payload is a pure data-builder (no UI::HtmlDialog dependency),
+# so it is unit-testable. It reads Config + Application state. The key
+# guarantee (iter-1 CRITICAL-2): :eval_enabled is sourced from the
+# `eval_enabled?` predicate, NOT the raw accessor — so a sentinel-nil
+# unset pref resolves to the effective `false`, never leaks `nil` to the UI.
+class TestSettingsDialogLoadStatePayload < Minitest::Test
+  S = MCPforSketchUp::UI::SettingsDialog
+
+  def setup
+    ConfigReset.reset_all!
+    # Order-independence: ensure no BuildProfile lingers from another test
+    # file in the same run_all.rb process, so eval_enabled? falls through to
+    # the safe warehouse default of `false`.
+    if MCPforSketchUp::Core.const_defined?(:BuildProfile)
+      MCPforSketchUp::Core.send(:remove_const, :BuildProfile)
+    end
+    MCPforSketchUp::Core::Config.host         = "127.0.0.1"
+    MCPforSketchUp::Core::Config.port         = 9876
+    MCPforSketchUp::Core::Config.log_level    = "INFO"
+  end
+
+  def teardown
+    ConfigReset.reset_all!
+  end
+
+  # CRITICAL-2 predicate: unset pref (nil) + no BuildProfile => effective
+  # false, never nil. Proves load_state_payload uses eval_enabled?, not the
+  # raw `eval_enabled` accessor (which would be nil here).
+  def test_eval_enabled_is_effective_false_not_nil_when_unset
+    assert_nil MCPforSketchUp::Core::Config.eval_enabled,
+               "precondition: raw accessor should be nil (sentinel-unset)"
+    refute MCPforSketchUp::Core.const_defined?(:BuildProfile),
+           "precondition: no BuildProfile loaded"
+
+    payload = S.load_state_payload
+    assert_equal false, payload[:eval_enabled],
+                 "must be effective `false` (eval_enabled?), not the raw nil accessor"
+    refute_nil payload[:eval_enabled]
+  end
+
+  # The new logging fields must be present in the payload so applyState can
+  # populate the log_to_file checkbox and log_file_path input.
+  def test_payload_includes_new_logging_keys
+    MCPforSketchUp::Core::Config.log_to_file   = true
+    MCPforSketchUp::Core::Config.log_file_path = "/tmp/mcp.log"
+
+    payload = S.load_state_payload
+    assert payload.key?(:log_to_file),   "payload must include :log_to_file"
+    assert payload.key?(:log_file_path), "payload must include :log_file_path"
+    assert_equal true,           payload[:log_to_file]
+    assert_equal "/tmp/mcp.log", payload[:log_file_path]
   end
 end

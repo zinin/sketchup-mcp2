@@ -5,7 +5,7 @@ module MCPforSketchUp
   module UI
     module SettingsDialog
       HTML_PATH    = File.join(File.dirname(__FILE__), "settings.html").freeze
-      DIALOG_TITLE = "MCP Server Settings"
+      DIALOG_TITLE = "MCP Server for SketchUp Settings"
       # Derive prefs_key from the Config section name so all our SU prefs
       # cluster together. SketchUp uses this only for remembering dialog
       # position/size — not related to our host/port/log_level prefs.
@@ -30,10 +30,10 @@ module MCPforSketchUp
         dialog = ::UI::HtmlDialog.new(
           dialog_title:    DIALOG_TITLE,
           preferences_key: DIALOG_PREFS,
-          scrollable:      false,
+          scrollable:      true,
           resizable:       false,
           width:           380,
-          height:          360,
+          height:          480,
           style:           ::UI::HtmlDialog::STYLE_DIALOG
         )
 
@@ -53,17 +53,28 @@ module MCPforSketchUp
         dialog
       end
 
+      # Build the state payload pushed to the dialog. Extracted so the
+      # two-phase confirm flow in `on_save` can also use it to revert
+      # the UI to the previously-saved state when the user declines.
+      def self.load_state_payload
+        {
+          host:           MCPforSketchUp::Core::Config.host,
+          port:           MCPforSketchUp::Core::Config.port,
+          log_level:      MCPforSketchUp::Core::Config.log_level,
+          log_to_file:    MCPforSketchUp::Core::Config.log_to_file,
+          log_file_path:  MCPforSketchUp::Core::Config.log_file_path,
+          # Use eval_enabled? (not raw accessor) so sentinel-nil unset state
+          # falls through to BuildProfile::EVAL_ENABLED_BY_DEFAULT — iter-1 CRITICAL-2.
+          eval_enabled:   MCPforSketchUp::Core::Config.eval_enabled?,
+          running:        MCPforSketchUp::Core::Application.running?,
+          current:        MCPforSketchUp::Core::Application.running_config,
+        }
+      end
+
       # Push current Config + Application state into the dialog. Called on
       # initial DOM ready, after Save, and on show() when reopening.
       def self.on_load_state(dialog)
-        state = {
-          host:      MCPforSketchUp::Core::Config.host,
-          port:      MCPforSketchUp::Core::Config.port,
-          log_level: MCPforSketchUp::Core::Config.log_level,
-          running:   MCPforSketchUp::Core::Application.running?,
-          current:   MCPforSketchUp::Core::Application.running_config
-        }
-        dialog.execute_script("window.applyState(#{js_safe_json(state)})")
+        dialog.execute_script("window.applyState(#{js_safe_json(load_state_payload)})")
       rescue StandardError => e
         MCPforSketchUp::Core::Logger.log_error("settings_dialog.load_state", e)
       end
@@ -80,53 +91,132 @@ module MCPforSketchUp
         end
 
         normalized = result[:normalized]
-        # Snapshot what the server is *actually* running on (not the
-        # last-saved Config). Reverting saved values back to running values
-        # therefore does not provoke a restart prompt.
         current_runtime = MCPforSketchUp::Core::Application.running_config
+        # Effective previous state — uses `eval_enabled?` so a sentinel-nil
+        # unset pref properly resolves through BuildProfile (iter-1 CRITICAL-2).
+        previous_eval_enabled = MCPforSketchUp::Core::Config.eval_enabled?
+
+        # Eval transition off → on requires a blocking confirm with a security
+        # warning. Two-phase flow (iter-1 CRITICAL-3): we MUST leave the
+        # action_callback frame before showing ::UI.messagebox — on Windows
+        # a messagebox inside the callback hangs (same quirk handled at
+        # settings_dialog.rb:100 for host/port restart). Defer via
+        # ::UI.start_timer(0, false), then either persist (Yes) or revert
+        # UI to the previously-saved state (No).
+        if normalized[:eval_enabled] && !previous_eval_enabled
+          ::UI.start_timer(0, false) do
+            # iter-2 CRITICAL-2: the outer `rescue StandardError` on
+            # `on_save` does NOT cover this block — the timer fires after
+            # the action_callback frame returns. Without an in-timer rescue
+            # an exception here (validator-validated payload that still
+            # raises in update!, IO error inside dialog.execute_script,
+            # etc.) would crash silently inside the timer and leave the
+            # dialog open with no error feedback — it would never close or
+            # revert.
+            begin
+              if confirm_eval_enable
+                # User confirmed; persist via the shared finalizer so the
+                # Yes path goes through the same need_restart / dialog.close
+                # logic as the normal path.
+                persist_and_finalize(dialog, normalized, current_runtime,
+                                     override_eval_enabled: true)
+              else
+                # User declined; revert UI to the previously-saved state
+                # and surface a one-line error.
+                dialog.execute_script(
+                  "window.applyState(#{js_safe_json(load_state_payload)}); " \
+                  "window.onSaveResult(#{js_safe_json({ ok: false,
+                    errors: { eval_enabled: 'Cancelled — no settings were saved (Ruby evaluation remains disabled)' } })})"
+                )
+              end
+            rescue StandardError => e
+              report_general_error(dialog, e, tag: "settings_dialog.eval_confirm", revert: true)
+            end
+          end
+          return
+        end
+
+        persist_and_finalize(dialog, normalized, current_runtime)
+      rescue StandardError => e
+        report_general_error(dialog, e, tag: "settings_dialog.save")
+      end
+
+      # iter-2 CRITICAL-2: shared finalizer for `on_save`. Previously the
+      # confirm-Yes branch had its own truncated finalizer that skipped
+      # need_restart detection and dialog.close — only the normal path
+      # ran them. Extracting both paths through this helper guarantees the
+      # eval-enable confirmation flow behaves identically to a host/port
+      # change w.r.t. restart prompt + dialog dismissal. `override_eval_enabled`
+      # is set to true only by the post-confirm Yes branch (`normalized[:eval_enabled]`
+      # already validates true there, but the explicit override keeps the
+      # intent legible at the call site); the normal path passes nil to
+      # use `normalized[:eval_enabled]` as-is.
+      def self.persist_and_finalize(dialog, normalized, current_runtime, override_eval_enabled: nil)
+        effective_eval = override_eval_enabled.nil? ? normalized[:eval_enabled] : override_eval_enabled
 
         MCPforSketchUp::Core::Config.update!(
-          host:      normalized[:host],
-          port:      normalized[:port],
-          log_level: normalized[:log_level]
+          host:           normalized[:host],
+          port:           normalized[:port],
+          log_level:      normalized[:log_level],
+          eval_enabled:   effective_eval,
+          log_to_file:    normalized[:log_to_file],
+          log_file_path:  normalized[:log_file_path],
         )
 
-        dialog.execute_script("window.onSaveResult(#{js_safe_json({ ok: true })})")
+        dialog.execute_script(
+          "window.onSaveResult(#{js_safe_json({ ok: true })}); " \
+          "window.applyState(#{js_safe_json(load_state_payload)})"
+        )
 
         need_restart = current_runtime &&
                        (normalized[:host] != current_runtime[:host] ||
                         normalized[:port] != current_runtime[:port])
 
-        # Defer dialog.close out of the JS action_callback frame for the same
-        # Windows-quirk reason we wrap UI.messagebox below — cheap insurance.
         ::UI.start_timer(0, false) { dialog.close }
 
         if need_restart
-          # Wrap UI.messagebox in UI.start_timer so it does not run inside the
-          # action_callback stack — a known Windows quirk that can sink the
-          # message box behind the main SketchUp window and freeze the UI.
           ::UI.start_timer(0, false) do
             answer = ::UI.messagebox("Restart server with new settings now?", ::MB_YESNO)
             MCPforSketchUp::Core::Application.restart if answer == ::IDYES
           end
         end
-      rescue StandardError => e
-        MCPforSketchUp::Core::Logger.log_error("settings_dialog.save", e)
-        # Sanitize e.message in case it carries invalid UTF-8 bytes that would
-        # break JSON.generate. scrub replaces invalid bytes with "?" verbatim.
+      end
+      private_class_method :persist_and_finalize
+
+      # Blocking native confirm. Yes → returns true. No → returns false.
+      # Caller (`on_save`) is responsible for deferring via UI.start_timer
+      # to escape the action_callback frame on Windows; this method itself
+      # only shows the messagebox (iter-1 CRITICAL-3).
+      def self.confirm_eval_enable
+        answer = ::UI.messagebox(
+          "You are about to enable Ruby evaluation.\n\n" \
+          "This lets connected MCP clients run arbitrary Ruby code inside " \
+          "SketchUp with FULL access to your filesystem, network, and shell.\n\n" \
+          "Only enable this with MCP clients you fully trust.\n\n" \
+          "Continue?",
+          ::MB_YESNO,
+        )
+        answer == ::IDYES
+      end
+
+      # Report an unexpected exception to the dialog as a _general error.
+      # When revert: true, also re-pushes the saved state so the form rolls
+      # back. Sanitises e.message (scrub invalid UTF-8 → "?") and swallows a
+      # secondary execute_script failure (the dialog may already be closing).
+      def self.report_general_error(dialog, e, tag:, revert: false)
+        MCPforSketchUp::Core::Logger.log_error(tag, e)
         safe_msg = e.message.to_s.scrub("?")
-        # Guard against the dialog being closed mid-save: if execute_script
-        # itself fails, we have already logged the original cause above and
-        # nothing more we can do — swallow secondary failure instead of
-        # propagating it back across the SketchUp action_callback boundary.
+        payload  = { ok: false, errors: { _general: "Internal error: #{safe_msg}" } }
+        script   = +""
+        script << "window.applyState(#{js_safe_json(load_state_payload)}); " if revert
+        script << "window.onSaveResult(#{js_safe_json(payload)})"
         begin
-          dialog.execute_script(
-            "window.onSaveResult(#{js_safe_json({ ok: false, errors: { _general: "Internal error: #{safe_msg}" } })})"
-          )
+          dialog.execute_script(script)
         rescue StandardError
           nil
         end
       end
+      private_class_method :report_general_error
 
       # JSON.generate does not escape "</" inside a <script> block context.
       # Even though our payload is locally sourced, defense-in-depth: replace

@@ -2,23 +2,27 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>MCP Server Settings</title>
+  <title>MCP Server for SketchUp Settings</title>
   <style>
     /* Use em / flex-basis instead of fixed px so the dialog survives Windows
        125–200% display scaling and macOS Retina without overlap. */
     body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; font-size: 13px; margin: 1em; color: #222; }
     .row { display: flex; align-items: center; margin-bottom: 0.3em; }
-    .row label { flex: 0 0 8em; }
-    .row input, .row select { flex: 1; padding: 0.3em 0.5em; font-size: 1em; box-sizing: border-box; }
-    .error { color: #c00; font-size: 0.85em; margin: 0 0 0.6em 8em; min-height: 1.1em; }
+    .row label { flex: 0 0 10em; }
+    .row input[type="text"], .row select { flex: 1; padding: 0.3em 0.5em; font-size: 1em; box-sizing: border-box; }
+    .row.bool input { flex: 0 0 auto; margin-right: 0.6em; }
+    .error { color: #c00; font-size: 0.85em; margin: 0 0 0.6em 10em; min-height: 1.1em; }
     .status { border-top: 1px solid #ccc; padding-top: 0.7em; margin-top: 1em; font-size: 0.95em; color: #444; }
     .warning { color: #c80; margin-top: 0.3em; }
+    .section-title { font-weight: bold; margin: 1em 0 0.3em 0; border-bottom: 1px solid #eee; padding-bottom: 0.2em; }
     .buttons { text-align: right; margin-top: 1.1em; }
     button { padding: 0.45em 1em; margin-left: 0.5em; font-size: 1em; }
     button:disabled { color: #888; cursor: default; }
   </style>
 </head>
 <body>
+  <div class="section-title">Network</div>
+
   <div class="row">
     <label for="host">Host</label>
     <input type="text" id="host" autocomplete="off" spellcheck="false">
@@ -35,6 +39,8 @@
   </div>
   <div class="error" id="port-error"></div>
 
+  <div class="section-title">Logging</div>
+
   <div class="row">
     <label for="log_level">Log Level</label>
     <select id="log_level">
@@ -45,6 +51,28 @@
     </select>
   </div>
   <div class="error" id="log_level-error"></div>
+
+  <div class="row bool">
+    <input type="checkbox" id="log_to_file">
+    <label for="log_to_file">Log to file (in addition to console)</label>
+  </div>
+
+  <div class="row">
+    <label for="log_file_path">Log file path</label>
+    <input type="text" id="log_file_path" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="error" id="log_file_path-error"></div>
+
+  <div class="section-title">Ruby Evaluation</div>
+
+  <div class="row bool">
+    <input type="checkbox" id="eval_enabled">
+    <label for="eval_enabled">Enable Ruby evaluation (DANGEROUS)</label>
+  </div>
+  <div class="error" id="eval_enabled-error"></div>
+  <div class="warning" id="eval-warning" style="margin-left: 0;">
+    Allows connected MCP clients to run arbitrary Ruby with full file/shell access. Off by default in this build.
+  </div>
 
   <div id="status" class="status">
     <div id="status-line"></div>
@@ -58,10 +86,12 @@
 
   <script>
     var savedState = null;
+    var lastState  = null;
 
     function clearErrors() {
-      ['host', 'port', 'log_level'].forEach(function (k) {
-        document.getElementById(k + '-error').textContent = '';
+      ['host', 'port', 'log_level', 'log_file_path', 'eval_enabled'].forEach(function (k) {
+        var el = document.getElementById(k + '-error');
+        if (el) el.textContent = '';
       });
     }
 
@@ -74,9 +104,12 @@
 
     function isDirty() {
       if (!savedState) return false;
-      return document.getElementById('host').value      !== savedState.host
-          || document.getElementById('port').value      !== String(savedState.port)
-          || document.getElementById('log_level').value !== savedState.log_level;
+      return document.getElementById('host').value           !== savedState.host
+          || document.getElementById('port').value           !== String(savedState.port)
+          || document.getElementById('log_level').value      !== savedState.log_level
+          || document.getElementById('log_to_file').checked  !== savedState.log_to_file
+          || document.getElementById('log_file_path').value  !== savedState.log_file_path
+          || document.getElementById('eval_enabled').checked !== savedState.eval_enabled;
     }
 
     function refreshSaveButton() {
@@ -97,9 +130,9 @@
     // security warning. Security takes precedence — if both apply we still
     // show the security one because it's the more actionable risk.
     function refreshStatusHint(state) {
-      var hint    = document.getElementById('status-hint');
-      var typed   = document.getElementById('host').value;
-      var sec     = hostSecurityWarning(typed);
+      var hint  = document.getElementById('status-hint');
+      var typed = document.getElementById('host').value;
+      var sec   = hostSecurityWarning(typed);
       if (sec) {
         hint.textContent = sec;
         return;
@@ -116,14 +149,23 @@
       }
     }
 
-    var lastState = null;
-
     window.applyState = function (state) {
-      document.getElementById('host').value      = state.host;
-      document.getElementById('port').value      = state.port;
-      document.getElementById('log_level').value = state.log_level;
-      savedState = { host: state.host, port: state.port, log_level: state.log_level };
-      lastState  = state;
+      document.getElementById('host').value           = state.host;
+      document.getElementById('port').value           = state.port;
+      document.getElementById('log_level').value      = state.log_level;
+      document.getElementById('log_to_file').checked  = !!state.log_to_file;
+      document.getElementById('log_file_path').value  = state.log_file_path || '';
+      document.getElementById('eval_enabled').checked = !!state.eval_enabled;
+
+      savedState = {
+        host:           state.host,
+        port:           state.port,
+        log_level:      state.log_level,
+        log_to_file:    !!state.log_to_file,
+        log_file_path:  state.log_file_path || '',
+        eval_enabled:   !!state.eval_enabled,
+      };
+      lastState = state;
       refreshSaveButton();
 
       var line = document.getElementById('status-line');
@@ -142,8 +184,7 @@
         // A '_general' error (e.g. internal exception) does not map to a
         // form field; surface it under the host-error slot as a last resort.
         if (result.errors && result.errors._general) {
-          document.getElementById('host-error').textContent =
-            result.errors._general;
+          document.getElementById('host-error').textContent = result.errors._general;
         }
       }
       // ok === true → Ruby will close the dialog (deferred via UI.start_timer)
@@ -153,9 +194,12 @@
     document.getElementById('btn-save').addEventListener('click', function () {
       clearErrors();
       var payload = {
-        host:      document.getElementById('host').value,
-        port:      document.getElementById('port').value,
-        log_level: document.getElementById('log_level').value
+        host:           document.getElementById('host').value,
+        port:           document.getElementById('port').value,
+        log_level:      document.getElementById('log_level').value,
+        log_to_file:    document.getElementById('log_to_file').checked ? 'true' : 'false',
+        log_file_path:  document.getElementById('log_file_path').value,
+        eval_enabled:   document.getElementById('eval_enabled').checked ? 'true' : 'false',
       };
       sketchup.save(JSON.stringify(payload));
     });
@@ -164,8 +208,11 @@
       sketchup.cancel();
     });
 
-    ['host', 'port'].forEach(function (id) {
+    ['host', 'port', 'log_file_path'].forEach(function (id) {
       document.getElementById(id).addEventListener('input', refreshSaveButton);
+    });
+    ['log_to_file', 'eval_enabled'].forEach(function (id) {
+      document.getElementById(id).addEventListener('change', refreshSaveButton);
     });
     document.getElementById('log_level').addEventListener('change', refreshSaveButton);
     // Live-update the security warning as the user types the host.
