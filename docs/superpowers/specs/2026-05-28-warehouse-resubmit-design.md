@@ -168,7 +168,7 @@ Currently `Plugins → MCP Server → Show Log` calls `SKETCHUP_CONSOLE.show`. N
 | `handlers/materials.rb:32` | `"set_material:#{name}"` | `"Set Material (#{name.capitalize})"` |
 | `handlers/model.rb:169` | `"create_layer:#{name}"` | `"Create Layer (#{name})"` |
 
-Test guard: a new `test/test_operation_names.rb` asserts the exact strings via a mock model's `start_operation` recorder. Defends against future regression.
+Test guard: a new `test/test_operation_names.rb` asserts the exact strings via a **source-level regex parser** over the handler files (iter-1 CONCERN-6 decision). Rationale: the reject-class is «handler's literal flips back to snake_case», which is precisely what a regex over the literal catches. Behavioural defence — «handler actually calls `start_operation`» — is already covered by the existing e2e smoke (`examples/smoke_check.py`) and the manual Step 14.7 acceptance («Edit → Undo shows expected label»). A mock-model recorder was considered (would be design-purer) but rejected as a disproportionate investment: it requires a new `MockModel` with stubbed entities/groups/iterators to drive geometry/boolean/joint handlers, and the regression it would catch (handler stops calling `start_operation` at all) is already protected by CLAUDE.md's invariant + the e2e flow.
 
 ## 7. Silent rescue cleanup
 

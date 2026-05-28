@@ -2153,6 +2153,35 @@ uv run pytest tests/ -q 2>&1 | tail -3
 ```
 Expected: all pass.
 
+- [ ] **Step 9.5.a: Document the eval-gate in the MCP prompt (iter-1 QUESTION-2)**
+
+Edit `src/sketchup_mcp/prompts.py` (`sketchup_modeling_strategy`). Append
+a short paragraph to the existing known-traps / behaviour section so
+warehouse-variant users see actionable text passed through verbatim
+when the eval gate is closed. Design §4.4 already requires verbatim
+pass-through; this exposes the requirement in the prompt so the LLM
+doesn't paraphrase and lose the «Open Plugins → MCP Server → Settings...»
+instruction.
+
+Add (keep wording short to limit prompt-bloat):
+```python
+"""
+... existing prompt body ...
+
+eval_ruby gate. In the Extension Warehouse build of the SketchUp
+extension, `eval_ruby` is disabled by default. If a call to
+`eval_ruby` returns a string starting with "eval_ruby is disabled.",
+that is not a failure: it is the extension's actionable instruction
+for the user. Surface the full message to the user verbatim — do not
+paraphrase, do not retry the same code, do not silently fall back to
+typed tools without telling the user that eval was unavailable. The
+user can enable Ruby evaluation in Plugins → MCP Server → Settings...
+"""
+```
+
+If `prompts.py` does not already have a «Known traps» section, add one
+above the existing tool catalogue and place this paragraph there.
+
 - [ ] **Step 9.6: Check that the existing eval_ruby success-path test still works**
 
 The `test_eval_ruby_no_longer_returns_old_success_wrapper` (in `tests/test_tools.py`) tests both the happy path and the error path. The error path used to assert `out.startswith("[-32000] boom")`. That test uses `-32000`, not `-32010`, so it's unaffected. Verify by re-reading the assertion and running:
