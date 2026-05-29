@@ -166,4 +166,23 @@ class TestLogger < Minitest::Test
     assert_includes captured.string, "[MCPforSU] [DEBUG] log file write failed",
       "expected design §5.2 one-shot DEBUG fallback line; got #{captured.string.inspect}"
   end
+
+  def test_log_to_file_writes_non_ascii_as_utf8
+    # F5: File.open must pin UTF-8 so non-ASCII log content (Cyrillic model
+    # names, Unicode in exception messages) is written rather than dropped by
+    # the rescue on a platform whose default external encoding is not UTF-8.
+    require "tempfile"
+    path = Tempfile.new("mcp_test_log").path
+    File.delete(path) if File.exist?(path)
+    MCPforSketchUp::Core::Config.log_to_file  = true
+    MCPforSketchUp::Core::Config.log_file_path = path
+    begin
+      MCPforSketchUp::Core::Logger.log("WARN", "юникод café 日本語")
+      contents = File.read(path, encoding: "UTF-8")
+      assert_equal Encoding::UTF_8, contents.encoding
+      assert_includes contents, "юникод café 日本語"
+    ensure
+      File.delete(path) if File.exist?(path)
+    end
+  end
 end

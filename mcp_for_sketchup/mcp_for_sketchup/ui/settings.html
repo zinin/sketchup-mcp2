@@ -121,8 +121,11 @@
     // Called both on initial applyState and on every host input event so users
     // see the warning the moment they type 0.0.0.0 — not only after Save.
     function hostSecurityWarning(host) {
-      if (host === '0.0.0.0') {
-        return '⚠ 0.0.0.0 exposes the server (incl. eval_ruby) to the local network with no authentication.';
+      // Wildcard binds expose the server (incl. eval_ruby) to the network with
+      // no authentication. Cover IPv4 0.0.0.0 and the IPv6 any-address in both
+      // the compressed '::' and fully-expanded '0:0:0:0:0:0:0:0' forms.
+      if (host === '0.0.0.0' || host === '::' || host === '0:0:0:0:0:0:0:0') {
+        return '⚠ ' + host + ' exposes the server (incl. eval_ruby) to the network with no authentication.';
       }
       return '';
     }

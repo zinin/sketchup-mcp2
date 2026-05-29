@@ -46,7 +46,12 @@ module MCPforSketchUp
       def self.append_to_file(line)
         path = Config.log_file_path
         return if path.nil? || path.empty?
-        File.open(path, "a") { |f| f.puts(line) }
+        # Explicit UTF-8 external encoding: without it File.open uses the
+        # platform default (e.g. Windows-1252/locale on Windows), so a log line
+        # with non-ASCII content (Cyrillic model names, exception messages)
+        # would raise Encoding::UndefinedConversionError and be silently dropped
+        # by the rescue below. `line` is already UTF-8.
+        File.open(path, "a:UTF-8") { |f| f.puts(line) }
       rescue StandardError => e
         # Best-effort. Logging must never break the data path. Surface the
         # failure as a one-shot DEBUG line in the console without re-entering

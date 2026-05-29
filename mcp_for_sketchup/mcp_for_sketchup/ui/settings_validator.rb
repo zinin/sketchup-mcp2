@@ -54,8 +54,18 @@ module MCPforSketchUp
             # before enabling log-to-file. We do NOT auto-create user-facing log
             # directories — surface the misconfiguration here so the dialog
             # rejects the Save instead of silently swallowing every write.
-            parent = File.dirname(File.expand_path(log_path))
-            unless Dir.exist?(parent)
+            # File.expand_path raises ArgumentError on malformed paths (NUL
+            # byte, invalid encoding). The validator's contract is to return
+            # structured errors, never raise — so guard it and surface the
+            # failure on the log_file_path field instead of bubbling up to a
+            # generic _general internal-error in the dialog.
+            begin
+              parent = File.dirname(File.expand_path(log_path))
+            rescue ArgumentError => e
+              parent = nil
+              errors[:log_file_path] = "Invalid log file path: #{e.message}"
+            end
+            if parent && !Dir.exist?(parent)
               errors[:log_file_path] = "Log file parent directory does not exist: #{parent}"
             end
           end

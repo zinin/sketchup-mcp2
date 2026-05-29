@@ -166,4 +166,15 @@ class TestSettingsValidator < Minitest::Test
     refute result[:ok]
     assert_match(/parent directory does not exist/i, result[:errors][:log_file_path])
   end
+
+  def test_log_to_file_true_rejects_log_path_with_null_byte
+    # File.expand_path raises ArgumentError on a NUL byte; the validator must
+    # surface it as a structured log_file_path error rather than raising, which
+    # would otherwise bubble up as a generic _general internal error in the
+    # dialog (review F4a).
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "/tmp/a\x00b.log")
+    refute result[:ok]
+    assert_match(/invalid log file path/i, result[:errors][:log_file_path])
+  end
 end
