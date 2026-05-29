@@ -222,6 +222,13 @@ Keep the **virtualenv on a local disk**. With `uv`, point it there via `UV_PROJE
 
 The `uvx sketchup-mcp2` setup shown earlier isn't affected — `uvx` already keeps its environment under uv's local cache.
 
+> **Why is the venv on a shared folder at all?** This bridge is typically run in an isolated/VM setup for two security reasons — and that's what lands the checkout on a host-shared folder (the slow filesystem above):
+>
+> - **Claude/MCP side:** to let Claude Code drive SketchUp autonomously you usually launch it with `--dangerously-skip-permissions` (it stops asking to approve each tool call). That's genuinely risky on your daily-driver machine, so run Claude Code + this MCP server inside a disposable VM.
+> - **SketchUp side:** the bridge is only really worthwhile with `eval_ruby` enabled — the typed tools handle common cases, but `eval_ruby` (the escape hatch) is what unlocks arbitrary modeling. It executes arbitrary Ruby with full filesystem/shell access, so if you're going to enable it, run SketchUp (Windows) in a VM as well rather than on a machine you care about.
+>
+> Typical layout: a Linux VM (Claude Code + MCP server) ↔ a Windows VM (SketchUp) over the LAN, with the project on a host-shared folder — which is exactly why the `UV_PROJECT_ENVIRONMENT` note above matters.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
