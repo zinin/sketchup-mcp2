@@ -54,7 +54,18 @@ module MCPforSketchUp
       def self.require_id(params, key = "id")
         v = params[key]
         raise E.new(-32602, "missing required field: #{key}") if v.nil?
-        int_id = Integer(v.to_s, 10) rescue nil
+        # Parse-or-nil, but scope the rescue to the errors Integer() actually
+        # raises (ArgumentError on a non-numeric string, TypeError on a non-
+        # stringable value) instead of a blanket `rescue nil` modifier that
+        # would swallow unrelated StandardErrors. The nil case is surfaced to
+        # the caller as -32602 below, so no extra logging is needed (a DEBUG
+        # line per malformed ID would only clutter the shared console).
+        int_id =
+          begin
+            Integer(v.to_s, 10)
+          rescue ArgumentError, TypeError
+            nil
+          end
         if int_id.nil?
           raise E.new(-32602, "field #{key} must be an integer ID, got #{v.inspect}")
         end

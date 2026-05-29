@@ -71,12 +71,19 @@ module MCPforSketchUp
       end
 
       def self.show_log
-        if MCPforSketchUp::Core::Config.log_to_file &&
-           File.exist?(MCPforSketchUp::Core::Config.log_file_path)
-          ::UI.openURL(file_uri_for(MCPforSketchUp::Core::Config.log_file_path))
-        elsif defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
-          SKETCHUP_CONSOLE.show
+        cfg = MCPforSketchUp::Core::Config
+        # Expand once: the validator accepts ~/relative log paths (persisted raw)
+        # and Logger writes to File.expand_path(path) — so File.exist? and
+        # file_uri_for must both see the EXPANDED path. Otherwise a configured
+        # ~/x.log is written fine but "Show Log" silently falls back to console.
+        if cfg.log_to_file
+          expanded = File.expand_path(cfg.log_file_path)
+          if File.exist?(expanded)
+            ::UI.openURL(file_uri_for(expanded))
+            return
+          end
         end
+        SKETCHUP_CONSOLE.show if defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
       end
 
       # iter-2 CRITICAL-3: build a RFC-8089-style `file://` URL safely

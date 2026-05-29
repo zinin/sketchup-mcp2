@@ -62,7 +62,12 @@ module MCPforSketchUp
       # want nil-pass-through must check `value.nil?` themselves.
       def self.coerce_bool_pref(key, value, default:)
         return value if value == true || value == false
-        Logger.log("WARN", "config: non-boolean #{key} pref value #{value.inspect}; falling back to #{default.inspect}")
+        # Guard defined?(Logger) like warn_invalid_pref: this can run before
+        # core/logger is loaded (early boot) or in a unit test that requires
+        # only config.rb — a diagnostic log must never break the fallback.
+        if defined?(Logger)
+          Logger.log("WARN", "config: non-boolean #{key} pref value #{value.inspect}; falling back to #{default.inspect}")
+        end
         default
       end
       private_class_method :coerce_bool_pref
@@ -92,9 +97,12 @@ module MCPforSketchUp
       # pre-call snapshot before the raise propagates. This is mandatory for
       # eval_enabled — the arbitrary-code-execution gate must fail CLOSED and
       # can never be left open in-session after a save that errored. On disk a
-      # partial write may still leave keys 1..N-1 new and N..end old; that mixed
-      # *persisted* state is reconciled on the next SketchUp restart, when
-      # load_from_defaults! re-reads each pref and the dialog reflects it.
+      # partial write may still leave the NON-security keys (host/port/log_level/
+      # log_to_file/log_file_path) in a mixed new/old state; that is reconciled
+      # on the next SketchUp restart when load_from_defaults! re-reads each pref.
+      # eval_enabled is exempt: it is persisted LAST (see the writes array
+      # below) so it never reaches disk unless every other key already
+      # succeeded — the gate is fail-closed on disk too, not just in-session.
       # write_default==false is a vanishingly-rare fault (corrupt prefs, disk
       # full); the rollback + raise paths are covered by FailingWriter tests in
       # test_config.rb.
@@ -123,9 +131,14 @@ module MCPforSketchUp
             ["port",          port_int],
             ["log_level",     log_level],
           ]
-          writes << ["eval_enabled",  self.eval_enabled]   unless eval_enabled.nil?
           writes << ["log_to_file",   self.log_to_file]    unless log_to_file.nil?
           writes << ["log_file_path", self.log_file_path]  unless log_file_path.nil?
+          # eval_enabled is persisted LAST so a mid-loop write_default failure
+          # can never leave eval=true on disk after the runtime rolled back to
+          # closed: any earlier failure aborts before this write (gate keeps its
+          # prior closed value), and if this write itself fails it is likewise
+          # never persisted. Disk-level fail-closed for the code-exec gate.
+          writes << ["eval_enabled",  self.eval_enabled]   unless eval_enabled.nil?
           writes.each do |key, value|
             raise "Sketchup.write_default failed for #{key}" unless writer.write_default(SECTION, key, value)
           end

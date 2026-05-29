@@ -309,4 +309,41 @@ class TestConfig < Minitest::Test
     assert_includes keys, "log_to_file"
     assert_includes keys, "log_file_path"
   end
+
+  def test_update_does_not_persist_eval_on_disk_when_an_earlier_key_fails
+    # Review (disk fail-closed): when the user enables eval (off → on) but a
+    # NON-eval write_default fails, eval_enabled must never reach disk. It is
+    # persisted LAST, so an earlier failure aborts the loop before the eval
+    # write — otherwise the runtime-rolled-back gate would silently REOPEN on
+    # the next SketchUp restart (load_from_defaults! reading a stale eval=true).
+    C.eval_enabled = false
+    writer = FailingWriter.new(fail_on_key: "log_to_file")
+    assert_raises(RuntimeError) do
+      C.update!(host: "127.0.0.1", port: 9876, log_level: "WARN",
+                eval_enabled: true, log_to_file: true, log_file_path: "/tmp/a.log",
+                writer: writer)
+    end
+    persisted_keys = writer.writes.map { |_section, key, _value| key }
+    refute_includes persisted_keys, "eval_enabled",
+      "eval_enabled must not be persisted when an earlier write fails (it is written last)"
+    assert_equal false, C.eval_enabled, "runtime eval_enabled must roll back to false"
+    refute C.eval_enabled?, "eval gate must remain closed after a failed save"
+  end
+
+  def test_load_from_defaults_coerces_non_boolean_eval_enabled_to_nil
+    # Security: a persisted eval_enabled that is NOT a native boolean (tampered
+    # or legacy string "true"/"false", an integer, etc.) must NOT be treated as
+    # truthy. coerce_bool_pref falls it back to the nil sentinel, so eval_enabled?
+    # resolves through BuildProfile (absent here ⇒ false). A naive `!!raw` would
+    # let even the string "false" open the gate. (log_level ERROR keeps the
+    # coercion WARN out of the shared test output when Logger is loaded.)
+    ["true", "false", "yes", "1", 1].each do |bad|
+      ConfigReset.reset_all!
+      C.load_from_defaults!(StubReader.new("eval_enabled" => bad, "log_level" => "ERROR"))
+      assert_nil C.eval_enabled,
+        "non-boolean eval_enabled #{bad.inspect} must coerce to the nil sentinel"
+      refute C.eval_enabled?,
+        "eval gate must stay closed for non-boolean pref #{bad.inspect}"
+    end
+  end
 end

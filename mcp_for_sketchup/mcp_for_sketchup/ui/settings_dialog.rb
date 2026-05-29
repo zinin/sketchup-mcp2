@@ -212,8 +212,14 @@ module MCPforSketchUp
         script << "window.onSaveResult(#{js_safe_json(payload)})"
         begin
           dialog.execute_script(script)
-        rescue StandardError
-          nil
+        rescue StandardError => e
+          # The dialog may already be closing; nothing more we can do, but make
+          # the swallowed failure diagnosable (DEBUG, suppressed by default)
+          # instead of truly silent — consistent with the no-silent-rescues
+          # convention (warehouse reject note).
+          MCPforSketchUp::Core::Logger.log("DEBUG",
+            "settings_dialog.report_general_error: secondary execute_script " \
+            "failed: #{e.class}: #{e.message}")
         end
       end
       private_class_method :report_general_error

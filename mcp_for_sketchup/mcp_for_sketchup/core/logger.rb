@@ -55,13 +55,20 @@ module MCPforSketchUp
         # Encoding::UndefinedConversionError and be silently dropped by the
         # rescue below. `line` is already UTF-8.
         File.open(File.expand_path(path), "a:UTF-8") { |f| f.puts(line) }
+        @log_file_write_failed = false  # a good write re-arms the one-shot notice
       rescue StandardError => e
-        # Best-effort. Logging must never break the data path. Surface the
-        # failure as a one-shot DEBUG line in the console without re-entering
-        # append_to_file (we explicitly call _emit_console directly here).
-        _emit_console("[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [DEBUG] " \
+        # Best-effort: logging must never break the data path. Surface the
+        # failure ONCE per failure episode via a DIRECT console write — not via
+        # Logger.log (which would re-enter append_to_file while log_to_file is on
+        # → infinite recursion) and not once-per-line (an unwritable path must
+        # not flood the shared console — the very clutter reject #2 was about).
+        # The flag re-arms on the next successful write. WARN regardless of level
+        # because the user explicitly enabled log-to-file and lines are now lost.
+        return if @log_file_write_failed
+        @log_file_write_failed = true
+        _emit_console("[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [WARN] " \
                       "log file write failed (#{e.class}: #{e.message}); " \
-                      "reverting to console only for this line")
+                      "logging to console only until the next successful file write")
       end
 
       def self._emit_console(line)

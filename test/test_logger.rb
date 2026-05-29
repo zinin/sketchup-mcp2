@@ -144,10 +144,11 @@ class TestLogger < Minitest::Test
   def test_log_to_file_failure_falls_back_silently
     # Read-only path → File.open(append) raises. Logger must catch and
     # continue to console without raising upward.
-    # iter-2 CONCERN-10: also pin the one-shot DEBUG fallback line that
-    # design §5.2 promises — otherwise a future refactor could swallow the
-    # exception without surfacing any diagnostic, and the test would still
-    # pass vacuously.
+    # iter-2 CONCERN-10: also pin the one-shot WARN fallback line that logging
+    # promises — otherwise a future refactor could swallow the exception without
+    # surfacing any diagnostic, and the test would still pass vacuously. Emitted
+    # at WARN, one-shot per failure episode; the flag is reset between tests by
+    # ConfigReset.reset_all!.
     MCPforSketchUp::Core::Config.log_to_file  = true
     MCPforSketchUp::Core::Config.log_file_path = "/nonexistent/dir/x.log"
     prev_level = MCPforSketchUp::Core::Config.log_level
@@ -163,8 +164,32 @@ class TestLogger < Minitest::Test
       $stdout = orig_stdout
       MCPforSketchUp::Core::Config.log_level = prev_level
     end
-    assert_includes captured.string, "[MCPforSU] [DEBUG] log file write failed",
-      "expected design §5.2 one-shot DEBUG fallback line; got #{captured.string.inspect}"
+    assert_includes captured.string, "[MCPforSU] [WARN] log file write failed",
+      "expected one-shot WARN log-file-failure fallback line; got #{captured.string.inspect}"
+  end
+
+  def test_log_to_file_failure_fallback_is_one_shot
+    # The fallback notice must appear ONCE per failure episode, not once per
+    # line — an unwritable log path under traffic must never flood the shared
+    # Ruby console (the very clutter warehouse reject #2 was about). ConfigReset
+    # in setup clears the one-shot flag, so the first failed write emits and the
+    # rest are suppressed until a successful write re-arms it.
+    MCPforSketchUp::Core::Config.log_to_file   = true
+    MCPforSketchUp::Core::Config.log_file_path = "/nonexistent/dir/x.log"
+    captured = StringIO.new
+    orig_stdout = $stdout
+    $stdout = captured
+    begin
+      MCPforSketchUp::Core::Logger.log("WARN", "one")
+      MCPforSketchUp::Core::Logger.log("WARN", "two")
+      MCPforSketchUp::Core::Logger.log("WARN", "three")
+    ensure
+      $stdout = orig_stdout
+    end
+    fallback_lines = captured.string.lines.grep(/log file write failed/)
+    assert_equal 1, fallback_lines.length,
+      "log-file-failure fallback must be one-shot, got #{fallback_lines.length}: " \
+      "#{fallback_lines.inspect}"
   end
 
   def test_log_to_file_writes_non_ascii_as_utf8
