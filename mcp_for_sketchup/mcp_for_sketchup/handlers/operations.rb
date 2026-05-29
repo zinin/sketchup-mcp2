@@ -135,6 +135,15 @@ module MCPforSketchUp
       # Re-collect uses the LIVE edge for the cutter; original snapshot serves
       # only as identity-by-direction-and-line for matching.
       def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in)
+        # Type-guard edge_indices BEFORE start_operation: a non-Array (String/
+        # Integer/Hash from a direct/malformed TCP client that bypasses the
+        # FastMCP schema) would reach filter_edges -> indices.include?(i) and
+        # raise TypeError/NoMethodError, surfacing as a generic -32603 instead
+        # of a precise -32602 invalid-params (kimi review).
+        if edge_indices && !edge_indices.is_a?(Array)
+          raise Core::StructuredError.new(-32602,
+            "edge_indices must be an array of integers (got #{edge_indices.class})")
+        end
         model = E.active_model!
         model.start_operation(op_name, true)
         @_last_edges_done = 0

@@ -16,12 +16,16 @@ module MCPforSketchUp
         model = E.active_model!
 
         export_path = build_export_path(format)
-        # Sketchup::Model#save / #export and View#write_image return Boolean —
+        # Sketchup::Model#save_copy / #export and View#write_image return Boolean —
         # false on failure (disk full, permission denied, format-specific error).
         # Without this guard the handler used to claim success while no file
         # had been written, leading callers to act on a phantom path.
+        # save_copy (NOT save): #save to a temp path would re-point the live
+        # model's path / clear its dirty flag, risking silent data loss on the
+        # user's open document. save_copy writes a detached copy and leaves the
+        # in-memory model's path + modified state untouched (codex review).
         ok = case format
-             when "skp"            then model.save(export_path)
+             when "skp"            then model.save_copy(export_path)
              when "obj"            then export_obj(model, export_path)
              when "dae"            then export_dae(model, export_path)
              when "stl"            then export_stl(model, export_path)

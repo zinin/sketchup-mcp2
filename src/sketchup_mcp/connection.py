@@ -88,9 +88,20 @@ class SketchUpConnection:
         Ruby that accepted TCP but never replied would block this
         coroutine forever.
         """
-        self._reader, self._writer = await asyncio.open_connection(
-            self.host, self.port
-        )
+        # CRITICAL: the TCP connect itself is wrapped in wait_for too, not just
+        # the handshake below. A host that accepts the SYN but never finishes
+        # the connect (firewall DROP, half-dead peer) would otherwise block this
+        # coroutine until the OS connect timeout (~minutes), hanging MCP startup
+        # and defeating app.py's degraded-start design (codex review).
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port),
+                timeout=self.timeout,
+            )
+        except asyncio.TimeoutError:
+            raise SketchUpError(
+                -32000, f"connect timed out after {self.timeout}s"
+            ) from None
         try:
             await asyncio.wait_for(self._handshake(), timeout=self.timeout)
         except asyncio.TimeoutError:

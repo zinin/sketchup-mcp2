@@ -748,3 +748,23 @@ async def test_handshake_timeout_raises_sketchup_error():
         with pytest.raises(SketchUpError) as ei:
             await conn.connect()
         assert "timed out" in str(ei.value).lower()
+
+
+async def test_connect_timeout_when_open_connection_hangs():
+    """A host that accepts the SYN but never finishes the TCP connect (firewall
+    DROP, half-dead peer) must surface as a timeout SketchUpError instead of
+    hanging MCP startup forever (codex review). The connect itself is wrapped in
+    wait_for, mirroring the handshake-timeout guard above."""
+    async def _never_completes(*_args, **_kwargs):
+        await asyncio.Event().wait()  # block until cancelled — simulates a stalled connect
+
+    conn = SketchUpConnection(host="10.255.255.1", port=9, timeout=0.1)
+    with patch(
+        "sketchup_mcp.connection.asyncio.open_connection",
+        side_effect=_never_completes,
+    ):
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+    assert ei.value.code == -32000
+    assert "connect timed out" in str(ei.value).lower()
+    assert conn._writer is None  # no half-open socket left behind

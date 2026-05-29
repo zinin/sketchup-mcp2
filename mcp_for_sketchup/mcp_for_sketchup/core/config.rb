@@ -172,7 +172,11 @@ module MCPforSketchUp
         # in the shared Ruby namespace would mask our intent.
         if Core.const_defined?(:BuildProfile, false) &&
            Core::BuildProfile.const_defined?(:EVAL_ENABLED_BY_DEFAULT, false)
-          Core::BuildProfile::EVAL_ENABLED_BY_DEFAULT
+          # `!!` coerce to a strict boolean — the arbitrary-code gate must fail
+          # closed even if a build bug ever baked a truthy non-boolean (e.g. the
+          # string "false") into build_profile.rb. Matches the runtime-pref path,
+          # which already stores `!!eval_enabled` in update! (kimi review).
+          !!Core::BuildProfile::EVAL_ENABLED_BY_DEFAULT
         else
           false
         end
@@ -183,7 +187,12 @@ module MCPforSketchUp
       end
 
       def self.level_value_for(name)
-        LEVELS.fetch(name, LEVELS["INFO"])
+        # Fall back to the DEFAULTS log level (WARN) — not a hardcoded INFO —
+        # so an unexpected/invalid level can never resolve to a MORE verbose
+        # level than the configured default. Unreachable in practice
+        # (load_from_defaults!/update! validate against LEVELS), but the
+        # fallback stays conservative + consistent with DEFAULTS (deepseek review).
+        LEVELS.fetch(name, LEVELS[DEFAULTS[:log_level]])
       end
     end
   end

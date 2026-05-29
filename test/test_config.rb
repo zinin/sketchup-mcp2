@@ -130,8 +130,13 @@ class TestConfig < Minitest::Test
     assert_equal 3, C.level_value_for("ERROR")
   end
 
-  def test_level_value_for_unknown_falls_back_to_info
-    assert_equal 1, C.level_value_for("FOO")
+  def test_level_value_for_unknown_falls_back_to_defaults_warn
+    # Fallback is the DEFAULTS log level (WARN=2), NOT a hardcoded INFO — an
+    # invalid/unknown level must never resolve to a MORE verbose level than the
+    # configured default (deepseek review). Unreachable in practice
+    # (load_from_defaults!/update! validate against LEVELS) but conservative.
+    assert_equal C::LEVELS[C::DEFAULTS[:log_level]], C.level_value_for("FOO")
+    assert_equal 2, C.level_value_for("FOO")
   end
 
   # --- load_from_defaults! fallback-to-DEFAULTS on invalid persisted prefs ---
@@ -344,6 +349,27 @@ class TestConfig < Minitest::Test
         "non-boolean eval_enabled #{bad.inspect} must coerce to the nil sentinel"
       refute C.eval_enabled?,
         "eval gate must stay closed for non-boolean pref #{bad.inspect}"
+    end
+  end
+
+  def test_eval_enabled_question_mark_coerces_build_profile_to_strict_boolean
+    # Security hardening (kimi review): the build-time gate must return a STRICT
+    # boolean even if a build bug ever baked a truthy non-boolean into
+    # build_profile.rb (e.g. an Integer, or the string "false"). `!!` coercion in
+    # eval_enabled? mirrors the runtime-pref path (update! stores `!!eval_enabled`).
+    # @eval_enabled must be nil so the BuildProfile fallback branch is exercised.
+    C.eval_enabled = nil
+    refute MCPforSketchUp::Core.const_defined?(:BuildProfile, false),
+      "precondition: test env has no build_profile.rb loaded"
+    MCPforSketchUp::Core.const_set(:BuildProfile, Module.new)
+    begin
+      MCPforSketchUp::Core::BuildProfile.const_set(:EVAL_ENABLED_BY_DEFAULT, 1)
+      result = C.eval_enabled?
+      assert_equal true, result,
+        "truthy non-boolean (Integer 1) must coerce to strict `true`, not pass through"
+      assert_includes [true, false], result, "eval_enabled? must return a strict boolean"
+    ensure
+      MCPforSketchUp::Core.send(:remove_const, :BuildProfile)
     end
   end
 end

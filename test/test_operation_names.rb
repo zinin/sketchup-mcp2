@@ -35,6 +35,22 @@ class TestOperationNames < Minitest::Test
     assert_op_label src, /run_edge_op\(entity_id, edge_indices, "Fillet Edges"/, "fillet_edges"
   end
 
+  # Source-level guard (kimi review): run_edge_op must type-check edge_indices
+  # to a -32602 invalid-params BEFORE start_operation, so a non-Array from a
+  # direct/malformed TCP client (bypassing the FastMCP schema) can't reach
+  # filter_edges -> include? and surface as a generic -32603. A behavioural
+  # exercise needs the full model API (avoided in this file by design), so the
+  # guard's presence + shape is asserted in source.
+  def test_run_edge_op_type_guards_edge_indices_to_invalid_params
+    src = source(HANDLERS, "operations.rb")
+    guard = src[/def self\.run_edge_op.*?model\.start_operation/m]
+    refute_nil guard, "run_edge_op def → start_operation region not found"
+    assert_match(/edge_indices && !edge_indices\.is_a\?\(Array\)/, guard,
+      "run_edge_op must type-guard edge_indices as an Array before start_operation")
+    assert_match(/StructuredError\.new\(-32602/, guard,
+      "non-Array edge_indices must raise -32602 invalid-params, not a generic -32603")
+  end
+
   def test_joints_labels_are_title_case
     src = source(HANDLERS, "joints.rb")
     assert_op_label src, /start_operation\("Mortise and Tenon"/, "mortise_tenon"

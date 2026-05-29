@@ -400,6 +400,14 @@ async def get_viewport_screenshot(
         payload = json.loads(text)
     except json.JSONDecodeError as e:
         raise SketchUpError(-32603, f"screenshot response not JSON: {e}") from e
+    # Guard before .get(): a JSON scalar/array decodes fine but has no .get,
+    # which would leak an AttributeError to the MCP client instead of a clean
+    # SketchUpError (mirrors the isinstance(text, str) guard above).
+    if not isinstance(payload, dict):
+        raise SketchUpError(
+            -32603,
+            f"screenshot payload is not a JSON object: {type(payload).__name__}",
+        )
     b64 = payload.get("png_base64")
     if not isinstance(b64, str):
         raise SketchUpError(-32603, "screenshot response missing png_base64")

@@ -161,6 +161,22 @@ async def test_screenshot_base64_decode_failure():
             await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
 
 
+async def test_screenshot_non_dict_payload_raises():
+    """A JSON scalar/array in the Ruby text blob (valid JSON but not an object)
+    must raise a clean SketchUpError, not leak an AttributeError from
+    payload.get() (kimi review)."""
+    bad = {
+        "content": [{"type": "text", "text": "[1, 2, 3]"}],
+        "isError": False,
+    }
+    with _mock_connection(bad):
+        from sketchup_mcp.tools import get_viewport_screenshot
+        with pytest.raises(SketchUpError) as ei:
+            await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
+    assert ei.value.code == -32603
+    assert "not a JSON object" in str(ei.value)
+
+
 async def test_screenshot_propagates_ruby_error():
     """A JSON-RPC error from Ruby surfaces as SketchUpError."""
     conn = MagicMock()
