@@ -201,6 +201,27 @@ Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds
 
 Frame-decoding is capped at 50 reads × 64 KiB per client per tick (~3.2 MB) to keep the UI responsive, but a very large `eval_ruby` body or a runaway loop inside it will still freeze SketchUp until it returns. Break the work into smaller calls if you can.
 
+### MCP client reports `connection timed out after 30000ms` at startup
+
+If the client can't connect **but SketchUp itself is reachable** (e.g. `telnet <host> 9876` succeeds), the bottleneck is the Python server's own startup, not the link to SketchUp.
+
+The usual culprit is running the server from a source checkout whose virtual environment lives on a **slow filesystem** — VMware Shared Folders (`vmhgfs-fuse`), VirtualBox shared folders, NFS/CIFS network drives, or WSL's `/mnt/...`. Python touches hundreds of small files at startup, and importing the FastMCP dependency stack from such a filesystem can take 30 s+ — past the client's init timeout. (A quick check: `time uv run python -c "import sketchup_mcp.app"` — if that takes tens of seconds, the filesystem is the problem.)
+
+Keep the **virtualenv on a local disk**. With `uv`, point it there via `UV_PROJECT_ENVIRONMENT` in the server's `.mcp.json` env block — the project source can stay on the shared folder (it's small, and editable installs pick up changes live); only the dependency-heavy venv needs to be local:
+
+```json
+"sketchup": {
+  "command": "uv",
+  "args": ["run", "--directory", "/path/to/sketchup-mcp2", "python", "-m", "sketchup_mcp"],
+  "env": {
+    "UV_PROJECT_ENVIRONMENT": "/home/you/.venvs/sketchup-mcp2",
+    "SKETCHUP_MCP_HOST": "127.0.0.1"
+  }
+}
+```
+
+The `uvx sketchup-mcp2` setup shown earlier isn't affected — `uvx` already keeps its environment under uv's local cache.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
