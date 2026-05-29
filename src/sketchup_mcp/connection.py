@@ -215,14 +215,31 @@ class SketchUpConnection:
         async with self._lock:
             try:
                 return await self._send_once(name, args)
-            except _StaleSocketError:
+            except _StaleSocketError as e:
                 # `disconnect()` уже сделан внутри `_send_once`.
                 # Retry ТОЛЬКО для side-effect-free tools: Ruby `write_response`
                 # может закрыть сокет уже после `commit_operation`, и тогда
                 # partial=b"" не гарантирует, что мутации не было.
-                if name not in _RETRY_SAFE_TOOLS:
-                    raise
-                return await self._send_once(name, args)
+                if name in _RETRY_SAFE_TOOLS:
+                    return await self._send_once(name, args)
+                # Мутативный / eval tool — НЕ ретраим (слепой retry мог бы
+                # задвоить уже закоммиченную мутацию). Но обогащаем ошибку именем
+                # инструмента + actionable recovery-hint'ом, чтобы агент не
+                # сдавался на голом "connection error … tool=?" и при этом не
+                # ретраил вслепую. Формулировка намеренно ADVISORY (spec Important-1):
+                # для произвольного eval_ruby агент часто не может доказать «применилось».
+                raise SketchUpError(
+                    e.code,
+                    f"{e.message} — the persistent socket was stale (the SketchUp "
+                    f"server likely restarted) and has been reset. '{name}' was NOT "
+                    f"auto-retried because it can modify the model and the request "
+                    f"may have committed before the socket closed; a blind retry "
+                    f"could double-apply it. Recovery: call a read-only tool (e.g. "
+                    f"get_model_info / list_components) to reconnect and inspect the "
+                    f"model, then retry '{name}' only if you can confirm it did NOT "
+                    f"apply — if you cannot confirm, do NOT retry.",
+                    {"tool": name, **(e.data or {})},
+                ) from e
 
     async def _send_once(self, name: str, args: dict[str, Any]) -> Any:
         if self._writer is None or self._writer.is_closing():

@@ -241,6 +241,53 @@ async def test_send_command_no_retry_on_partial_read(make_connection, fake_strea
     conn.connect.assert_not_called()
 
 
+async def test_send_command_stale_socket_eof_for_mutating_enriches_error(
+    make_connection, fake_streams
+):
+    """Stale-socket (zero-byte EOF, connection.py:262) для мутативного tool:
+    ошибку ОБОГАЩАЕМ — имя инструмента в data + actionable recovery-hint для
+    агента, вместо голого "connection error … tool=?". Retry по-прежнему ЗАПРЕЩЁН.
+    """
+    reader, _ = fake_streams
+    conn = make_connection()
+    reader.feed_eof()  # 0 байт — выглядит как stale socket
+    conn.connect = AsyncMock(side_effect=AssertionError("retry forbidden for mutating tool"))
+
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("create_component", {"type": "cube"})
+
+    err = exc_info.value
+    assert err.code == -32000
+    assert err.data.get("tool") == "create_component"
+    assert "NOT auto-retried" in err.message
+    assert "get_model_info" in err.message
+    assert "do NOT retry" in err.message
+    conn.connect.assert_not_called()
+
+
+async def test_send_command_stale_socket_connreset_for_mutating_enriches_error(
+    make_connection, fake_streams
+):
+    """Второй источник _StaleSocketError — ConnectionError (ECONNRESET) mid-write
+    (connection.py:273). Тоже обогащаем: tool + hint. Retry ЗАПРЕЩЁН.
+    """
+    _, writer = fake_streams
+    conn = make_connection()
+    writer.drain = AsyncMock(side_effect=ConnectionResetError("Connection lost"))
+    conn.connect = AsyncMock(side_effect=AssertionError("retry forbidden for mutating tool"))
+
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("create_component", {"type": "cube"})
+
+    err = exc_info.value
+    assert err.code == -32000
+    assert err.data.get("tool") == "create_component"
+    assert "NOT auto-retried" in err.message
+    assert "get_model_info" in err.message
+    assert "do NOT retry" in err.message
+    conn.connect.assert_not_called()
+
+
 async def test_send_command_lock_serializes_concurrent(make_connection, fake_streams):
     """Реально проверяем, что lock сериализует roundtrip'ы.
 

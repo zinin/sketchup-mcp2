@@ -60,6 +60,11 @@ async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     except ConnectionError as e:
         return f"SketchUp not running or extension not started: {e}"
     except SketchUpError as e:
+        # Locally-raised transport errors (timeout, stale socket, oversize)
+        # carry no `tool` in data → format_error would render `tool=?`.
+        # Backfill it from the tool name; setdefault never overrides a
+        # Ruby-origin error that already carries its own `tool`.
+        e.data.setdefault("tool", tool_name)
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
     content = result.get("content") if isinstance(result, dict) else None
     if (
@@ -258,6 +263,9 @@ async def eval_ruby(
     except SketchUpError as e:
         if e.code == compat.EVAL_DISABLED_CODE:
             return e.message
+        # Same tool-name backfill as _call, placed AFTER the -32010 verbatim
+        # path so the eval-disabled message stays untouched.
+        e.data.setdefault("tool", "eval_ruby")
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
 
     content = result.get("content") if isinstance(result, dict) else None
