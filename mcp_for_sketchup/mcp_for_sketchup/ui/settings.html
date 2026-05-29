@@ -121,13 +121,23 @@
     // Called both on initial applyState and on every host input event so users
     // see the warning the moment they type 0.0.0.0 — not only after Save.
     function hostSecurityWarning(host) {
-      // Wildcard binds expose the server (incl. eval_ruby) to the network with
-      // no authentication. Cover IPv4 0.0.0.0 and the IPv6 any-address in both
-      // the compressed '::' and fully-expanded '0:0:0:0:0:0:0:0' forms.
-      if (host === '0.0.0.0' || host === '::' || host === '0:0:0:0:0:0:0:0') {
-        return '⚠ ' + host + ' exposes the server (incl. eval_ruby) to the network with no authentication.';
+      // Wildcard binds expose the server to the network with no authentication.
+      // Cover IPv4 0.0.0.0 and the IPv6 any-address in both the compressed '::'
+      // and fully-expanded '0:0:0:0:0:0:0:0' forms.
+      var isWildcard = (host === '0.0.0.0' || host === '::' || host === '0:0:0:0:0:0:0:0');
+      if (!isWildcard) return '';
+      // Escalate when Ruby evaluation is ON: a wildcard bind + eval is the single
+      // most dangerous combination — UNAUTHENTICATED arbitrary Ruby (full file/
+      // network/shell access) reachable by anyone on the LAN. Read the live
+      // checkbox so the warning tracks the currently-typed state, not just what
+      // was last saved (review #9).
+      if (document.getElementById('eval_enabled').checked) {
+        return '⚠ DANGER: Ruby evaluation is ENABLED and ' + host + ' binds to the '
+             + 'whole network — this exposes UNAUTHENTICATED arbitrary Ruby (full '
+             + 'file/network/shell access) to anyone on your LAN. Use 127.0.0.1, or '
+             + 'turn off Ruby evaluation, unless this is a trusted isolated network.';
       }
-      return '';
+      return '⚠ ' + host + ' exposes the server (incl. eval_ruby) to the network with no authentication.';
     }
 
     // The status-hint slot is shared between two concerns: restart-needed and
@@ -219,8 +229,12 @@
       document.getElementById(id).addEventListener('change', refreshSaveButton);
     });
     document.getElementById('log_level').addEventListener('change', refreshSaveButton);
-    // Live-update the security warning as the user types the host.
+    // Live-update the security warning as the user types the host or toggles
+    // Ruby evaluation (review #9: the warning escalates when eval is enabled).
     document.getElementById('host').addEventListener('input', function () {
+      refreshStatusHint(lastState);
+    });
+    document.getElementById('eval_enabled').addEventListener('change', function () {
       refreshStatusHint(lastState);
     });
 

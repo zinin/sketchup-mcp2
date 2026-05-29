@@ -431,4 +431,32 @@ class TestServerMultiClient < Minitest::Test
     assert sock.closed?, "client should be closed on pending_write_overflow"
     refute srv.instance_variable_get(:@clients).key?(sock)
   end
+
+  def test_single_oversized_frame_on_empty_buffer_is_not_overflow
+    # Review #8: the pending-write cap guards ACCUMULATION only. A single frame
+    # is already bounded by the framing layer (MAX_MESSAGE_SIZE, 64 MiB), so a
+    # legitimate large reply (e.g. a get_viewport_screenshot PNG, ~43 MiB
+    # base64) that exceeds PENDING_WRITE_MAX_BYTES (16 MiB) but fits the frame
+    # cap must be ACCEPTED onto an empty buffer, not force-closed.
+    sock = FakeSocket.new
+    fs = FakeServer.new([sock])
+    srv = MCPforSketchUp::Core::Server.new
+    srv.instance_variable_set(:@server, fs)
+    srv.instance_variable_set(:@running, true)
+    srv.send(:accept_pending_clients)
+    state = srv.instance_variable_get(:@clients).values.first
+    assert state.pending_write_empty?, "precondition: buffer starts empty"
+
+    cap = MCPforSketchUp::Core::Server::PENDING_WRITE_MAX_BYTES
+    big = "y" * (cap + 1024 * 1024)   # frame > 16 MiB pending cap, well under 64 MiB frame cap
+    response = { "jsonrpc" => "2.0", "result" => { "png_base64" => big }, "id" => 1 }
+    srv.send(:write_response, state, response)
+
+    refute sock.closed?,
+      "a single frame over the 16 MiB pending cap (but under the 64 MiB frame cap) must NOT be force-closed"
+    assert srv.instance_variable_get(:@clients).key?(sock),
+      "client must remain registered after a single large frame"
+    assert state.pending_write_empty?,
+      "FakeSocket accepts all bytes synchronously → the big frame drains in the same call"
+  end
 end
