@@ -32,8 +32,8 @@ module MCPforSketchUp
           preferences_key: DIALOG_PREFS,
           scrollable:      true,
           resizable:       false,
-          width:           380,
-          height:          480,
+          width:           440,
+          height:          570,
           style:           ::UI::HtmlDialog::STYLE_DIALOG
         )
 
