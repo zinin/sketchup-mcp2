@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/core/framing.rb
+# mcp_for_sketchup/mcp_for_sketchup/core/framing.rb
 module MCPforSketchUp
   module Core
     module Framing

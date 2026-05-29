@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/view.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/view.rb
 #
 # Operation order (do NOT reorder without re-deriving snapshot/restore
 # invariants):

@@ -1,4 +1,4 @@
-"""MCP prompts for SketchupMCP.
+"""MCP prompts for the MCP Server for SketchUp.
 
 Imported for its side effect (FastMCP decorator registration). See
 ``app.py`` — the import sits next to ``import sketchup_mcp.tools``.

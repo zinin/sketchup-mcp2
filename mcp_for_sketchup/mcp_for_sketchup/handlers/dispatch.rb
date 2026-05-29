@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/dispatch.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch.rb
 require "json"
 
 module MCPforSketchUp

@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/ui/settings_dialog.rb
+# mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog.rb
 require "json"
 
 module MCPforSketchUp

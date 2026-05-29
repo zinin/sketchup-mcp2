@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/core/application.rb
+# mcp_for_sketchup/mcp_for_sketchup/core/application.rb
 require "uri"  # iter-1 CONCERN-5 / iter-2 CRITICAL-3
 module MCPforSketchUp
   module Core

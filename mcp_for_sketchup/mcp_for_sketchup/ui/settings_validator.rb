@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/ui/settings_validator.rb
+# mcp_for_sketchup/mcp_for_sketchup/ui/settings_validator.rb
 module MCPforSketchUp
   module UI
     module SettingsValidator

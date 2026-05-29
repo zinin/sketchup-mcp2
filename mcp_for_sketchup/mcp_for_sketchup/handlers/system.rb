@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/system.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/system.rb
 module MCPforSketchUp
   module Handlers
     module System

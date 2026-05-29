@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/operations.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/operations.rb
 module MCPforSketchUp
   module Handlers
     module Operations

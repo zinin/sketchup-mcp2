@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/main.rb
+# mcp_for_sketchup/mcp_for_sketchup/main.rb
 require "sketchup"
 require "json"
 require "socket"

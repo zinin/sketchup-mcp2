@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/export.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/export.rb
 require "fileutils"
 require "tmpdir"
 

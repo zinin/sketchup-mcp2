@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/core/config.rb
+# mcp_for_sketchup/mcp_for_sketchup/core/config.rb
 require "tmpdir"
 
 module MCPforSketchUp

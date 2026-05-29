@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/model.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/model.rb
 require "set"
 
 module MCPforSketchUp

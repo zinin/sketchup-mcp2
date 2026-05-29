@@ -31,15 +31,21 @@ git status                              # tree should have no tracked-file modif
 
 If HEAD has diverged from `origin/master`, decide **rebase** vs **merge** before the bump commit.
 
+```bash
+# Confirm Trimble product_id matches the new identity (v0.2.0+).
+grep '"product_id"' mcp_for_sketchup/extension.json
+# Expected: "product_id": "MCP_FOR_SKETCHUP"
+```
+
 ## 1. Bump version in 7 places (must match)
 
 - `pyproject.toml` — `version = "X.Y.Z"`
 - `src/sketchup_mcp/__init__.py` — `__version__ = "X.Y.Z"`
 - `src/sketchup_mcp/compat.py` — `MAX_RUBY = "X.Y.Z"` (and `MIN_RUBY` only if this release breaks wire/handler contract with the previous Ruby plugin)
-- `su_mcp/extension.json` — `"version": "X.Y.Z"`
-- `su_mcp/package.rb` — `VERSION = 'X.Y.Z'`
-- `su_mcp/su_mcp.rb` — `ext.version = 'X.Y.Z'`
-- `su_mcp/su_mcp/core/compat.rb` — `SERVER_VERSION = "X.Y.Z"` and `MAX_PYTHON = "X.Y.Z"` (and `MIN_PYTHON` only if this release breaks wire/handler contract with the previous Python client)
+- `mcp_for_sketchup/extension.json` — `"version": "X.Y.Z"`
+- `mcp_for_sketchup/package.rb` — `VERSION = 'X.Y.Z'`
+- `mcp_for_sketchup/mcp_for_sketchup.rb` — `ext.version = 'X.Y.Z'`
+- `mcp_for_sketchup/mcp_for_sketchup/core/compat.rb` — `SERVER_VERSION = "X.Y.Z"` and `MAX_PYTHON = "X.Y.Z"` (and `MIN_PYTHON` only if this release breaks wire/handler contract with the previous Python client)
 
 **MIN/MAX policy:** default to bumping only `MAX_*` to the new release; keep `MIN_*` pointing to the oldest counterpart still supported. Three invariant tests defend against typos and forgotten bumps:
 
@@ -59,10 +65,11 @@ ruby test/run_all.rb             # Ruby — must be green
 ## 3. Build artifacts
 
 ```bash
-rm -rf dist/ su_mcp/*.rbz
-uv build                                     # → dist/*.whl + dist/*.tar.gz
-uvx twine check dist/*                       # validate metadata / README rendering
-(cd su_mcp && ruby package.rb)               # → su_mcp/su_mcp_vX.Y.Z.rbz
+rm -rf dist/ mcp_for_sketchup/*.rbz
+uv build                                              # → dist/*.whl + dist/*.tar.gz
+uvx twine check dist/*                                # validate metadata / README rendering
+(cd mcp_for_sketchup && ruby package.rb --variant=warehouse)  # → mcp_for_sketchup_vX.Y.Z-warehouse.rbz
+(cd mcp_for_sketchup && ruby package.rb --variant=github)     # → mcp_for_sketchup_vX.Y.Z-github.rbz
 ```
 
 `package.rb` needs the `rubyzip` gem: `gem install --user-install rubyzip`.
@@ -98,6 +105,8 @@ uvx twine upload dist/*
 
 ## 6. Git tag + GitHub Release
 
+Attach both Trimble-signed `.rbz` variants (see [§3](#3-build-artifacts)) plus the Python wheel/sdist:
+
 ```bash
 git tag vX.Y.Z -m "Release X.Y.Z" && git push origin vX.Y.Z
 gh release create vX.Y.Z \
@@ -105,67 +114,45 @@ gh release create vX.Y.Z \
   --notes "..." \
   dist/sketchup_mcp2-X.Y.Z-py3-none-any.whl \
   dist/sketchup_mcp2-X.Y.Z.tar.gz \
-  su_mcp/su_mcp_vX.Y.Z.rbz
+  mcp_for_sketchup/mcp_for_sketchup_vX.Y.Z-github.rbz \
+  mcp_for_sketchup/mcp_for_sketchup_vX.Y.Z-warehouse.rbz
 ```
 
 ## 7. Extension Warehouse submission (optional, ~2–3 day review)
 
 Submitting to SketchUp Extension Warehouse (EW) is an **independent, optional** flow on top of steps 0–6. It only makes sense for major / first releases — EW review takes 2–3 business days per submission, so don't churn it for every patch bump.
 
-### Critical gotcha: EW rejects pre-encrypted `.rbz`
+The artifact you submit to EW is the **warehouse variant** (`eval_ruby` off by default), Trimble-signed. See [Warehouse vs GitHub release](#warehouse-vs-github-release) below for the full two-artifact picture; this section covers the EW-specific submission details. Both `.rbz` variants are gitignored (`*.rbz` in `.gitignore`).
 
-The `su_mcp_v<X.Y.Z>.rbz` produced by the **Trimble Signing Portal** (the file attached to the GitHub release) is already encrypted (`.rbe` files + `.susig`). EW rejects it on submit with:
-
-> The following errors were found:
-> • Invalid extension is encrypted
-
-EW does its own signing + encryption server-side during review. You must upload an **unencrypted source `.rbz`** with plain `.rb` files. EW then encrypts per the "Encryption Type" form field and serves the encrypted result through the catalog.
-
-This means a major-release ship produces **two `.rbz` artifacts** for the same version:
-
-| Artifact | How built | Where it goes |
-|---|---|---|
-| `su_mcp_v<X.Y.Z>.rbz` | Trimble Signing Portal (external, manual upload) | GitHub release asset, direct downloads |
-| `su_mcp_v<X.Y.Z>-ew-source.rbz` | `ruby package.rb` (local, plain) | EW submission only |
-
-Both are gitignored (`*.rbz` in `.gitignore`).
-
-### Build the EW-source `.rbz`
+### Build & sign the warehouse `.rbz`
 
 ```bash
-cd su_mcp
-
-# Preserve the Trimble-signed .rbz (it's the GH release asset)
-mv su_mcp_v<X.Y.Z>.rbz su_mcp_v<X.Y.Z>-signed.rbz
-
-ruby package.rb
-# → su_mcp_v<X.Y.Z>.rbz (plain, no .rbe, no .susig)
-
-# Rename to make the role obvious; restore the signed name
-mv su_mcp_v<X.Y.Z>.rbz su_mcp_v<X.Y.Z>-ew-source.rbz
-mv su_mcp_v<X.Y.Z>-signed.rbz su_mcp_v<X.Y.Z>.rbz
+(cd mcp_for_sketchup && ruby package.rb --variant=warehouse)
+# → mcp_for_sketchup/mcp_for_sketchup_vX.Y.Z-warehouse.rbz
 ```
 
-Verify the plain `.rbz` is well-formed before uploading:
+Sign it via the Trimble extension-signing service
+(<https://extensions.sketchup.com/developer/sign-extension>) and submit the
+signed file. Both v0.2.0+ artifacts (warehouse and github) go through the same
+signing service — there is no separate "plain source" upload.
+
+Verify the `.rbz` is well-formed before signing/uploading:
 
 ```bash
 python3 -c "
 import zipfile
-z = zipfile.ZipFile('su_mcp/su_mcp_v<X.Y.Z>-ew-source.rbz')
+z = zipfile.ZipFile('mcp_for_sketchup/mcp_for_sketchup_vX.Y.Z-warehouse.rbz')
 names = sorted(z.namelist())
 print('total=', len(names))
 print('  .rb=',  sum(1 for n in names if n.endswith('.rb')))
-print('  .rbe=', sum(1 for n in names if n.endswith('.rbe')))
-print('  .susig=', sum(1 for n in names if n.endswith('.susig')))
 print('root files:', [n for n in names if '/' not in n])
 "
 ```
 
 Expected:
-- 26 plain `.rb` files (1 root `su_mcp.rb` + 25 inside `su_mcp/`).
-- 1 `.html` (`su_mcp/ui/settings.html`).
-- 0 `.rbe`, 0 `.susig`.
-- Root files: only `['su_mcp.rb']`. No `extension.json` at root — Trimble/EW signing backend rejects "extra files at root" (see commit 839466c). `extension.json` is also **not** required by EW because the loader (`su_mcp.rb`) declares all metadata via `Sketchup::Extension.new(...)`.
+- 26 `.rb` files (1 root `mcp_for_sketchup.rb` + 25 inside `mcp_for_sketchup/`).
+- 1 `.html` (`mcp_for_sketchup/ui/settings.html`).
+- Root files: only `['mcp_for_sketchup.rb']`. No `extension.json` at root — the Trimble/EW signing backend rejects "extra files at root" (see commit 839466c). `extension.json` is also **not** required by EW because the loader (`mcp_for_sketchup.rb`) declares all metadata via `Sketchup::Extension.new(...)`.
 
 ### EW form values (stable — copy across releases)
 
@@ -178,8 +165,8 @@ Only Version Number, Release Notes, and the Description occasionally change. Eve
 | Extension Title | **MCP Server for SketchUp** |
 | Extension Summary (≤120 chars) | **Connect Claude (or any MCP-aware AI client) to SketchUp for prompt-driven 3D modeling.** |
 | Categories (≤3) | Developer Tools, Productivity, Woodworking |
-| Version Number | matches the `.rbz` contents (e.g. `0.1.0`) |
-| Encryption Type | **Encrypt** (EW encrypts server-side) |
+| Version Number | matches the `.rbz` contents (e.g. `0.2.0`) |
+| Encryption Type | **Encrypt** |
 | Mark as NVIDIA CUDA-Enabled | ☐ off |
 | SketchUp Compatibility | 2024, 2025, 2026 (only versions where the plugin has been exercised; 2026 required for `get_viewport_screenshot`) |
 | OS Compatibility | Windows, Mac OS X (Ruby code uses stdlib only — no platform-specific API) |
@@ -188,7 +175,7 @@ Only Version Number, Release Notes, and the Description occasionally change. Eve
 | Promo Video | (blank — optional) |
 | Keywords | `mcp`, `claude`, `ai`, `model-context-protocol`, `automation`, `developer-tools`, `llm` (5–7 strong tags) |
 | Description radio | **Markdown** |
-| Upload file | `su_mcp/su_mcp_v<X.Y.Z>-ew-source.rbz` (filename irrelevant — EW renames on its side) |
+| Upload file | the signed `mcp_for_sketchup_v<X.Y.Z>-warehouse.rbz` (filename irrelevant — EW renames on its side) |
 
 Naming conventions / why:
 - EW dislikes "SketchUp" as the first word of the title. `<X> for SketchUp` is the convention used by most listings.
@@ -304,15 +291,45 @@ Optional 4th (marketing hero shot): Claude Code or Claude Desktop + SketchUp vie
 Click **Submit for Review**. EW reviews in 2–3 business days.
 
 - EW renames your uploaded file on its side (typically to `<extension_id>_<version>.rbz`) — the upload filename doesn't surface to end users.
-- EW signs and encrypts the bundle using EW's key; the GitHub Releases copy stays signed by the Trimble Signing Portal under your key. Both are functionally equivalent for end users — they choose which channel to install from.
-
-### Common rejection: "Invalid extension is encrypted"
-
-Cause: uploaded the **signed/encrypted** `.rbz` (the one from Trimble Signing Portal) instead of the plain `-ew-source.rbz`.
-
-Fix: re-upload `su_mcp_v<X.Y.Z>-ew-source.rbz` (plain, built by `ruby package.rb`). Keep Encryption Type = `Encrypt` — that flag controls what EW will do server-side, not what's in your upload.
+- The catalog serves the warehouse variant (`eval_ruby` off by default); the GitHub Releases page additionally offers the github variant (`eval_ruby` on) for power users. Both are signed via the Trimble signing service.
 
 ## Notes
 
 - `LICENSE` and `NOTICE` ship inside the wheel via `license-files` in `pyproject.toml` — no manual copying needed.
 - After the first publish, swap the account-wide PyPI tokens in `~/.pypirc` for **project-scoped** ones (PyPI → Settings → API tokens → Scope: `Project: sketchup-mcp2`). Compromise of a scoped token only affects that project.
+
+## Warehouse vs GitHub release
+
+Two artifacts ship from the same source commit:
+
+- `mcp_for_sketchup_vX.Y.Z-warehouse.rbz` — submitted to Trimble Extension
+  Warehouse via their intake form. `product_id` is `MCP_FOR_SKETCHUP`
+  (different from the dead v0.1.0 listing that ran under the prior
+  `su_`-prefixed product id). Eval disabled by default.
+- `mcp_for_sketchup_vX.Y.Z-github.rbz` — uploaded to the GitHub
+  Releases page along with the Python wheel/sdist. Eval enabled by
+  default. README links to it as the dev/power-user variant.
+
+Both are signed via the Trimble signing service.
+
+### Submitting via Extension Warehouse (v0.2.0+)
+
+1. Build the warehouse variant: `(cd mcp_for_sketchup && ruby package.rb --variant=warehouse)`
+2. Sign via the Trimble extension-signing service: <https://extensions.sketchup.com/developer/sign-extension>
+3. Submit the signed file through the Extension Warehouse intake form (see [§7](#7-extension-warehouse-submission-optional-23-day-review) for the form values).
+4. `product_id` is `MCP_FOR_SKETCHUP` — this is a NEW product, not an
+   update to the dead v0.1.0 listing under the prior `su_`-prefixed
+   product id.
+
+For the GitHub-Release variant, run the same flow with `--variant=github`
+and upload the signed `.rbz` alongside the Python wheel/sdist.
+
+Release notes template (GitHub Releases):
+
+> ## v0.2.0 — Warehouse-compliant rebrand
+>
+> Two `.rbz` artifacts: warehouse (eval gated, for Trimble Extension Warehouse)
+> and github (eval enabled, for power users). Both are signed.
+>
+> **Wire-protocol break** — old v0.1.0 .rbz cannot handshake with the new
+> Python client and vice versa. Upgrade both halves.

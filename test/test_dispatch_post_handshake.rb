@@ -128,9 +128,9 @@ class TestDispatchPostHandshake < Minitest::Test
   end
 
   # --- eval_ruby gate (warehouse compliance) ---
-  # Iter-1 CRITICAL-8: `saved_eval` is a local var (lowercase). The previous
-  # name `SU_MCP_save_eval` started with uppercase and would be parsed as a
-  # constant — Ruby raises `dynamic constant assignment` inside method bodies.
+  # Iter-1 CRITICAL-8: `saved_eval` is a local var (lowercase). An uppercase
+  # name would be parsed as a constant — Ruby raises `dynamic constant
+  # assignment` inside method bodies — so this local must stay lowercase.
 
   def test_eval_ruby_returns_32010_when_disabled
     saved_eval = MCPforSketchUp::Core::Config.eval_enabled

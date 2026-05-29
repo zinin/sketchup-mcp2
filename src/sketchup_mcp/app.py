@@ -39,7 +39,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
 
 mcp = FastMCP(
-    "SketchupMCP",
+    "MCP Server for SketchUp",
     instructions="Sketchup integration through the Model Context Protocol",
     lifespan=server_lifespan,
 )

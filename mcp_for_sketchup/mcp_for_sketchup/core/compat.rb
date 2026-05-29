@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/core/compat.rb
+# mcp_for_sketchup/mcp_for_sketchup/core/compat.rb
 module MCPforSketchUp
   module Core
     module Compat

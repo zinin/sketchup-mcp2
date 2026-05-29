@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/helpers/validation.rb
+# mcp_for_sketchup/mcp_for_sketchup/helpers/validation.rb
 module MCPforSketchUp
   module Helpers
     module Validation

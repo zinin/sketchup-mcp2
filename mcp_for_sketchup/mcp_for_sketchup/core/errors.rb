@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/core/errors.rb
+# mcp_for_sketchup/mcp_for_sketchup/core/errors.rb
 require "json"
 require "time"
 

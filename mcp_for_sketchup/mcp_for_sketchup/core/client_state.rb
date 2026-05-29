@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/core/client_state.rb
+# mcp_for_sketchup/mcp_for_sketchup/core/client_state.rb
 module MCPforSketchUp
   module Core
     class ClientState

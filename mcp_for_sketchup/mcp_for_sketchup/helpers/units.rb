@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/helpers/units.rb
+# mcp_for_sketchup/mcp_for_sketchup/helpers/units.rb
 module MCPforSketchUp
   module Helpers
     module Units

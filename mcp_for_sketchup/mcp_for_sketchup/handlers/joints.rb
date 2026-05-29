@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/joints.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb
 module MCPforSketchUp
   module Handlers
     module Joints

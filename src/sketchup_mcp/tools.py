@@ -1,7 +1,8 @@
 """FastMCP tool handlers for SketchUp.
 
-Each tool is a thin wrapper that delegates to :func:`_call`, which centralises
-connection acquisition, error handling, and response unwrapping.
+Most tools are thin wrappers that delegate to :func:`_call`, which centralises
+connection acquisition, error handling, and response unwrapping; a few
+(`eval_ruby`, `get_viewport_screenshot`) use :func:`_raw_call` directly.
 """
 import base64
 import json
@@ -161,7 +162,7 @@ async def create_mortise_tenon(
     All dimensions in millimeters. Defaults sized for visibility on a typical
     100mm-board: 50mm wide, 25mm tall, 10mm deep. Pydantic always sends these
     on the wire, so they override Ruby's V.optional_positive defaults — keep
-    the two sides in sync (see su_mcp/su_mcp/handlers/joints.rb).
+    the two sides in sync (see mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb).
     """
     return await _call(
         ctx,

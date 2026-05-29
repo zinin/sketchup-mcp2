@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-client live smoke for SketchupMCP.
+"""Multi-client live smoke for the MCP Server for SketchUp.
 
 Spawns N concurrent worker subprocesses; each opens its own
 SketchUpConnection against the running SketchUp instance and executes

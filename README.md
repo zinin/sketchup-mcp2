@@ -1,4 +1,4 @@
-# SketchupMCP
+# MCP Server for SketchUp
 
 > Connect Claude (or any MCP-aware AI client) to SketchUp for prompt-driven 3D modeling.
 
@@ -7,16 +7,34 @@ Two-process bridge:
 - **Python MCP server** (`sketchup-mcp2` on PyPI) — exposes typed tools to the LLM via the [Model Context Protocol](https://modelcontextprotocol.io/).
 - **Ruby SketchUp extension** — runs a TCP server inside SketchUp and executes commands against the live model.
 
+## Distribution variants
+
+This extension ships in two `.rbz` builds from the same source — they differ in one bit, the default state of `eval_ruby`:
+
+| Variant | Where to get it | `eval_ruby` default | Audience |
+|---|---|---|---|
+| **Warehouse** | SketchUp Extension Warehouse | **off** (must enable in Settings) | Trimble-vetted, general SketchUp users |
+| **GitHub** | This repo's [Releases page](https://github.com/zinin/sketchup-mcp2/releases) | **on** | Developers / MCP-aware users who know what `eval_ruby` does |
+
+If you installed from the warehouse and your MCP client tries `eval_ruby`, the call returns a message like:
+
+> `eval_ruby is disabled. Open Plugins → MCP Server → Settings... and check 'Enable Ruby evaluation'. WARNING: this grants the MCP server arbitrary code execution including filesystem and shell access.`
+
+That's intentional — enable it once via Settings if you trust the connected MCP client. The setting persists across SketchUp restarts.
+
 ## Quickstart
 
 ### 1. Install the SketchUp extension
 
-Either grab the latest `.rbz` from GitHub Releases or build it from source:
+Either grab the latest `.rbz` from GitHub Releases (or the Extension Warehouse) or build it from source. The build accepts `--variant=warehouse|github` (default: `warehouse`); see [Distribution variants](#distribution-variants):
 
 ```bash
 gem install --user-install rubyzip
-cd su_mcp && ruby package.rb
-# → su_mcp/su_mcp_v<version>.rbz
+cd mcp_for_sketchup && ruby package.rb --variant=warehouse
+# → mcp_for_sketchup/mcp_for_sketchup_v<version>-warehouse.rbz
+# For the dev/power-user build with eval_ruby on by default:
+cd mcp_for_sketchup && ruby package.rb --variant=github
+# → mcp_for_sketchup/mcp_for_sketchup_v<version>-github.rbz
 ```
 
 In SketchUp: `Window → Extension Manager → Install Extension`, pick the `.rbz`, restart SketchUp.
@@ -65,7 +83,7 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 | **Introspection** | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image`; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
 | **Lifecycle** | `undo` |
-| **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above |
+| **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above. **Disabled by default in the warehouse build; enable via Plugins → MCP Server → Settings...** See [Distribution variants](#distribution-variants). |
 
 All dimensions in **millimeters**; angles in **degrees**. Every entity-returning handler also responds with `bbox_mm` so the LLM can re-locate entities by bounding box if their IDs go stale after destructive ops.
 
@@ -90,7 +108,7 @@ All dimensions in **millimeters**; angles in **degrees**. Every entity-returning
 
 ### Ruby side (Settings dialog inside SketchUp)
 
-Open `Plugins → MCP Server → Settings...` to change **Host**, **Port**, and **Log Level**. Values persist in SketchUp's preferences under section `SU_MCP`. No environment variables are read on the Ruby side.
+Open `Plugins → MCP Server → Settings...` to change **Host**, **Port**, and **Log Level**. Values persist in SketchUp's preferences under section `MCPforSketchUp`. No environment variables are read on the Ruby side.
 
 > **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead.
 
@@ -120,7 +138,7 @@ Claude (MCP client)
    ↕  MCP (stdio)
 Python MCP server  (FastMCP)               src/sketchup_mcp/
    ↕  TCP — JSON-RPC 2.0, 4-byte big-endian length-prefix framing, 64 MiB cap
-Ruby SketchUp extension (server)            su_mcp/su_mcp/
+Ruby SketchUp extension (server)            mcp_for_sketchup/mcp_for_sketchup/
    ↕  SketchUp Ruby API
 Live SketchUp model
 ```
@@ -130,7 +148,7 @@ The Ruby side runs entirely on the SketchUp UI thread via `UI.start_timer` callb
 Source layout:
 
 - **Python**: `src/sketchup_mcp/{tools,connection,config,compat,errors,prompts}.py`
-- **Ruby**: `su_mcp/su_mcp/{core,handlers,helpers,ui}/`
+- **Ruby**: `mcp_for_sketchup/mcp_for_sketchup/{core,handlers,helpers,ui}/`
 
 See [`CLAUDE.md`](CLAUDE.md) for the project's working notes and non-obvious constraints (unit conversions, reversed boolean semantics, framing details, etc.).
 
@@ -173,7 +191,7 @@ The Python server stays alive after this error; the next tool-call retries the c
 
 ### `IncompatibleVersionError`
 
-Your installed `sketchup-mcp2` Python package and the `.rbz` extension are outside the supported version range. Rebuild the `.rbz` from the same commit as the Python package, or `pip install -U sketchup-mcp2`. The current supported range lives in `src/sketchup_mcp/compat.py` and `su_mcp/su_mcp/core/compat.rb`.
+Your installed `sketchup-mcp2` Python package and the `.rbz` extension are outside the supported version range. Rebuild the `.rbz` from the same commit as the Python package, or `pip install -U sketchup-mcp2`. The current supported range lives in `src/sketchup_mcp/compat.py` and `mcp_for_sketchup/mcp_for_sketchup/core/compat.rb`.
 
 ### Tool-call timeouts on long operations
 

@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/helpers/geometry.rb
+# mcp_for_sketchup/mcp_for_sketchup/helpers/geometry.rb
 module MCPforSketchUp
   module Helpers
     module Geometry

@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/materials.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/materials.rb
 module MCPforSketchUp
   module Handlers
     module Materials

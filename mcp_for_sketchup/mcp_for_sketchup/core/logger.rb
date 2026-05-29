@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/core/logger.rb
+# mcp_for_sketchup/mcp_for_sketchup/core/logger.rb
 require "time"
 
 module MCPforSketchUp

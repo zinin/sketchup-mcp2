@@ -1,4 +1,4 @@
-# su_mcp/su_mcp/handlers/eval.rb
+# mcp_for_sketchup/mcp_for_sketchup/handlers/eval.rb
 module MCPforSketchUp
   module Handlers
     module Eval
