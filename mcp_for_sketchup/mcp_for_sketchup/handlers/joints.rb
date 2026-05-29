@@ -26,6 +26,7 @@ module MCPforSketchUp
         model = E.active_model!
         model.start_operation("Mortise and Tenon", true)
         begin
+          reset_joint_stats!
           mortise_board = E.find!(mortise_id)
           tenon_board   = E.find!(tenon_id)
           E.require_group_or_component!(mortise_board, "mortise board")
@@ -38,10 +39,12 @@ module MCPforSketchUp
           mortise_board = place_mortise(mortise_board, width, height, depth, mortise_face, ox, oy, oz)
           place_tenon(tenon_board,    width, height, depth, tenon_face,   ox, oy, oz)
 
+          assert_some_cut!("Mortise and Tenon")
           model.commit_operation
           {
             "mortise" => MCPforSketchUp::Handlers::Geometry.describe_entity(mortise_board),
-            "tenon"   => MCPforSketchUp::Handlers::Geometry.describe_entity(tenon_board)
+            "tenon"   => MCPforSketchUp::Handlers::Geometry.describe_entity(tenon_board),
+            "boolean_cuts" => joint_cut_stats
           }
         rescue StandardError
           MCPforSketchUp::Handlers::Geometry.safe_abort(model)
@@ -66,6 +69,7 @@ module MCPforSketchUp
         model = E.active_model!
         model.start_operation("Dovetail Joint", true)
         begin
+          reset_joint_stats!
           tail = E.find!(tail_id)
           pin  = E.find!(pin_id)
           E.require_group_or_component!(tail, "tail board")
@@ -74,10 +78,12 @@ module MCPforSketchUp
           carve_tails(tail, width, height, depth, angle, num_tails, ox, oy, oz)
           carve_pins(pin,   width, height, depth, angle, num_tails, ox, oy, oz)
 
+          assert_some_cut!("Dovetail Joint")
           model.commit_operation
           {
             "tail" => MCPforSketchUp::Handlers::Geometry.describe_entity(tail),
-            "pin"  => MCPforSketchUp::Handlers::Geometry.describe_entity(pin)
+            "pin"  => MCPforSketchUp::Handlers::Geometry.describe_entity(pin),
+            "boolean_cuts" => joint_cut_stats
           }
         rescue StandardError
           MCPforSketchUp::Handlers::Geometry.safe_abort(model)
@@ -101,6 +107,7 @@ module MCPforSketchUp
         model = E.active_model!
         model.start_operation("Finger Joint", true)
         begin
+          reset_joint_stats!
           b1 = E.find!(b1_id)
           b2 = E.find!(b2_id)
           E.require_group_or_component!(b1, "board1")
@@ -109,10 +116,12 @@ module MCPforSketchUp
           carve_board1_fingers(b1, width, height, depth, num_fingers, ox, oy, oz)
           b2 = carve_board2_slots(b2, width, height, depth, num_fingers, ox, oy, oz)
 
+          assert_some_cut!("Finger Joint")
           model.commit_operation
           {
             "board1" => MCPforSketchUp::Handlers::Geometry.describe_entity(b1),
-            "board2" => MCPforSketchUp::Handlers::Geometry.describe_entity(b2)
+            "board2" => MCPforSketchUp::Handlers::Geometry.describe_entity(b2),
+            "boolean_cuts" => joint_cut_stats
           }
         rescue StandardError
           MCPforSketchUp::Handlers::Geometry.safe_abort(model)
@@ -121,6 +130,39 @@ module MCPforSketchUp
       end
 
       # ===== Internal geometry helpers (carved from monolith) ================
+
+      # --- Boolean-cut failure tracking (codex review) -----------------------
+      # Group#subtract returns nil when a boolean cut fails — routine on
+      # non-manifold geometry (see CLAUDE.md). The four joint builders used to
+      # swallow that nil and fall back to the UNCUT board, so the handler
+      # reported success for a joint that produced no geometry. These helpers
+      # count attempts + failures (single-threaded UI model ⇒ module ivars are
+      # safe, same pattern as operations.rb @_last_stats) so the public handlers
+      # can (a) raise on a COMPLETE no-op instead of faking success and
+      # (b) surface partial failures via "boolean_cuts" in the response.
+      def self.reset_joint_stats!
+        @_joint_cuts_attempted = 0
+        @_joint_cuts_failed    = 0
+      end
+
+      def self.subtract_tracked(cutter, target)
+        result = cutter.subtract(target)
+        @_joint_cuts_attempted += 1
+        @_joint_cuts_failed    += 1 if result.nil?
+        result
+      end
+
+      def self.assert_some_cut!(op_name)
+        return unless @_joint_cuts_attempted.positive?
+        return unless @_joint_cuts_failed == @_joint_cuts_attempted
+        raise Core::StructuredError.new(-32603,
+          "#{op_name} produced no geometry: all #{@_joint_cuts_attempted} boolean " \
+          "cut(s) failed (likely non-manifold input geometry)")
+      end
+
+      def self.joint_cut_stats
+        { "attempted" => @_joint_cuts_attempted, "failed" => @_joint_cuts_failed }
+      end
 
       def self.closest_face(vector)
         v = vector.clone
@@ -156,7 +198,7 @@ module MCPforSketchUp
         # To cut a mortise out of board, we call cutter.subtract(board), which
         # returns board - cutter (board with mortise hole). Both groups erased;
         # new group returned.
-        result = cutter.subtract(board)
+        result = subtract_tracked(cutter, board)
         result || board                    # if subtract returned nil, fall back to original (still valid)
       end
 
@@ -274,7 +316,7 @@ module MCPforSketchUp
           cf.pushpull(height)
           # Group#subtract reversed semantics: cutter.subtract(pin_group) returns
           # pin_group - cutter (= pin with tail slot carved). Both groups erased.
-          new_pin = cutter.subtract(pin_group)
+          new_pin = subtract_tracked(cutter, pin_group)
           pin_group = new_pin if new_pin
         end
       end
@@ -306,7 +348,7 @@ module MCPforSketchUp
             [tx - finger_w/2, cy + height/2, cz])
           cf.pushpull(depth)
           # cutter.subtract(group) returns group - cutter (board1 with finger slot).
-          new_group = cutter.subtract(group)
+          new_group = subtract_tracked(cutter, group)
           group = new_group if new_group
         end
       end
@@ -332,7 +374,7 @@ module MCPforSketchUp
             [tx - finger_w/2, cy + height/2, cz])
           cf.pushpull(depth)
           # cutter.subtract(current) returns current - cutter (board2 with slot).
-          new_board = cutter.subtract(current)
+          new_board = subtract_tracked(cutter, current)
           current = new_board if new_board
         end
         current  # return final board reference
