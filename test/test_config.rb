@@ -178,18 +178,36 @@ class TestConfig < Minitest::Test
     assert_match(/port/, error.message)
   end
 
-  def test_update_mutates_runtime_before_raising
-    # Documented invariant: runtime is mutated BEFORE persistence (config.rb:57-65).
-    # Even when write_default fails, the in-session Config reflects new values.
+  def test_update_rolls_back_runtime_when_persistence_fails
+    # Review F1: update! is transactional. A failing write_default must leave
+    # runtime EXACTLY as it was before the call — no partial application — so
+    # eval_enabled (the code-exec gate) can never be left open after a save
+    # that errored.
+    C.host      = "1.1.1.1"
+    C.port      = 1111
+    C.log_level = "ERROR"
     writer = FailingWriter.new(fail_on_key: "log_level")
-    begin
+    assert_raises(RuntimeError) do
       C.update!(host: "10.0.0.5", port: 9999, log_level: "WARN", writer: writer)
-    rescue RuntimeError
-      # expected
     end
-    assert_equal "10.0.0.5", C.host
-    assert_equal 9999,       C.port
-    assert_equal "WARN",     C.log_level
+    assert_equal "1.1.1.1", C.host,      "host must roll back on persistence failure"
+    assert_equal 1111,      C.port,      "port must roll back on persistence failure"
+    assert_equal "ERROR",   C.log_level, "log_level must roll back on persistence failure"
+  end
+
+  def test_update_does_not_open_eval_gate_when_persistence_fails
+    # Review F1 (security): user enables eval but an earlier write fails. The
+    # gate must stay CLOSED for the session — eval_enabled must NOT be left
+    # true after update! raises.
+    C.eval_enabled = false
+    writer = FailingWriter.new(fail_on_key: "host")  # fails before any later key
+    assert_raises(RuntimeError) do
+      C.update!(host: "10.0.0.5", port: 9999, log_level: "WARN",
+                eval_enabled: true, writer: writer)
+    end
+    assert_equal false, C.eval_enabled,
+      "eval_enabled must roll back to false (fail closed) when the save fails"
+    refute C.eval_enabled?, "eval gate must remain closed after a failed save"
   end
 
   # --- new prefs introduced in v0.2.0 (warehouse compliance) ---

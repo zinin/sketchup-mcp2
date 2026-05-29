@@ -83,47 +83,63 @@ module MCPforSketchUp
       end
 
       # Caller is responsible for passing pre-validated, normalized values
-      # (see SettingsValidator). Runtime is mutated BEFORE persistence; the
-      # write_default loop is then sequential and stops on the first failure.
+      # (see SettingsValidator). Runtime is mutated optimistically, then the
+      # write_default loop persists sequentially. On the happy path this gives
+      # log_level immediate effect without a server restart.
       #
-      # Trade-offs of this order (chosen deliberately):
-      #   - Current session always sees the new values consistently — important
-      #     for log_level, which applies immediately without a server restart.
-      #   - If write_default returns false on the Nth key (N ∈ {1,2,3}),
-      #     runtime has all three new values, but on disk: keys 1..N-1 are new
-      #     and keys N..3 are old. The raise surfaces a "_general" UI error.
-      #   - After a SketchUp restart, load_from_defaults! reads each pref
-      #     independently → the session sees a mixed old/new state. The UI
-      #     reflects that mix on next open (state is read from prefs, not
-      #     from runtime), so the user can correct it explicitly.
-      #
-      # A truly atomic alternative would either roll back runtime (loses
-      # log_level immediacy) or pack the three values into one pref key
-      # (breaks schema + needs migration). Both were judged not worth the
-      # cost given write_default false is a vanishingly-rare fault (corrupt
-      # prefs, disk full). The raise path is covered by FailingWriter tests
-      # in test_config.rb.
+      # Atomicity (review F1): the whole body is wrapped so that if any
+      # write_default returns false, ALL runtime fields roll back to their
+      # pre-call snapshot before the raise propagates. This is mandatory for
+      # eval_enabled — the arbitrary-code-execution gate must fail CLOSED and
+      # can never be left open in-session after a save that errored. On disk a
+      # partial write may still leave keys 1..N-1 new and N..end old; that mixed
+      # *persisted* state is reconciled on the next SketchUp restart, when
+      # load_from_defaults! re-reads each pref and the dialog reflects it.
+      # write_default==false is a vanishingly-rare fault (corrupt prefs, disk
+      # full); the rollback + raise paths are covered by FailingWriter tests in
+      # test_config.rb.
       def self.update!(host:, port:, log_level:,
                        eval_enabled: nil, log_to_file: nil, log_file_path: nil,
                        writer: Sketchup)
         port_int = port.to_i
-        self.host           = host
-        self.port           = port_int
-        self.log_level      = log_level
-        self.eval_enabled   = !!eval_enabled   unless eval_enabled.nil?
-        self.log_to_file    = !!log_to_file    unless log_to_file.nil?
-        self.log_file_path  = log_file_path    unless log_file_path.nil?
+        # Snapshot runtime so a mid-loop persistence failure rolls back cleanly
+        # (review F1). eval_enabled — the arbitrary-code-execution gate — must
+        # fail CLOSED: never left open in-session when the save reported an error.
+        snapshot = {
+          host: @host, port: @port, log_level: @log_level,
+          eval_enabled: @eval_enabled, log_to_file: @log_to_file,
+          log_file_path: @log_file_path,
+        }
+        begin
+          self.host           = host
+          self.port           = port_int
+          self.log_level      = log_level
+          self.eval_enabled   = !!eval_enabled   unless eval_enabled.nil?
+          self.log_to_file    = !!log_to_file    unless log_to_file.nil?
+          self.log_file_path  = log_file_path    unless log_file_path.nil?
 
-        writes = [
-          ["host",          host],
-          ["port",          port_int],
-          ["log_level",     log_level],
-        ]
-        writes << ["eval_enabled",  self.eval_enabled]   unless eval_enabled.nil?
-        writes << ["log_to_file",   self.log_to_file]    unless log_to_file.nil?
-        writes << ["log_file_path", self.log_file_path]  unless log_file_path.nil?
-        writes.each do |key, value|
-          raise "Sketchup.write_default failed for #{key}" unless writer.write_default(SECTION, key, value)
+          writes = [
+            ["host",          host],
+            ["port",          port_int],
+            ["log_level",     log_level],
+          ]
+          writes << ["eval_enabled",  self.eval_enabled]   unless eval_enabled.nil?
+          writes << ["log_to_file",   self.log_to_file]    unless log_to_file.nil?
+          writes << ["log_file_path", self.log_file_path]  unless log_file_path.nil?
+          writes.each do |key, value|
+            raise "Sketchup.write_default failed for #{key}" unless writer.write_default(SECTION, key, value)
+          end
+        rescue StandardError
+          # Roll back ALL runtime fields to the pre-call snapshot so a partial
+          # persist never leaves a mixed in-session state — in particular
+          # eval_enabled can't be left open after a failed save (review F1).
+          self.host          = snapshot[:host]
+          self.port          = snapshot[:port]
+          self.log_level     = snapshot[:log_level]
+          self.eval_enabled  = snapshot[:eval_enabled]
+          self.log_to_file   = snapshot[:log_to_file]
+          self.log_file_path = snapshot[:log_file_path]
+          raise
         end
       end
 
