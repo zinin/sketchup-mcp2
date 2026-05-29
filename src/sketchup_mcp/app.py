@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 
 from sketchup_mcp.config import setup_logging
 from sketchup_mcp.connection import close_connection, get_connection
+from sketchup_mcp.errors import IncompatibleVersionError
 
 logger = logging.getLogger("sketchup_mcp.app")
 
@@ -24,13 +25,17 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     `_connect_or_raise` приводит весь OSError-семейный сетевой failure к этому
     типу) — ожидаемая ситуация: SketchUp ещё не запущен, lazy reconnect
     отработает на первом tool-call. Логируем warning, продолжаем.
+    `IncompatibleVersionError` (Python↔Ruby mismatch detected at the handshake,
+    review F6) is also caught: we start degraded so `get_version` and every tool
+    can surface the mismatch as a graceful error, instead of the server failing
+    to load with no diagnostics in Claude Desktop.
     Любое другое исключение — конфиг или баг кода — пробрасываем, сервер
     падает на старте с точной ошибкой вместо молчаливого деградирования.
     """
     setup_logging()
     try:
         await get_connection()
-    except ConnectionError as e:
+    except (ConnectionError, IncompatibleVersionError) as e:
         logger.warning(f"Could not connect on startup: {e}")
     try:
         yield {}

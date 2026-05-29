@@ -11,6 +11,7 @@ module MCPforSketchUp
       ACCEPT_ABORTED_MAX        = 10      # defensive cap on ECONNABORTED churn
       WRITE_DEADLINE_S          = 5.0     # cumulative drain deadline per pending-write
       PENDING_WRITE_MAX_BYTES   = 16 * 1024 * 1024  # 16 MiB per-client buffer cap
+      MAX_CLIENTS               = 64      # refuse connections beyond this (review F3)
 
       def initialize
         @server         = nil
@@ -83,6 +84,20 @@ module MCPforSketchUp
           rescue Errno::ECONNABORTED
             aborted += 1
             return if aborted >= ACCEPT_ABORTED_MAX
+            next
+          end
+          # Refuse connections beyond MAX_CLIENTS to bound FD/memory use when
+          # bound to a non-loopback host (review F3). Close without registering
+          # — keeps the registered-or-closed invariant.
+          if @clients.size >= MAX_CLIENTS
+            begin
+              sock.close
+            rescue StandardError => e
+              Logger.log("DEBUG",
+                "Server.accept: over-cap close raised: #{e.class}: #{e.message}")
+            end
+            Logger.log_tool("server", "client_rejected",
+              "reason=max_clients limit=#{MAX_CLIENTS}")
             next
           end
           begin

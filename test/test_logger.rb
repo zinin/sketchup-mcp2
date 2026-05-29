@@ -185,4 +185,27 @@ class TestLogger < Minitest::Test
       File.delete(path) if File.exist?(path)
     end
   end
+
+  def test_log_to_file_expands_tilde_path_before_open
+    # F4b: logger must expand `~` before opening — File.open does NOT expand it,
+    # so without File.expand_path a tilde path (which the validator accepts)
+    # would write a literal "~" entry relative to CWD instead of going home.
+    # Point HOME at a temp dir so the test never touches the real home.
+    require "tmpdir"
+    require "fileutils"
+    fake_home = Dir.mktmpdir("mcp_fake_home")
+    orig_home = ENV["HOME"]
+    begin
+      ENV["HOME"] = fake_home
+      MCPforSketchUp::Core::Config.log_to_file  = true
+      MCPforSketchUp::Core::Config.log_file_path = "~/mcp_expanded.log"
+      MCPforSketchUp::Core::Logger.log("WARN", "tilde path line")
+      target = File.join(fake_home, "mcp_expanded.log")
+      assert File.exist?(target), "log must be written to the expanded ~ path (#{target})"
+      assert_includes File.read(target), "tilde path line"
+    ensure
+      ENV["HOME"] = orig_home
+      FileUtils.remove_entry(fake_home) if fake_home && Dir.exist?(fake_home)
+    end
+  end
 end

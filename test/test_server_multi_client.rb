@@ -67,6 +67,29 @@ class TestServerMultiClient < Minitest::Test
     assert_equal [0, 1, 2], ids
   end
 
+  def test_accept_refuses_connections_beyond_max_clients
+    # Review F3: accept must refuse (close, not register) connections beyond
+    # MAX_CLIENTS so a flood of opens can't exhaust FDs/memory on a non-loopback
+    # bind. Drive accept_pending_clients directly with @clients pre-filled to
+    # the cap — no need for MAX_CLIENTS real sockets.
+    max = MCPforSketchUp::Core::Server::MAX_CLIENTS
+    srv = MCPforSketchUp::Core::Server.new
+    clients = srv.instance_variable_get(:@clients)
+    max.times do |i|
+      s = FakeSocket.new
+      clients[s] = MCPforSketchUp::Core::ClientState.new(i, s)
+    end
+
+    overflow = FakeSocket.new
+    fs = FakeServer.new([overflow])
+    srv.instance_variable_set(:@server, fs)
+    srv.send(:accept_pending_clients)
+
+    assert overflow.closed?, "connection beyond MAX_CLIENTS must be closed"
+    assert_equal max, clients.size, "over-cap connection must NOT be registered"
+    refute clients.key?(overflow), "over-cap socket must not be tracked"
+  end
+
   # ---------- Single-client dispatch (sanity post-rewrite) ----------
 
   def test_single_client_dispatches_get_version
