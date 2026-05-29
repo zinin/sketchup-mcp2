@@ -105,7 +105,7 @@ uvx twine upload dist/*
 
 ## 6. Git tag + GitHub Release
 
-Attach both Trimble-signed `.rbz` variants (see [§3](#3-build-artifacts)) plus the Python wheel/sdist:
+Attach both `.rbz` variants (see [§3](#3-build-artifacts)) plus the Python wheel/sdist. The github variant attached here must already be self-signed via the Trimble signing service; the warehouse variant is the same unsigned build you submit to EW (EW signs its own copy after review):
 
 ```bash
 git tag vX.Y.Z -m "Release X.Y.Z" && git push origin vX.Y.Z
@@ -122,21 +122,24 @@ gh release create vX.Y.Z \
 
 Submitting to SketchUp Extension Warehouse (EW) is an **independent, optional** flow on top of steps 0–6. It only makes sense for major / first releases — EW review takes 2–3 business days per submission, so don't churn it for every patch bump.
 
-The artifact you submit to EW is the **warehouse variant** (`eval_ruby` off by default), Trimble-signed. See [Warehouse vs GitHub release](#warehouse-vs-github-release) below for the full two-artifact picture; this section covers the EW-specific submission details. Both `.rbz` variants are gitignored (`*.rbz` in `.gitignore`).
+The artifact you submit to EW is the **warehouse variant** (`eval_ruby` off by default), uploaded **unsigned** — Trimble/EW signs it themselves after the review. See [Warehouse vs GitHub release](#warehouse-vs-github-release) below for the full two-artifact picture; this section covers the EW-specific submission details. Both `.rbz` variants are gitignored (`*.rbz` in `.gitignore`).
 
-### Build & sign the warehouse `.rbz`
+### Build the warehouse `.rbz`
 
 ```bash
 (cd mcp_for_sketchup && ruby package.rb --variant=warehouse)
 # → mcp_for_sketchup/mcp_for_sketchup_vX.Y.Z-warehouse.rbz
 ```
 
-Sign it via the Trimble extension-signing service
-(<https://extensions.sketchup.com/developer/sign-extension>) and submit the
-signed file. Both v0.2.0+ artifacts (warehouse and github) go through the same
-signing service — there is no separate "plain source" upload.
+**Do NOT sign the warehouse `.rbz`.** Upload it **unsigned** through the EW
+intake form; the form's "Encryption Type: Encrypt" setting requests Trimble's
+signing, which happens **after** the 2–3 day review. The two variants take
+different signing paths: only the **github** variant is self-signed by us via
+the Trimble extension-signing service
+(<https://extensions.sketchup.com/developer/sign-extension>) before it goes to
+GitHub Releases (see [Warehouse vs GitHub release](#warehouse-vs-github-release)).
 
-Verify the `.rbz` is well-formed before signing/uploading:
+Verify the `.rbz` is well-formed before uploading:
 
 ```bash
 python3 -c "
@@ -175,7 +178,7 @@ Only Version Number, Release Notes, and the Description occasionally change. Eve
 | Promo Video | (blank — optional) |
 | Keywords | `mcp`, `claude`, `ai`, `model-context-protocol`, `automation`, `developer-tools`, `llm` (5–7 strong tags) |
 | Description radio | **Markdown** |
-| Upload file | the signed `mcp_for_sketchup_v<X.Y.Z>-warehouse.rbz` (filename irrelevant — EW renames on its side) |
+| Upload file | the **unsigned** `mcp_for_sketchup_v<X.Y.Z>-warehouse.rbz` — do NOT self-sign; EW signs it after review (filename irrelevant — EW renames on its side) |
 
 Naming conventions / why:
 - EW dislikes "SketchUp" as the first word of the title. `<X> for SketchUp` is the convention used by most listings.
@@ -291,7 +294,7 @@ Optional 4th (marketing hero shot): Claude Code or Claude Desktop + SketchUp vie
 Click **Submit for Review**. EW reviews in 2–3 business days.
 
 - EW renames your uploaded file on its side (typically to `<extension_id>_<version>.rbz`) — the upload filename doesn't surface to end users.
-- The catalog serves the warehouse variant (`eval_ruby` off by default); the GitHub Releases page additionally offers the github variant (`eval_ruby` on) for power users. Both are signed via the Trimble signing service.
+- The catalog serves the warehouse variant (`eval_ruby` off by default); the GitHub Releases page additionally offers the github variant (`eval_ruby` on) for power users. Both end up signed, but via different paths: the github build is self-signed by us via the Trimble signing service before GitHub upload, while the warehouse build is signed by Trimble after the EW review.
 
 ## Notes
 
@@ -310,26 +313,32 @@ Two artifacts ship from the same source commit:
   Releases page along with the Python wheel/sdist. Eval enabled by
   default. README links to it as the dev/power-user variant.
 
-Both are signed via the Trimble signing service.
+Both end up signed, but via different paths: the github build is self-signed by
+us via the Trimble signing service before GitHub upload, while the warehouse
+build is signed by Trimble after the EW review.
 
 ### Submitting via Extension Warehouse (v0.2.0+)
 
 1. Build the warehouse variant: `(cd mcp_for_sketchup && ruby package.rb --variant=warehouse)`
-2. Sign via the Trimble extension-signing service: <https://extensions.sketchup.com/developer/sign-extension>
-3. Submit the signed file through the Extension Warehouse intake form (see [§7](#7-extension-warehouse-submission-optional-23-day-review) for the form values).
-4. `product_id` is `MCP_FOR_SKETCHUP` — this is a NEW product, not an
+2. Upload it **UNSIGNED** through the Extension Warehouse intake form — do NOT
+   pre-sign. Set "Encryption Type: Encrypt" (see [§7](#7-extension-warehouse-submission-optional-23-day-review)
+   for the form values) so Trimble signs it; the signing happens after the 2–3
+   day review.
+3. `product_id` is `MCP_FOR_SKETCHUP` — this is a NEW product, not an
    update to the dead v0.1.0 listing under the prior `su_`-prefixed
    product id.
 
-For the GitHub-Release variant, run the same flow with `--variant=github`
-and upload the signed `.rbz` alongside the Python wheel/sdist.
+For the GitHub-Release variant, build with `--variant=github`, self-sign it
+yourself via the Trimble extension-signing service
+(<https://extensions.sketchup.com/developer/sign-extension>), and upload the
+**signed** `.rbz` to GitHub Releases alongside the Python wheel/sdist.
 
 Release notes template (GitHub Releases):
 
 > ## v0.2.0 — Warehouse-compliant rebrand
 >
 > Two `.rbz` artifacts: warehouse (eval gated, for Trimble Extension Warehouse)
-> and github (eval enabled, for power users). Both are signed.
+> and github (eval enabled, for power users). The github build is Trimble-signed.
 >
 > **Wire-protocol break** — old v0.1.0 .rbz cannot handshake with the new
 > Python client and vice versa. Upgrade both halves.
