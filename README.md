@@ -20,7 +20,9 @@ If you installed from the warehouse and your MCP client tries `eval_ruby`, the c
 
 > `eval_ruby is disabled. Open Plugins → MCP Server → Settings... and check 'Enable Ruby evaluation'. WARNING: this grants the MCP server arbitrary code execution including filesystem and shell access.`
 
-That's intentional — enable it once via Settings if you trust the connected MCP client. The setting persists across SketchUp restarts.
+That's intentional — enable it once via Settings if you trust the connected MCP client. The setting persists across SketchUp restarts. Turning it on pops a blocking confirmation spelling out the risk (arbitrary Ruby ⇒ full filesystem / network / shell access).
+
+**Per-call review.** Even with `eval_ruby` enabled, the exact Ruby a client sends stays visible in your MCP client — Claude Desktop and Claude Code display every tool call's arguments and let you approve or deny each one before it runs, so you can review each snippet case by case. (That per-call prompt is skipped only if you opt out of approvals, e.g. Claude Code's `--dangerously-skip-permissions`.)
 
 ## Quickstart
 
@@ -108,7 +110,9 @@ All dimensions in **millimeters**; angles in **degrees**. Every entity-returning
 
 ### Ruby side (Settings dialog inside SketchUp)
 
-Open `Plugins → MCP Server → Settings...` to change **Host**, **Port**, and **Log Level**. Values persist in SketchUp's preferences under section `MCPforSketchUp`. No environment variables are read on the Ruby side.
+Open `Plugins → MCP Server → Settings...` to change **Host**, **Port**, **Log Level**, the **Ruby evaluation** gate, and **log-to-file** options. Values persist in SketchUp's preferences under section `MCPforSketchUp`. No environment variables are read on the Ruby side.
+
+The Ruby side logs at **`WARN` by default**, so it stays quiet in SketchUp's shared Ruby console; any line it does print is prefixed `[MCPforSU]` with a UTC timestamp. Enable **Log to file** to mirror output to a UTF-8 log file instead (`Plugins → MCP Server → Show Log` opens it).
 
 > **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead.
 

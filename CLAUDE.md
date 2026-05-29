@@ -42,7 +42,17 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   gate is closed; `src/sketchup_mcp/tools.py::eval_ruby` translates
   `-32010` into a user-facing message (no `[code]` prefix) so the LLM
   can repeat it verbatim. `build_profile.rb` is gitignored; tests run
-  fine without it (falls back to safe warehouse defaults).
+  fine without it (falls back to safe warehouse defaults). The
+  arbitrary-code risk is guarded in three layers for the Extension
+  Warehouse: (1) **off by default** (the gate above); (2) a **blocking
+  enable-time security confirm** in the Settings dialog
+  (`ui/settings_dialog.rb::confirm_eval_enable` — warns that enabling
+  grants full filesystem/network/shell access); (3) **per-call review at
+  the MCP client** — Claude Desktop / Claude Code display each
+  `eval_ruby` call's Ruby code and let the user approve or deny it before
+  it runs. The extension deliberately does NOT log or re-prompt the code
+  itself: that would duplicate the client's permission UI and break
+  autonomous (`--dangerously-skip-permissions`) operation.
 - **Version handshake (one-time on connect)**: every TCP connection MUST
   begin with a JSON-RPC `hello` request carrying
   `params.client_version`. The server validates against
@@ -71,8 +81,8 @@ cd mcp_for_sketchup && ruby package.rb --variant=warehouse && cd ..
 cd mcp_for_sketchup && ruby package.rb --variant=github && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (287 runs / 684 assertions)
-uv run pytest tests/ -q        # Python (123 tests)
+ruby test/run_all.rb           # Ruby (294 runs / 715 assertions)
+uv run pytest tests/ -q        # Python (129 tests)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 22-step end-to-end (covers all handlers)
@@ -88,9 +98,12 @@ Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `
 |---|---|---|
 | Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead. |
 | Port | `9876` | 1..65535 |
-| Log Level | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
+| Log Level | `WARN` | `DEBUG` / `INFO` / `WARN` / `ERROR`. Default `WARN` so info/debug never clutter SketchUp's shared Ruby console; every emitted line is prefixed `[<UTC iso8601>] [MCPforSU] [LEVEL]`. |
+| Enable Ruby evaluation | **off** (warehouse) | Gates `eval_ruby`. Off by default in the warehouse `.rbz` (`BuildProfile::EVAL_ENABLED_BY_DEFAULT=false`), on in the github build. Turning it on pops a blocking security confirm (arbitrary code ⇒ full filesystem/network/shell). |
+| Log to file | `false` | Mirror every console line to a UTF-8 file — lets you avoid the shared console entirely. |
+| Log file path | `<tmpdir>/mcp_for_sketchup.log` | Target for log-to-file; a leading `~` is expanded. |
 
-Log-level changes apply immediately. Host/port changes prompt the user to restart the server if it is running.
+Log-level changes apply immediately. Enabling Ruby evaluation requires confirming the security warning. Host/port changes prompt the user to restart the server if it is running.
 
 **Python (MCP server invoked by Claude)** — configured through ENV in the Claude Desktop MCP config:
 
