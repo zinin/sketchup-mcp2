@@ -85,7 +85,7 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 | **Introspection** | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image`; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
 | **Lifecycle** | `undo` |
-| **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above. **Disabled by default in the warehouse build; enable via Plugins → MCP Server → Settings...** See [Distribution variants](#distribution-variants). |
+| **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above. **Disabled by default in the warehouse build** — see [Distribution variants](#distribution-variants). |
 
 All dimensions in **millimeters**; angles in **degrees**. Every entity-returning handler also responds with `bbox_mm` so the LLM can re-locate entities by bounding box if their IDs go stale after destructive ops.
 
@@ -226,12 +226,7 @@ Keep the **virtualenv on a local disk**. With `uv`, point it there via `UV_PROJE
 
 The `uvx sketchup-mcp2` setup shown earlier isn't affected — `uvx` already keeps its environment under uv's local cache.
 
-> **Why is the venv on a shared folder at all?** This bridge is typically run in an isolated/VM setup for two security reasons — and that's what lands the checkout on a host-shared folder (the slow filesystem above):
->
-> - **Claude/MCP side:** to let Claude Code drive SketchUp autonomously you usually launch it with `--dangerously-skip-permissions` (it stops asking to approve each tool call). That's genuinely risky on your daily-driver machine, so run Claude Code + this MCP server inside a disposable VM.
-> - **SketchUp side:** the bridge is only really worthwhile with `eval_ruby` enabled — the typed tools handle common cases, but `eval_ruby` (the escape hatch) is what unlocks arbitrary modeling. It executes arbitrary Ruby with full filesystem/shell access, so if you're going to enable it, run SketchUp (Windows) in a VM as well rather than on a machine you care about.
->
-> Typical layout: a Linux VM (Claude Code + MCP server) ↔ a Windows VM (SketchUp) over the LAN, with the project on a host-shared folder — which is exactly why the `UV_PROJECT_ENVIRONMENT` note above matters.
+> **Why is the venv on a shared folder at all?** This bridge is typically run in an isolated VM setup — both Claude Code launched with `--dangerously-skip-permissions` and `eval_ruby` (arbitrary Ruby, full filesystem/shell access) enabled are risky enough to want a disposable VM. Typical layout: a Linux VM (Claude Code + MCP server) ↔ a Windows VM (SketchUp) over the LAN, project on a host-shared folder — which is exactly why the `UV_PROJECT_ENVIRONMENT` note above matters.
 
 ## License
 
