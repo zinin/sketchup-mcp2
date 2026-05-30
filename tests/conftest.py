@@ -2,11 +2,11 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
+import pytest_asyncio
 
 
-@pytest.fixture
-def fake_streams():
+@pytest_asyncio.fixture
+async def fake_streams():
     """Return ``(reader, writer)`` ready to inject into SketchUpConnection.
 
     ``reader`` is a real ``asyncio.StreamReader``; tests push bytes via
@@ -31,8 +31,8 @@ def fake_streams():
     return reader, writer
 
 
-@pytest.fixture
-def make_connection(fake_streams):
+@pytest_asyncio.fixture
+async def make_connection(fake_streams):
     """Factory that returns a ``SketchUpConnection`` with injected streams."""
     from sketchup_mcp.connection import SketchUpConnection
 
