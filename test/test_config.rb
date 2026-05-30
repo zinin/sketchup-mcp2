@@ -315,6 +315,26 @@ class TestConfig < Minitest::Test
     assert_includes keys, "log_file_path"
   end
 
+  def test_update_coerces_non_boolean_eval_enabled_fails_closed
+    # Defense in depth (codex/glm 6th-review): update! is the trusted write path
+    # and its sole caller normalises via SettingsValidator, but the arbitrary-code
+    # gate must still fail CLOSED if a future/buggy caller violates the contract
+    # with a non-boolean truthy. `(eval_enabled == true)` — never `!!` — keeps the
+    # classic `!!"false" == true` trap from both opening AND persisting the gate.
+    ConfigReset.reset_all!
+    writer = StubWriter.new
+    C.eval_enabled = false
+    C.update!(host: "127.0.0.1", port: 9876, log_level: "WARN",
+              eval_enabled: "false", writer: writer)
+    assert_equal false, C.eval_enabled,
+      "non-boolean eval_enabled must fail closed to false, not !!-coerce to true"
+    refute C.eval_enabled?, "gate must stay closed"
+    persisted = writer.writes.find { |_section, key, _value| key == "eval_enabled" }
+    refute_nil persisted, "eval_enabled is still persisted (the param was non-nil)"
+    assert_equal false, persisted[2],
+      "the value written to disk must be false, never a coerced true"
+  end
+
   def test_update_does_not_persist_eval_on_disk_when_an_earlier_key_fails
     # Review (disk fail-closed): when the user enables eval (off → on) but a
     # NON-eval write_default fails, eval_enabled must never reach disk. It is
@@ -335,18 +355,20 @@ class TestConfig < Minitest::Test
     refute C.eval_enabled?, "eval gate must remain closed after a failed save"
   end
 
-  def test_load_from_defaults_coerces_non_boolean_eval_enabled_to_nil
-    # Security: a persisted eval_enabled that is NOT a native boolean (tampered
-    # or legacy string "true"/"false", an integer, etc.) must NOT be treated as
-    # truthy. coerce_bool_pref falls it back to the nil sentinel, so eval_enabled?
-    # resolves through BuildProfile (absent here ⇒ false). A naive `!!raw` would
-    # let even the string "false" open the gate. (log_level ERROR keeps the
-    # coercion WARN out of the shared test output when Logger is loaded.)
+  def test_load_from_defaults_coerces_non_boolean_eval_enabled_to_false
+    # Security (codex 6th-review): a persisted eval_enabled that is NOT a native
+    # boolean (tampered or legacy string "true"/"false", an integer, etc.) must
+    # fail CLOSED. A present-but-invalid value is NOT «unset»: coerce_bool_pref
+    # resolves it to `false` (default: false), NOT the nil sentinel — otherwise
+    # it would fall through to BuildProfile, which in the github variant bakes
+    # EVAL_ENABLED_BY_DEFAULT=true and would silently RE-OPEN the gate. A naive
+    # `!!raw` would be worse still (the string "false" → true). (log_level ERROR
+    # keeps the coercion WARN out of the shared test output when Logger is loaded.)
     ["true", "false", "yes", "1", 1].each do |bad|
       ConfigReset.reset_all!
       C.load_from_defaults!(StubReader.new("eval_enabled" => bad, "log_level" => "ERROR"))
-      assert_nil C.eval_enabled,
-        "non-boolean eval_enabled #{bad.inspect} must coerce to the nil sentinel"
+      assert_equal false, C.eval_enabled,
+        "non-boolean eval_enabled #{bad.inspect} must fail closed to false"
       refute C.eval_enabled?,
         "eval gate must stay closed for non-boolean pref #{bad.inspect}"
     end
@@ -378,6 +400,33 @@ class TestConfig < Minitest::Test
         MCPforSketchUp::Core::BuildProfile.const_set(:EVAL_ENABLED_BY_DEFAULT, baked)
         assert_equal expected, C.eval_enabled?,
           "build-profile EVAL_ENABLED_BY_DEFAULT=#{baked.inspect} must resolve to #{expected} (gate fail-closed)"
+      ensure
+        MCPforSketchUp::Core.send(:remove_const, :BuildProfile)
+      end
+    end
+  end
+
+  def test_non_boolean_eval_pref_fails_closed_even_when_build_default_is_true
+    # Regression (codex 6th-review): the github variant bakes
+    # EVAL_ENABLED_BY_DEFAULT=true. A present-but-non-boolean (tampered/corrupt)
+    # eval_enabled pref must NOT be treated as «unset» and fall through to that
+    # truthy build default — that would silently RE-OPEN the arbitrary-code gate.
+    # With default: false, load_from_defaults! resolves present-but-invalid to
+    # `false`, so the gate stays CLOSED here even though the build default is
+    # true. This is the github-build scenario that
+    # test_load_from_defaults_coerces_non_boolean_eval_enabled_to_false cannot
+    # observe (the test env has no BuildProfile ⇒ false). The pre-fix code
+    # (default: nil) would FAIL this test.
+    refute MCPforSketchUp::Core.const_defined?(:BuildProfile, false),
+      "precondition: test env has no build_profile.rb loaded"
+    ["false", "true", "yes", "1", 1].each do |bad|
+      ConfigReset.reset_all!
+      C.load_from_defaults!(StubReader.new("eval_enabled" => bad, "log_level" => "ERROR"))
+      MCPforSketchUp::Core.const_set(:BuildProfile, Module.new)
+      begin
+        MCPforSketchUp::Core::BuildProfile.const_set(:EVAL_ENABLED_BY_DEFAULT, true)
+        refute C.eval_enabled?,
+          "github build default=true must NOT re-open the gate for non-boolean pref #{bad.inspect}"
       ensure
         MCPforSketchUp::Core.send(:remove_const, :BuildProfile)
       end

@@ -48,9 +48,14 @@ module MCPforSketchUp
         self.host          = valid_host?(raw_host)   ? raw_host       : warn_invalid_pref(:host,      raw_host)
         self.port          = valid_port?(raw_port)   ? raw_port.to_i  : warn_invalid_pref(:port,      raw_port)
         self.log_level     = LEVELS.key?(raw_level)  ? raw_level      : warn_invalid_pref(:log_level, raw_level)
-        # Sentinel-nil preserved for eval_enabled; the helper only fires for
-        # values that are neither nil nor a native boolean (iter-2 CONCERN-3).
-        self.eval_enabled  = raw_eval.nil? ? nil : coerce_bool_pref(:eval_enabled, raw_eval, default: nil)
+        # Absent pref (raw_eval.nil?) stays the nil sentinel → BuildProfile
+        # fallback. A present-but-non-boolean value (tampered/corrupt pref) is
+        # NOT «unset»: it fails CLOSED to false (default: false), so the
+        # arbitrary-code gate never falls through to a truthy build default —
+        # the github variant bakes EVAL_ENABLED_BY_DEFAULT=true and would
+        # otherwise silently RE-OPEN. coerce_bool_pref still never `!!`-coerces a
+        # non-boolean truthy (iter-2 CONCERN-3 + codex 6th-review).
+        self.eval_enabled  = raw_eval.nil? ? nil : coerce_bool_pref(:eval_enabled, raw_eval, default: false)
         self.log_to_file   = coerce_bool_pref(:log_to_file, raw_l2f, default: DEFAULTS[:log_to_file])
         self.log_file_path = raw_lpath.empty? ? DEFAULTS[:log_file_path] : raw_lpath
       end
@@ -122,7 +127,11 @@ module MCPforSketchUp
           self.host           = host
           self.port           = port_int
           self.log_level      = log_level
-          self.eval_enabled   = !!eval_enabled   unless eval_enabled.nil?
+          # Strict `== true` for the arbitrary-code gate, never `!!` (which would
+          # coerce a contract-violating non-boolean truthy like the string "false"
+          # to true and PERSIST the open gate). Defense in depth mirroring the
+          # fail-closed read paths; log_to_file is not a gate so `!!` is fine.
+          self.eval_enabled   = (eval_enabled == true) unless eval_enabled.nil?
           self.log_to_file    = !!log_to_file    unless log_to_file.nil?
           self.log_file_path  = log_file_path    unless log_file_path.nil?
 

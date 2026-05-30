@@ -10,17 +10,14 @@ class TestApplicationFileUri < Minitest::Test
   end
 
   def test_windows_drive_letter_path_gets_triple_slash
-    # We stub File.expand_path because expand_path on POSIX would mangle
-    # the input. file_uri_for's actual responsibility is the gsub+regex+
-    # escape sequence after expand_path; we exercise that part directly.
-    # NOTE: this stub lambda duplicates Application.file_uri_for's
-    # post-expand_path transform — keep it in sync if file_uri_for changes.
-    A.stub(:file_uri_for, lambda { |p|
-      enc = p.gsub('\\', '/')
-      enc = "/#{enc}" if enc =~ /\A[A-Za-z]:/
-      enc = URI::DEFAULT_PARSER.escape(enc)
-      "file://#{enc}"
-    }) do
+    # Exercise the REAL Application.file_uri_for. Stub File.expand_path to an
+    # identity so POSIX expand_path doesn't mangle the Windows input (on Linux
+    # File.expand_path("C:\\…") would prepend the cwd). file_uri_for's actual
+    # responsibility — the backslash→slash + drive-letter + percent-escape
+    # transform AFTER expand_path — is now verified directly. It was previously
+    # stubbed out, so the test exercised a duplicate lambda, not the method under
+    # test (codex 6th-review).
+    File.stub(:expand_path, ->(*a) { a.first }) do
       uri = A.send(:file_uri_for, "C:\\Users\\foo bar\\mcp.log")
       assert_equal "file:///C:/Users/foo%20bar/mcp.log", uri
     end

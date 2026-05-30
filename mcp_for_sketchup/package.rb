@@ -52,14 +52,25 @@ begin
   FileUtils.cp_r(EXTENSION_NAME, temp_dir)
   FileUtils.cp("#{EXTENSION_NAME}.rb", temp_dir)
 
-  # 3. Zip everything into the .rbz file.
+  # 3. Zip everything into the .rbz file. Wrap the zip in begin/rescue so a
+  # crash MID-archive (disk full, I/O error) can't leave a partial/corrupt .rbz:
+  # the outer `ensure` below cleans temp_dir + build_profile.rb but NOT
+  # OUTPUT_NAME, and a leftover partial artifact could be shipped by a release
+  # glob (gh release upload mcp_for_sketchup/*.rbz). Same leak-proof discipline
+  # as the post-build verification rescue. rm_f only ever targets THIS build's
+  # partial output — the line above already removed any prior .rbz.
   FileUtils.rm(OUTPUT_NAME) if File.exist?(OUTPUT_NAME)
-  Zip::File.open(OUTPUT_NAME, create: true) do |zipfile|
-    Dir["#{temp_dir}/**/**"].each do |file|
-      next if File.directory?(file)
-      puts "Adding: #{file}"
-      zipfile.add(file.sub("#{temp_dir}/", ''), file)
+  begin
+    Zip::File.open(OUTPUT_NAME, create: true) do |zipfile|
+      Dir["#{temp_dir}/**/**"].each do |file|
+        next if File.directory?(file)
+        puts "Adding: #{file}"
+        zipfile.add(file.sub("#{temp_dir}/", ''), file)
+      end
     end
+  rescue
+    FileUtils.rm_f(OUTPUT_NAME)
+    raise
   end
 ensure
   # 4. Clean up — always runs, even on failure.
