@@ -63,4 +63,16 @@ class TestApplication < Minitest::Test
     assert_nil A.running_config
     refute A.running?
   end
+
+  # file_uri_for builds the file:// URL for "Show Log". `?` and `#` are legal in
+  # POSIX filenames but are the URL query / fragment delimiters; they must be
+  # percent-encoded so the OS handler opens the right file (codex 4th-review).
+  def test_file_uri_for_percent_encodes_query_and_fragment_chars
+    uri = A.send(:file_uri_for, "/tmp/my?log#1.log")
+    assert_includes uri, "%3F",        "`?` must be percent-encoded"
+    assert_includes uri, "%23",        "`#` must be percent-encoded"
+    refute_includes uri, "?",          "no raw `?` may remain in the file URI"
+    refute_includes uri, "#",          "no raw `#` may remain in the file URI"
+    assert uri.start_with?("file:///"), "a POSIX absolute path yields file:///…"
+  end
 end

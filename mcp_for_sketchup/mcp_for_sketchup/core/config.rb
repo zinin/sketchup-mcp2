@@ -172,11 +172,15 @@ module MCPforSketchUp
         # in the shared Ruby namespace would mask our intent.
         if Core.const_defined?(:BuildProfile, false) &&
            Core::BuildProfile.const_defined?(:EVAL_ENABLED_BY_DEFAULT, false)
-          # `!!` coerce to a strict boolean — the arbitrary-code gate must fail
-          # closed even if a build bug ever baked a truthy non-boolean (e.g. the
-          # string "false") into build_profile.rb. Matches the runtime-pref path,
-          # which already stores `!!eval_enabled` in update! (kimi review).
-          !!Core::BuildProfile::EVAL_ENABLED_BY_DEFAULT
+          # Strict identity check — the arbitrary-code gate must fail CLOSED.
+          # `!!X` would be WRONG here: in Ruby `!!"false"` and `!!1` are both
+          # `true`, so a build bug that baked a truthy non-boolean into
+          # build_profile.rb would OPEN the gate. Only a literal `true` enables
+          # eval; every other value (the string "false", an Integer, …) resolves
+          # to false. Mirrors the strictness of the runtime-pref read path, which
+          # rejects non-booleans in coerce_bool_pref instead of coercing them
+          # truthy (codex 4th-review review).
+          Core::BuildProfile::EVAL_ENABLED_BY_DEFAULT == true
         else
           false
         end

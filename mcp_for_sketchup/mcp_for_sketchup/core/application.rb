@@ -96,7 +96,12 @@ module MCPforSketchUp
       def self.file_uri_for(path)
         encoded = File.expand_path(path).gsub('\\', '/')
         encoded = "/#{encoded}" if encoded =~ /\A[A-Za-z]:/   # Windows drive letter
-        encoded = URI::DEFAULT_PARSER.escape(encoded)
+        # DEFAULT_PARSER.escape leaves reserved chars intact — including `?` and
+        # `#`, which an OS URL handler would treat as the query / fragment
+        # delimiters. A POSIX log path may legally contain them, so percent-encode
+        # both explicitly (codex 4th-review review). `/` and `:` stay intact so
+        # Windows drive-letter paths (file:///C:/…) keep working.
+        encoded = URI::DEFAULT_PARSER.escape(encoded).gsub("?", "%3F").gsub("#", "%23")
         "file://#{encoded}"
       end
       private_class_method :file_uri_for

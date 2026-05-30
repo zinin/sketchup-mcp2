@@ -352,24 +352,35 @@ class TestConfig < Minitest::Test
     end
   end
 
-  def test_eval_enabled_question_mark_coerces_build_profile_to_strict_boolean
-    # Security hardening (kimi review): the build-time gate must return a STRICT
-    # boolean even if a build bug ever baked a truthy non-boolean into
-    # build_profile.rb (e.g. an Integer, or the string "false"). `!!` coercion in
-    # eval_enabled? mirrors the runtime-pref path (update! stores `!!eval_enabled`).
+  def test_eval_enabled_question_mark_build_profile_fails_closed_for_non_boolean
+    # Security hardening (codex 4th-review review): the build-time gate must fail
+    # CLOSED for a malformed build_profile.rb. `!!X` would be WRONG — `!!"false"`
+    # and `!!1` are both `true` in Ruby and would OPEN the gate, exactly the trap
+    # coerce_bool_pref guards against on the runtime-pref path. eval_enabled?
+    # therefore accepts ONLY a literal `true`; every other baked value (Integer,
+    # the string "false"/"true", …) resolves to a closed gate.
     # @eval_enabled must be nil so the BuildProfile fallback branch is exercised.
     C.eval_enabled = nil
     refute MCPforSketchUp::Core.const_defined?(:BuildProfile, false),
       "precondition: test env has no build_profile.rb loaded"
-    MCPforSketchUp::Core.const_set(:BuildProfile, Module.new)
-    begin
-      MCPforSketchUp::Core::BuildProfile.const_set(:EVAL_ENABLED_BY_DEFAULT, 1)
-      result = C.eval_enabled?
-      assert_equal true, result,
-        "truthy non-boolean (Integer 1) must coerce to strict `true`, not pass through"
-      assert_includes [true, false], result, "eval_enabled? must return a strict boolean"
-    ensure
-      MCPforSketchUp::Core.send(:remove_const, :BuildProfile)
+
+    # baked build-profile value => expected effective gate state
+    {
+      true    => true,    # only a literal true enables eval
+      false   => false,
+      1       => false,   # truthy non-boolean must NOT open the gate
+      "false" => false,   # the classic !! trap: !!"false" == true
+      "true"  => false,
+      "yes"   => false,
+    }.each do |baked, expected|
+      MCPforSketchUp::Core.const_set(:BuildProfile, Module.new)
+      begin
+        MCPforSketchUp::Core::BuildProfile.const_set(:EVAL_ENABLED_BY_DEFAULT, baked)
+        assert_equal expected, C.eval_enabled?,
+          "build-profile EVAL_ENABLED_BY_DEFAULT=#{baked.inspect} must resolve to #{expected} (gate fail-closed)"
+      ensure
+        MCPforSketchUp::Core.send(:remove_const, :BuildProfile)
+      end
     end
   end
 end
