@@ -32,10 +32,10 @@ Either grab the latest `.rbz` from GitHub Releases (or the Extension Warehouse) 
 
 ```bash
 gem install --user-install rubyzip
-cd mcp_for_sketchup && ruby package.rb --variant=warehouse
+(cd mcp_for_sketchup && ruby package.rb --variant=warehouse)
 # → mcp_for_sketchup/mcp_for_sketchup_v<version>-warehouse.rbz
 # For the dev/power-user build with eval_ruby on by default:
-cd mcp_for_sketchup && ruby package.rb --variant=github
+(cd mcp_for_sketchup && ruby package.rb --variant=github)
 # → mcp_for_sketchup/mcp_for_sketchup_v<version>-github.rbz
 ```
 
