@@ -46,6 +46,24 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     return await sketchup.send_command(tool_name, kwargs)  # raises SketchUpError
 
 
+def _extract_text(result: object) -> str:
+    """Unwrap a Ruby handler's MCP content envelope to its text payload.
+
+    Both :func:`_call` and the ``eval_ruby`` tool share the same response
+    shape — ``{"content": [{"text": ...}], ...}``. Falls back to a JSON
+    dump for any result that isn't a well-formed text-content envelope.
+    """
+    content = result.get("content") if isinstance(result, dict) else None
+    if (
+        isinstance(content, list)
+        and content
+        and isinstance(content[0], dict)
+        and "text" in content[0]
+    ):
+        return content[0]["text"]
+    return json.dumps(result)
+
+
 async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
 
@@ -66,15 +84,7 @@ async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
         # Ruby-origin error that already carries its own `tool`.
         e.data.setdefault("tool", tool_name)
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
-    content = result.get("content") if isinstance(result, dict) else None
-    if (
-        isinstance(content, list)
-        and content
-        and isinstance(content[0], dict)
-        and "text" in content[0]
-    ):
-        return content[0]["text"]
-    return json.dumps(result)
+    return _extract_text(result)
 
 
 @mcp.tool()
@@ -268,15 +278,7 @@ async def eval_ruby(
         e.data.setdefault("tool", "eval_ruby")
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
 
-    content = result.get("content") if isinstance(result, dict) else None
-    if (
-        isinstance(content, list)
-        and content
-        and isinstance(content[0], dict)
-        and "text" in content[0]
-    ):
-        return content[0]["text"]
-    return json.dumps(result)
+    return _extract_text(result)
 
 
 @mcp.tool()

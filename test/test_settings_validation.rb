@@ -30,10 +30,20 @@ class TestSettingsValidator < Minitest::Test
     assert_match(/empty/i, result[:errors][:host])
   end
 
-  def test_rejects_host_with_whitespace
-    result = V.validate("host" => "127.0.0.1 ", "port" => "9876", "log_level" => "INFO")
+  def test_rejects_host_with_internal_whitespace
+    # Edge whitespace is now stripped (see test_strips_host_edge_whitespace); an
+    # INTERNAL space — e.g. an accidental "host port" paste — is still rejected.
+    result = V.validate("host" => "127.0.0.1 8080", "port" => "9876", "log_level" => "INFO")
     refute result[:ok]
     assert_match(/whitespace/i, result[:errors][:host])
+  end
+
+  def test_strips_host_edge_whitespace
+    # A copy-pasted address with leading/trailing whitespace is trimmed and
+    # accepted; the normalized (persisted) host carries no whitespace.
+    result = V.validate("host" => "  127.0.0.1  ", "port" => "9876", "log_level" => "INFO")
+    assert result[:ok]
+    assert_equal "127.0.0.1", result[:normalized][:host]
   end
 
   def test_rejects_host_too_long

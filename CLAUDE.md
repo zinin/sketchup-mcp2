@@ -100,8 +100,8 @@ Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `
 | Port | `9876` | 1..65535 |
 | Log Level | `WARN` | `DEBUG` / `INFO` / `WARN` / `ERROR`. Default `WARN` so info/debug never clutter SketchUp's shared Ruby console; every emitted line is prefixed `[<UTC iso8601>] [MCPforSU] [LEVEL]`. |
 | Enable Ruby evaluation | **off** (warehouse) | Gates `eval_ruby`. Off by default in the warehouse `.rbz` (`BuildProfile::EVAL_ENABLED_BY_DEFAULT=false`), on in the github build. Turning it on pops a blocking security confirm (arbitrary code ⇒ full filesystem/network/shell). |
-| Log to file | `false` | Mirror every console line to a UTF-8 file — lets you avoid the shared console entirely. |
-| Log file path | `<tmpdir>/mcp_for_sketchup.log` | Target for log-to-file; a leading `~` is expanded. |
+| Log to file | `false` | Mirror every console line to a UTF-8 file (written in addition to the console, not instead of it). |
+| Log file path | `<tmpdir>/mcp_for_sketchup.log` | Target for log-to-file; a leading `~` is expanded. Append-only — no automatic rotation or size cap; rotate/clean it up yourself. |
 
 Log-level changes apply immediately. Enabling Ruby evaluation requires confirming the security warning. Host/port changes prompt the user to restart the server if it is running.
 

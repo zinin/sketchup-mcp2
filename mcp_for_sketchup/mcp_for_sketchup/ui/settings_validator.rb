@@ -18,7 +18,12 @@ module MCPforSketchUp
         return { ok: false, errors: { _general: "Bad payload format" } } unless payload.is_a?(Hash)
 
         errors = {}
-        host       = payload["host"].to_s
+        # Trim only leading/trailing SPACE/TAB from a copy-pasted address.
+        # NB: Ruby's String#strip ALSO removes \0 \n \r \v \f, which would
+        # silently accept e.g. "127.0.0.1\0" — so we trim horizontal whitespace
+        # explicitly. Internal whitespace and any control bytes are still
+        # rejected by the /\s/ and HOST_CHARSET checks below.
+        host       = payload["host"].to_s.gsub(/\A[ \t]+|[ \t]+\z/, "")
         port_raw   = payload["port"].to_s
         level_raw  = payload["log_level"].to_s
 

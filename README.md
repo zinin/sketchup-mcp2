@@ -112,7 +112,7 @@ All dimensions in **millimeters**; angles in **degrees**. Every entity-returning
 
 Open `Plugins → MCP Server → Settings...` to change **Host**, **Port**, **Log Level**, the **Ruby evaluation** gate, and **log-to-file** options. Values persist in SketchUp's preferences under section `MCPforSketchUp`. No environment variables are read on the Ruby side.
 
-The Ruby side logs at **`WARN` by default**, so it stays quiet in SketchUp's shared Ruby console; any line it does print is prefixed `[MCPforSU]` with a UTC timestamp. Enable **Log to file** to mirror output to a UTF-8 log file instead (`Plugins → MCP Server → Show Log` opens it).
+The Ruby side logs at **`WARN` by default**, so it stays quiet in SketchUp's shared Ruby console; any line it does print is prefixed `[MCPforSU]` with a UTC timestamp. Enable **Log to file** to mirror every line to a UTF-8 log file **in addition to** the console (`Plugins → MCP Server → Show Log` opens it). The file is written append-only — there is no automatic rotation or size cap, so rotate or clean it up yourself for long-lived sessions.
 
 > **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead.
 

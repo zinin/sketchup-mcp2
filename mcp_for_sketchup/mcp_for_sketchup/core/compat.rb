@@ -63,7 +63,8 @@ module MCPforSketchUp
       def self.msg_python_too_new(cv)
         "sketchup-mcp2 v#{cv} is newer than SketchUp plugin v#{SERVER_VERSION} " \
         "supports (max v#{MAX_PYTHON}). Handshake rejected. " \
-        "Reinstall mcp_for_sketchup_v#{MAX_PYTHON}.rbz from the GitHub release. " \
+        "Reinstall mcp_for_sketchup_v#{MAX_PYTHON}-warehouse.rbz (or the " \
+        "-github variant for eval_ruby) from the GitHub release. " \
         "Call `get_version` to inspect handshake state."
       end
 

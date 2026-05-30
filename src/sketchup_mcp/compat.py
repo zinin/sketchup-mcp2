@@ -66,7 +66,8 @@ def _msg_ruby_too_old(rv: str) -> str:
     return (
         f"SketchUp plugin v{rv} is too old for sketchup-mcp2 v{CLIENT_VERSION} "
         f"(requires v{MIN_RUBY}..v{MAX_RUBY}). "
-        f"Reinstall mcp_for_sketchup_v{MAX_RUBY}.rbz from the GitHub release. "
+        f"Reinstall mcp_for_sketchup_v{MAX_RUBY}-warehouse.rbz (or the "
+        f"-github variant for eval_ruby) from the GitHub release. "
         f"Call `get_version` to inspect handshake state."
     )
 
@@ -83,6 +84,7 @@ def _msg_ruby_too_new(rv: str) -> str:
 def _msg_ruby_missing() -> str:
     return (
         f"SketchUp plugin pre-dates version-compat checking. "
-        f"Reinstall mcp_for_sketchup_v{MAX_RUBY}.rbz from the GitHub release. "
+        f"Reinstall mcp_for_sketchup_v{MAX_RUBY}-warehouse.rbz (or the "
+        f"-github variant for eval_ruby) from the GitHub release. "
         f"Call `get_version` to inspect handshake state."
     )
