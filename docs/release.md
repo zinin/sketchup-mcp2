@@ -205,7 +205,7 @@ This extension runs a local TCP server inside SketchUp that exposes the live mod
 - **`get_viewport_screenshot`** tool — captures the SketchUp viewport as a PNG (returns an MCP Image; requires SketchUp 2026+).
 - **`sketchup_modeling_strategy`** MCP prompt — teaches your AI assistant project conventions; surfaced in MCP-aware clients' slash menu.
 - **One-time `hello` handshake** with version compatibility check between Python client and Ruby server.
-- **`eval_ruby` escape hatch** — execute arbitrary Ruby for power-user workflows.
+- **`eval_ruby` escape hatch** — execute arbitrary Ruby for power-user workflows. **Off by default** in the Extension Warehouse build: enabling it requires confirming a security warning (arbitrary code ⇒ full filesystem/network/shell access), and your MCP client shows each call for approval before it runs.
 - **Settings dialog** — Host / Port / Log Level configurable via `Plugins → MCP Server → Settings...` (persisted in SketchUp preferences).
 - **Modular Ruby architecture** — clean `core / handlers / helpers / ui` separation.
 - **Trimble-signed** — appears as "Signed" in Extension Manager.
