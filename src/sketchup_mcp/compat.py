@@ -1,6 +1,6 @@
 """Python↔Ruby version compatibility — single source of truth (Python side).
 
-Mirrored in su_mcp/su_mcp/core/compat.rb. Both files are updated together
+Mirrored in mcp_for_sketchup/mcp_for_sketchup/core/compat.rb. Both files are updated together
 by docs/release.md step 1 at release time.
 """
 from __future__ import annotations
@@ -13,9 +13,14 @@ from sketchup_mcp.errors import IncompatibleVersionError
 # Bumped together with CLIENT_VERSION at release time. See docs/release.md.
 # Policy: MAX_* tracks the new release; MIN_* moves only on a release
 # that breaks wire/handler contract with the previous counterpart.
-# Initial dev state: MIN == MAX (exact match) — bumped together at 0.1.0.
-MIN_RUBY = "0.1.0"
-MAX_RUBY = "0.1.0"
+# Currently MIN == MAX (exact-match handshake); 0.2.0 was a deliberate wire-break bump.
+MIN_RUBY = "0.2.0"
+MAX_RUBY = "0.2.0"
+
+# JSON-RPC application-error code returned by the Ruby handler when the
+# eval gate is closed. Single source of truth for Python callers — see
+# spec §4.4 and Ruby `handlers/eval.rb::EVAL_DISABLED_CODE`.
+EVAL_DISABLED_CODE = -32010
 
 _PART_RE = re.compile(r"\A[0-9]+\Z")
 
@@ -61,7 +66,8 @@ def _msg_ruby_too_old(rv: str) -> str:
     return (
         f"SketchUp plugin v{rv} is too old for sketchup-mcp2 v{CLIENT_VERSION} "
         f"(requires v{MIN_RUBY}..v{MAX_RUBY}). "
-        f"Reinstall su_mcp_v{MAX_RUBY}.rbz from the GitHub release. "
+        f"Reinstall mcp_for_sketchup_v{MAX_RUBY}-warehouse.rbz (or the "
+        f"-github variant for eval_ruby) from the GitHub release. "
         f"Call `get_version` to inspect handshake state."
     )
 
@@ -78,6 +84,7 @@ def _msg_ruby_too_new(rv: str) -> str:
 def _msg_ruby_missing() -> str:
     return (
         f"SketchUp plugin pre-dates version-compat checking. "
-        f"Reinstall su_mcp_v{MAX_RUBY}.rbz from the GitHub release. "
+        f"Reinstall mcp_for_sketchup_v{MAX_RUBY}-warehouse.rbz (or the "
+        f"-github variant for eval_ruby) from the GitHub release. "
         f"Call `get_version` to inspect handshake state."
     )

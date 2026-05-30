@@ -119,6 +119,19 @@ async def test_call_formats_sketchup_error(mock_send_command, mock_ctx):
     assert "tool=x" in result
 
 
+async def test_call_fills_tool_name_when_error_lacks_it(mock_send_command, mock_ctx):
+    """A locally-raised transport error carries no 'tool' in data (renders tool=?);
+    _call must fill it from the tool name so format_error shows tool=<name>."""
+    from sketchup_mcp.tools import _call
+
+    mock_send_command.send_command.side_effect = SketchUpError(
+        -32000, "connection error: Connection lost"
+    )
+    result = await _call(mock_ctx, "transform_component", id="5")
+    assert "tool=transform_component" in result
+    assert "tool=?" not in result
+
+
 from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
@@ -260,3 +273,41 @@ async def test_eval_ruby_no_longer_returns_old_success_wrapper(
     out = await eval_ruby(mock_ctx, code="raise 'x'")
     assert out.startswith("[-32000] boom")
     assert '"success"' not in out
+
+
+async def test_eval_ruby_returns_actionable_text_on_minus32010(
+    mock_send_command, mock_ctx
+):
+    """When Ruby returns -32010 (eval gate closed), Python wrapper returns
+    a plain text suitable for Claude to surface to the end user — not a
+    raised SketchUpError. The LLM should see "eval_ruby is disabled..."
+    and pass it through verbatim. Contract pinned per spec §4.4.
+    """
+    from sketchup_mcp.tools import eval_ruby
+
+    mock_send_command.send_command.side_effect = SketchUpError(
+        -32010,
+        "eval_ruby is disabled. Open Plugins → MCP Server → Settings...",
+        {"tool": "eval_ruby", "params": {}},
+    )
+    out = await eval_ruby(mock_ctx, code="puts 'x'")
+    assert isinstance(out, str)
+    assert "eval_ruby is disabled" in out
+    assert "Settings" in out
+    # Must NOT be the [-32010] formatted-error string from format_error — the
+    # spec wants the raw human-readable message to flow through.
+    assert not out.startswith("[-32010]")
+
+
+async def test_eval_ruby_fills_tool_name_when_error_lacks_it(mock_send_command, mock_ctx):
+    """eval_ruby's transport-error backfill: a non-(-32010) error with no 'tool'
+    in data must render tool=eval_ruby (not tool=?). Pins that the setdefault
+    sits AFTER the -32010 verbatim early-return (which is pinned above)."""
+    from sketchup_mcp.tools import eval_ruby
+
+    mock_send_command.send_command.side_effect = SketchUpError(
+        -32000, "connection error: Connection lost"
+    )
+    out = await eval_ruby(mock_ctx, code="1 + 1")
+    assert "tool=eval_ruby" in out
+    assert "tool=?" not in out

@@ -1,7 +1,8 @@
 """FastMCP tool handlers for SketchUp.
 
-Each tool is a thin wrapper that delegates to :func:`_call`, which centralises
-connection acquisition, error handling, and response unwrapping.
+Most tools are thin wrappers that delegate to :func:`_call`, which centralises
+connection acquisition, error handling, and response unwrapping; a few
+(`eval_ruby`, `get_viewport_screenshot`) use :func:`_raw_call` directly.
 """
 import base64
 import json
@@ -45,6 +46,24 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     return await sketchup.send_command(tool_name, kwargs)  # raises SketchUpError
 
 
+def _extract_text(result: object) -> str:
+    """Unwrap a Ruby handler's MCP content envelope to its text payload.
+
+    Both :func:`_call` and the ``eval_ruby`` tool share the same response
+    shape — ``{"content": [{"text": ...}], ...}``. Falls back to a JSON
+    dump for any result that isn't a well-formed text-content envelope.
+    """
+    content = result.get("content") if isinstance(result, dict) else None
+    if (
+        isinstance(content, list)
+        and content
+        and isinstance(content[0], dict)
+        and "text" in content[0]
+    ):
+        return content[0]["text"]
+    return json.dumps(result)
+
+
 async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
 
@@ -59,16 +78,13 @@ async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     except ConnectionError as e:
         return f"SketchUp not running or extension not started: {e}"
     except SketchUpError as e:
+        # Locally-raised transport errors (timeout, stale socket, oversize)
+        # carry no `tool` in data → format_error would render `tool=?`.
+        # Backfill it from the tool name; setdefault never overrides a
+        # Ruby-origin error that already carries its own `tool`.
+        e.data.setdefault("tool", tool_name)
         return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
-    content = result.get("content") if isinstance(result, dict) else None
-    if (
-        isinstance(content, list)
-        and content
-        and isinstance(content[0], dict)
-        and "text" in content[0]
-    ):
-        return content[0]["text"]
-    return json.dumps(result)
+    return _extract_text(result)
 
 
 @mcp.tool()
@@ -161,7 +177,7 @@ async def create_mortise_tenon(
     All dimensions in millimeters. Defaults sized for visibility on a typical
     100mm-board: 50mm wide, 25mm tall, 10mm deep. Pydantic always sends these
     on the wire, so they override Ruby's V.optional_positive defaults — keep
-    the two sides in sync (see su_mcp/su_mcp/handlers/joints.rb).
+    the two sides in sync (see mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb).
     """
     return await _call(
         ctx,
@@ -242,8 +258,27 @@ async def eval_ruby(
     ctx: Context,
     code: Annotated[str, Field(min_length=1)],
 ) -> str:
-    """Evaluate arbitrary Ruby code in Sketchup."""
-    return await _call(ctx, "eval_ruby", code=code)
+    """Evaluate arbitrary Ruby code in SketchUp.
+
+    Disabled by default in the Extension Warehouse build. If disabled, the
+    SketchUp side returns JSON-RPC code -32010 with a user-facing message
+    explaining how to enable it. This wrapper surfaces that message as a
+    plain string so the LLM can repeat it to the user verbatim — without
+    the `[code]` prefix that format_error would otherwise add.
+    """
+    try:
+        result = await _raw_call(ctx, "eval_ruby", code=code)
+    except ConnectionError as e:
+        return f"SketchUp not running or extension not started: {e}"
+    except SketchUpError as e:
+        if e.code == compat.EVAL_DISABLED_CODE:
+            return e.message
+        # Same tool-name backfill as _call, placed AFTER the -32010 verbatim
+        # path so the eval-disabled message stays untouched.
+        e.data.setdefault("tool", "eval_ruby")
+        return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
+
+    return _extract_text(result)
 
 
 @mcp.tool()
@@ -367,6 +402,14 @@ async def get_viewport_screenshot(
         payload = json.loads(text)
     except json.JSONDecodeError as e:
         raise SketchUpError(-32603, f"screenshot response not JSON: {e}") from e
+    # Guard before .get(): a JSON scalar/array decodes fine but has no .get,
+    # which would leak an AttributeError to the MCP client instead of a clean
+    # SketchUpError (mirrors the isinstance(text, str) guard above).
+    if not isinstance(payload, dict):
+        raise SketchUpError(
+            -32603,
+            f"screenshot payload is not a JSON object: {type(payload).__name__}",
+        )
     b64 = payload.get("png_base64")
     if not isinstance(b64, str):
         raise SketchUpError(-32603, "screenshot response missing png_base64")

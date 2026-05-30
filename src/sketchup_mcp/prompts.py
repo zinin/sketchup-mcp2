@@ -1,4 +1,4 @@
-"""MCP prompts for SketchupMCP.
+"""MCP prompts for the MCP Server for SketchUp.
 
 Imported for its side effect (FastMCP decorator registration). See
 ``app.py`` — the import sits next to ``import sketchup_mcp.tools``.
@@ -72,6 +72,16 @@ specify:
   (200-400 mm);
 - if uncertain, ASK before generating — joints are hard to fix after
   the fact without scrapping the boards.
+
+# 8. eval_ruby gate (warehouse build)
+In the Extension Warehouse build of the SketchUp extension, eval_ruby
+is disabled by default. If a call to eval_ruby returns a string
+starting with "eval_ruby is disabled.", that is not a failure: it is
+the extension's actionable instruction for the user. Surface the full
+message to the user verbatim — do not paraphrase, do not retry the same
+code, do not silently fall back to typed tools without telling the user
+that eval was unavailable. The user can enable Ruby evaluation in
+Plugins → MCP Server → Settings...
 """
 
 

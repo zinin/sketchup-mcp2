@@ -33,11 +33,34 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # Allow running from repo root: src/sketchup_mcp on the path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# Guarded by __main__ so loading this module from tests (via
+# importlib.util.spec_from_file_location in tests/test_smoke_helpers.py)
+# does NOT mutate sys.path globally. iter-2 CONCERN-5.
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sketchup_mcp.connection import SketchUpConnection  # noqa: E402
 from sketchup_mcp.errors import SketchUpError  # noqa: E402
 from sketchup_mcp import compat, config  # noqa: E402
+from sketchup_mcp.compat import EVAL_DISABLED_CODE  # noqa: E402  iter-1 SUGGESTION-1: shared constant
+
+
+async def _maybe_skip_eval(label, coro):
+    """Run an eval_ruby-dependent step; if Ruby returns -32010, skip and tally.
+
+    smoke_check uses raw SketchUpConnection.send_command (see `call()` in
+    examples/smoke_check.py), which raises SketchUpError on a JSON-RPC error
+    envelope. We MUST catch that exception and inspect `e.code`, not look
+    for text in a string result — the textual route only fires for the
+    FastMCP-wrapped client (iter-1 CRITICAL-4).
+    """
+    try:
+        return await coro
+    except SketchUpError as e:
+        if e.code == EVAL_DISABLED_CODE:
+            print(f"  ⚠ {label}: skipped (eval_ruby disabled in extension settings)")
+            return None
+        raise
 
 
 async def call(conn: SketchUpConnection, tool: str, **args) -> dict:
@@ -66,6 +89,7 @@ async def main() -> int:
     conn = SketchUpConnection(host=config.HOST, port=config.PORT, timeout=30.0)
     await conn.connect()
     step = 0
+    eval_skipped = [0]   # mutable container — see iter-2 CONCERN-12 note
     try:
         step = 1; print(f"[{step}] get_model_info")
         info = parse(await call(conn, "get_model_info"))
@@ -149,10 +173,16 @@ async def main() -> int:
         b_tenon   = mt["tenon"]["id"]
 
         step = 15; print(f"[{step}] eval_ruby — count entities")
-        ev = parse(await call(conn, "eval_ruby",
-                              code="Sketchup.active_model.entities.length"))
-        # eval_ruby returns raw integer-string; Python sees it as JSON int.
-        assert isinstance(ev, int) and ev > 0, f"unexpected eval result: {ev}"
+        ev_raw = await _maybe_skip_eval(
+            "eval_ruby step 15 (count entities)",
+            call(conn, "eval_ruby", code="Sketchup.active_model.entities.length"),
+        )
+        if ev_raw is None:
+            eval_skipped[0] += 1
+        else:
+            ev = parse(ev_raw)
+            # eval_ruby returns raw integer-string; Python sees it as JSON int.
+            assert isinstance(ev, int) and ev > 0, f"unexpected eval result: {ev}"
 
         step = 16; print(f"[{step}] list_components(max_depth=2)")
         lc = parse(await call(conn, "list_components", max_depth=2))
@@ -233,6 +263,7 @@ async def main() -> int:
         print("    matched-pair: compatible=true")
 
         print("\nALL STEPS PASSED ✓")
+        print(f"Smoke complete: 22 steps total, {eval_skipped[0]} skipped (eval gate closed)")
         return 0
     except Exception as e:
         print(f"\nFAILED at step {step}: {e}", file=sys.stderr)

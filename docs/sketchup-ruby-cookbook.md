@@ -6,6 +6,13 @@ Reference snippets for driving the SketchUp Ruby API directly via the
 don't cover what you need — full models with walls, roofs, framing,
 joist arrays, follow_me extrusions, transforms, world-space queries.
 
+> **eval_ruby gate.** Every recipe in this cookbook is delivered to
+> SketchUp via the MCP `eval_ruby` tool. In the warehouse-variant build,
+> `eval_ruby` is disabled by default — open `Plugins → MCP Server →
+> Settings...` and check «Enable Ruby evaluation» (you will be asked to
+> confirm a security warning). The GitHub-release variant ships with
+> `eval_ruby` already enabled.
+
 ## Units: always convert mm ↔ inches
 
 SketchUp stores all coordinates internally in **inches**, regardless of
@@ -494,7 +501,7 @@ snap_ro.each { |k, v| model.rendering_options[k] = v }
 ```
 
 Used internally by `Handlers::View.viewport_screenshot` (see
-`su_mcp/su_mcp/handlers/view.rb`).
+`mcp_for_sketchup/mcp_for_sketchup/handlers/view.rb`).
 
 ## Common pitfalls
 

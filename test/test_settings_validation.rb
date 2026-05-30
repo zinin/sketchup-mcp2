@@ -1,9 +1,9 @@
 # test/test_settings_validation.rb
 require "minitest/autorun"
-require_relative "../su_mcp/su_mcp/ui/settings_validator"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/ui/settings_validator"
 
 class TestSettingsValidator < Minitest::Test
-  V = SU_MCP::UI::SettingsValidator
+  V = MCPforSketchUp::UI::SettingsValidator
 
   def test_accepts_valid_payload
     result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "INFO")
@@ -30,10 +30,20 @@ class TestSettingsValidator < Minitest::Test
     assert_match(/empty/i, result[:errors][:host])
   end
 
-  def test_rejects_host_with_whitespace
-    result = V.validate("host" => "127.0.0.1 ", "port" => "9876", "log_level" => "INFO")
+  def test_rejects_host_with_internal_whitespace
+    # Edge whitespace is now stripped (see test_strips_host_edge_whitespace); an
+    # INTERNAL space — e.g. an accidental "host port" paste — is still rejected.
+    result = V.validate("host" => "127.0.0.1 8080", "port" => "9876", "log_level" => "INFO")
     refute result[:ok]
     assert_match(/whitespace/i, result[:errors][:host])
+  end
+
+  def test_strips_host_edge_whitespace
+    # A copy-pasted address with leading/trailing whitespace is trimmed and
+    # accepted; the normalized (persisted) host carries no whitespace.
+    result = V.validate("host" => "  127.0.0.1  ", "port" => "9876", "log_level" => "INFO")
+    assert result[:ok]
+    assert_equal "127.0.0.1", result[:normalized][:host]
   end
 
   def test_rejects_host_too_long
@@ -114,5 +124,67 @@ class TestSettingsValidator < Minitest::Test
     result = V.validate("host" => "127.0.0.1\x00", "port" => "9876", "log_level" => "INFO")
     refute result[:ok]
     assert_match(/invalid characters/i, result[:errors][:host])
+  end
+
+  # --- new v0.2.0 fields ---
+
+  def test_normalizes_eval_enabled_true_string
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "eval_enabled" => "true")
+    assert result[:ok]
+    assert_equal true, result[:normalized][:eval_enabled]
+  end
+
+  def test_normalizes_eval_enabled_false_string
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "eval_enabled" => "false")
+    assert result[:ok]
+    assert_equal false, result[:normalized][:eval_enabled]
+  end
+
+  def test_eval_enabled_default_is_false_when_missing
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN")
+    assert result[:ok]
+    assert_equal false, result[:normalized][:eval_enabled]
+  end
+
+  def test_log_to_file_normalizes_boolean
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "/tmp/x.log")
+    assert result[:ok]
+    assert_equal true,         result[:normalized][:log_to_file]
+    assert_equal "/tmp/x.log", result[:normalized][:log_file_path]
+  end
+
+  def test_log_to_file_true_requires_non_empty_path
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "")
+    refute result[:ok]
+    assert_match(/path/i, result[:errors][:log_file_path])
+  end
+
+  def test_log_to_file_false_allows_empty_path
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "false", "log_file_path" => "")
+    assert result[:ok]
+    assert_equal false, result[:normalized][:log_to_file]
+  end
+
+  def test_log_to_file_true_rejects_path_whose_parent_dir_is_missing
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "/nonexistent_dir_xyz/app.log")
+    refute result[:ok]
+    assert_match(/parent directory does not exist/i, result[:errors][:log_file_path])
+  end
+
+  def test_log_to_file_true_rejects_log_path_with_null_byte
+    # File.expand_path raises ArgumentError on a NUL byte; the validator must
+    # surface it as a structured log_file_path error rather than raising, which
+    # would otherwise bubble up as a generic _general internal error in the
+    # dialog (review F4a).
+    result = V.validate("host" => "127.0.0.1", "port" => "9876", "log_level" => "WARN",
+                        "log_to_file" => "true", "log_file_path" => "/tmp/a\x00b.log")
+    refute result[:ok]
+    assert_match(/invalid log file path/i, result[:errors][:log_file_path])
   end
 end

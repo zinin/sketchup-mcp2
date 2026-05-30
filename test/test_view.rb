@@ -1,6 +1,6 @@
 # test/test_view.rb
 #
-# Unit tests for SU_MCP::Handlers::View.viewport_screenshot.
+# Unit tests for MCPforSketchUp::Handlers::View.viewport_screenshot.
 # Stubs the SketchUp API surface we touch: Sketchup module,
 # Sketchup::Model, Sketchup::View, Sketchup::Camera, RenderingOptions.
 
@@ -224,19 +224,19 @@ end
 # --- Load production code -----------------------------------------------------
 # Order matters: errors / config / logger / helpers must precede dispatch
 # (CRITICAL-6 in review iter 1 -- dispatch.rb references Core::Logger).
-require_relative "../su_mcp/su_mcp/core/errors"
-require_relative "../su_mcp/su_mcp/core/compat"
-require_relative "../su_mcp/su_mcp/core/config"
-require_relative "../su_mcp/su_mcp/helpers/units"
-require_relative "../su_mcp/su_mcp/core/logger"
-require_relative "../su_mcp/su_mcp/helpers/validation"
-require_relative "../su_mcp/su_mcp/helpers/entities"
-require_relative "../su_mcp/su_mcp/helpers/geometry"
-require_relative "../su_mcp/su_mcp/handlers/view"
-require_relative "../su_mcp/su_mcp/handlers/dispatch"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/compat"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/view"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch"
 
 class TestView < Minitest::Test
-  V = SU_MCP::Handlers::View
+  V = MCPforSketchUp::Handlers::View
 
   def setup
     Sketchup.reset_send_action_calls!
@@ -262,7 +262,7 @@ class TestView < Minitest::Test
   # --- dispatch routing -------------------------------------------------------
 
   def test_dispatch_routes_to_view_handler
-    response = SU_MCP::Handlers::Dispatch.handle({
+    response = MCPforSketchUp::Handlers::Dispatch.handle({
       "jsonrpc" => "2.0",
       "method" => "tools/call",
       "params" => {"name" => "get_viewport_screenshot",
@@ -272,7 +272,7 @@ class TestView < Minitest::Test
                                    "style" => "default",
                                    "restore_view" => true}},
       "id" => 1,
-      "client_version" => SU_MCP::Core::Compat::MIN_PYTHON,
+      "client_version" => MCPforSketchUp::Core::Compat::MIN_PYTHON,
     })
     assert_equal "2.0", response["jsonrpc"]
     assert_equal 1, response["id"]
@@ -283,25 +283,25 @@ class TestView < Minitest::Test
   # --- validation -------------------------------------------------------------
 
   def test_invalid_view_preset_raises
-    assert_raises(SU_MCP::Core::StructuredError) { call("view_preset" => "diagonal") }
+    assert_raises(MCPforSketchUp::Core::StructuredError) { call("view_preset" => "diagonal") }
   end
 
   def test_invalid_style_raises
-    assert_raises(SU_MCP::Core::StructuredError) { call("style" => "cartoon") }
+    assert_raises(MCPforSketchUp::Core::StructuredError) { call("style" => "cartoon") }
   end
 
   def test_invalid_max_size_too_small_raises
-    assert_raises(SU_MCP::Core::StructuredError) { call("max_size" => 10) }
+    assert_raises(MCPforSketchUp::Core::StructuredError) { call("max_size" => 10) }
   end
 
   def test_invalid_max_size_too_large_raises
-    assert_raises(SU_MCP::Core::StructuredError) { call("max_size" => 99999) }
+    assert_raises(MCPforSketchUp::Core::StructuredError) { call("max_size" => 99999) }
   end
 
   def test_no_active_view_raises
     # Replace active_view with nil to simulate "SketchUp not ready".
     Sketchup.active_model.define_singleton_method(:active_view) { nil }
-    assert_raises(SU_MCP::Core::StructuredError) { call }
+    assert_raises(MCPforSketchUp::Core::StructuredError) { call }
   end
 
   # --- camera snapshot/restore -----------------------------------------------
@@ -380,7 +380,7 @@ class TestView < Minitest::Test
     @view.force_write_image_failure!
     begin
       call("style" => "wireframe", "restore_view" => true)
-    rescue SU_MCP::Core::StructuredError
+    rescue MCPforSketchUp::Core::StructuredError
       # expected
     end
     assert_equal snap_before["RenderMode"], ro["RenderMode"],
@@ -427,7 +427,7 @@ class TestView < Minitest::Test
     # (aspect_ratio, image_width, scale_2d, center_2d). With restore_view=true
     # the handler must fail fast rather than silently regress the viewport.
     @view.camera.define_singleton_method(:is_2d?) { true }
-    err = assert_raises(SU_MCP::Core::StructuredError) {
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) {
       call("restore_view" => true)
     }
     assert_match(/2D|match-photo|is_2d/, err.message,
@@ -468,7 +468,7 @@ class TestView < Minitest::Test
     # see. Verified via method spy -- avoids building a full entities/group
     # graph in stubs.
     spy_calls = []
-    geom_mod  = SU_MCP::Helpers::Geometry
+    geom_mod  = MCPforSketchUp::Helpers::Geometry
     geom_mod.singleton_class.send(:alias_method, :__orig_visible_bounds, :visible_bounds)
     geom_mod.define_singleton_method(:visible_bounds) do |model|
       spy_calls << model
@@ -491,7 +491,7 @@ class TestView < Minitest::Test
     # For view_preset="current" no camera mutation happens, so
     # visible_bounds must not be invoked either.
     spy_calls = []
-    geom_mod  = SU_MCP::Helpers::Geometry
+    geom_mod  = MCPforSketchUp::Helpers::Geometry
     geom_mod.singleton_class.send(:alias_method, :__orig_visible_bounds, :visible_bounds)
     geom_mod.define_singleton_method(:visible_bounds) do |model|
       spy_calls << model
@@ -530,13 +530,13 @@ class TestView < Minitest::Test
 
   def test_write_image_failure_raises
     @view.force_write_image_failure!
-    assert_raises(SU_MCP::Core::StructuredError) { call }
+    assert_raises(MCPforSketchUp::Core::StructuredError) { call }
   end
 
   def test_oversize_png_raises
     # Produce a 33 MiB "PNG" -- exceeds the 32 MiB cap.
     @view.write_image_size_override = 33 * 1024 * 1024
-    err = assert_raises(SU_MCP::Core::StructuredError) { call }
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) { call }
     assert_match(/too large|max_size/i, err.message,
                  "expected oversize error mentioning max_size or size")
   end
@@ -551,7 +551,7 @@ class TestView < Minitest::Test
     @view.force_write_image_failure!
     begin
       call
-    rescue SU_MCP::Core::StructuredError
+    rescue MCPforSketchUp::Core::StructuredError
       # expected
     end
     leftovers = Dir.glob(File.join(Dir.tmpdir, "sumcp_vp_*.png"))

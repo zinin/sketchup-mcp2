@@ -88,9 +88,20 @@ class SketchUpConnection:
         Ruby that accepted TCP but never replied would block this
         coroutine forever.
         """
-        self._reader, self._writer = await asyncio.open_connection(
-            self.host, self.port
-        )
+        # CRITICAL: the TCP connect itself is wrapped in wait_for too, not just
+        # the handshake below. A host that accepts the SYN but never finishes
+        # the connect (firewall DROP, half-dead peer) would otherwise block this
+        # coroutine until the OS connect timeout (~minutes), hanging MCP startup
+        # and defeating app.py's degraded-start design (codex review).
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port),
+                timeout=self.timeout,
+            )
+        except asyncio.TimeoutError:
+            raise SketchUpError(
+                -32000, f"connect timed out after {self.timeout}s"
+            ) from None
         try:
             await asyncio.wait_for(self._handshake(), timeout=self.timeout)
         except asyncio.TimeoutError:
@@ -215,14 +226,31 @@ class SketchUpConnection:
         async with self._lock:
             try:
                 return await self._send_once(name, args)
-            except _StaleSocketError:
+            except _StaleSocketError as e:
                 # `disconnect()` уже сделан внутри `_send_once`.
                 # Retry ТОЛЬКО для side-effect-free tools: Ruby `write_response`
                 # может закрыть сокет уже после `commit_operation`, и тогда
                 # partial=b"" не гарантирует, что мутации не было.
-                if name not in _RETRY_SAFE_TOOLS:
-                    raise
-                return await self._send_once(name, args)
+                if name in _RETRY_SAFE_TOOLS:
+                    return await self._send_once(name, args)
+                # Мутативный / eval tool — НЕ ретраим (слепой retry мог бы
+                # задвоить уже закоммиченную мутацию). Но обогащаем ошибку именем
+                # инструмента + actionable recovery-hint'ом, чтобы агент не
+                # сдавался на голом "connection error … tool=?" и при этом не
+                # ретраил вслепую. Формулировка намеренно ADVISORY (spec Important-1):
+                # для произвольного eval_ruby агент часто не может доказать «применилось».
+                raise SketchUpError(
+                    e.code,
+                    f"{e.message} — the persistent socket was stale (the SketchUp "
+                    f"server likely restarted) and has been reset. '{name}' was NOT "
+                    f"auto-retried because it can modify the model and the request "
+                    f"may have committed before the socket closed; a blind retry "
+                    f"could double-apply it. Recovery: call a read-only tool (e.g. "
+                    f"get_model_info / list_components) to reconnect and inspect the "
+                    f"model, then retry '{name}' only if you can confirm it did NOT "
+                    f"apply — if you cannot confirm, do NOT retry.",
+                    {"tool": name, **(e.data or {})},
+                ) from e
 
     async def _send_once(self, name: str, args: dict[str, Any]) -> Any:
         if self._writer is None or self._writer.is_closing():

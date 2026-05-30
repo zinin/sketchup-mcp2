@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 
 from sketchup_mcp.config import setup_logging
 from sketchup_mcp.connection import close_connection, get_connection
+from sketchup_mcp.errors import SketchUpError
 
 logger = logging.getLogger("sketchup_mcp.app")
 
@@ -24,13 +25,19 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     `_connect_or_raise` приводит весь OSError-семейный сетевой failure к этому
     типу) — ожидаемая ситуация: SketchUp ещё не запущен, lazy reconnect
     отработает на первом tool-call. Логируем warning, продолжаем.
+    `SketchUpError` (its subclass `IncompatibleVersionError` for a Python↔Ruby
+    handshake mismatch — review F6 — plus raw handshake faults from
+    get_connection(): timeout, malformed reply, zero-length frame) is also
+    caught: all mean "SketchUp side not ready", so we start degraded and let
+    `get_version` and every tool surface the problem as a graceful error,
+    instead of the server failing to load with no diagnostics in Claude Desktop.
     Любое другое исключение — конфиг или баг кода — пробрасываем, сервер
     падает на старте с точной ошибкой вместо молчаливого деградирования.
     """
     setup_logging()
     try:
         await get_connection()
-    except ConnectionError as e:
+    except (ConnectionError, SketchUpError) as e:
         logger.warning(f"Could not connect on startup: {e}")
     try:
         yield {}
@@ -39,7 +46,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
 
 
 mcp = FastMCP(
-    "SketchupMCP",
+    "MCP Server for SketchUp",
     instructions="Sketchup integration through the Model Context Protocol",
     lifespan=server_lifespan,
 )
