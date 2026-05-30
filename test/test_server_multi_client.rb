@@ -459,4 +459,33 @@ class TestServerMultiClient < Minitest::Test
     assert state.pending_write_empty?,
       "FakeSocket accepts all bytes synchronously → the big frame drains in the same call"
   end
+
+  def test_forward_progress_extends_write_deadline
+    # Review #7: the write deadline is an IDLE timeout, not a cumulative cap.
+    # A partial write that makes forward progress (n > 0) but doesn't fully
+    # drain must PUSH the deadline out, so a slow-but-progressing transfer is
+    # never force-closed mid-flush.
+    sock = FakeSocket.new
+    fs = FakeServer.new([sock])
+    srv = MCPforSketchUp::Core::Server.new
+    srv.instance_variable_set(:@server, fs)
+    srv.instance_variable_set(:@running, true)
+    srv.send(:accept_pending_clients)
+    state = srv.instance_variable_get(:@clients).values.first
+
+    # Buffer enough that an 8-byte/call partial write can't drain it in one go.
+    state.append_pending_write("z" * 4096)
+    # Set a near-future deadline (not yet expired) we can prove gets extended.
+    original_deadline = Time.now + 0.5
+    state.pending_write_deadline_at = original_deadline
+    # Each flush call writes 8 bytes then signals WaitWritable (calls: 1).
+    sock.stub_partial_write(max_bytes_per_call: 8, calls: 1)
+
+    srv.send(:flush_pending_write, state)
+
+    refute sock.closed?, "forward progress must not close the client"
+    refute state.pending_write_empty?, "buffer should still hold the remainder"
+    assert_operator state.pending_write_deadline_at, :>, original_deadline,
+      "the deadline must be extended after forward progress (idle-timeout semantics)"
+  end
 end

@@ -2,6 +2,7 @@
 require "minitest/autorun"
 require "json"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/application"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog"
 require_relative "support/config_reset"
@@ -103,5 +104,53 @@ class TestSettingsDialogLoadStatePayload < Minitest::Test
     assert payload.key?(:log_file_path), "payload must include :log_file_path"
     assert_equal true,           payload[:log_to_file]
     assert_equal "/tmp/mcp.log", payload[:log_file_path]
+  end
+end
+
+# close_dialog_safely (review #3): resets the @dialog singleton even when
+# dialog.close raises, so the next show() never probes .visible? on a dead
+# object. Driven directly with a duck-typed dialog (no UI::HtmlDialog needed).
+class TestSettingsDialogCloseSafely < Minitest::Test
+  S = MCPforSketchUp::UI::SettingsDialog
+
+  # Duck-typed dialog: records whether close was called; optionally raises.
+  class FakeDialog
+    attr_reader :closed
+    def initialize(raise_on_close: false)
+      @raise_on_close = raise_on_close
+      @closed = false
+    end
+
+    def close
+      @closed = true
+      raise "boom from close" if @raise_on_close
+    end
+  end
+
+  def teardown
+    # Don't leak the stubbed @dialog into other SettingsDialog tests.
+    S.instance_variable_set(:@dialog, nil)
+  end
+
+  def test_resets_dialog_and_swallows_exception_when_close_raises
+    dialog = FakeDialog.new(raise_on_close: true)
+    S.instance_variable_set(:@dialog, dialog)
+
+    # Must not propagate the exception out of the timer callback.
+    S.send(:close_dialog_safely, dialog)
+
+    assert dialog.closed, "close should still have been attempted"
+    assert_nil S.instance_variable_get(:@dialog),
+      "@dialog must be reset to nil even when close raised (ensure block)"
+  end
+
+  def test_closes_and_resets_dialog_on_success
+    dialog = FakeDialog.new(raise_on_close: false)
+    S.instance_variable_set(:@dialog, dialog)
+
+    S.send(:close_dialog_safely, dialog)
+
+    assert dialog.closed, "close should have been called"
+    assert_nil S.instance_variable_get(:@dialog), "@dialog must be reset to nil"
   end
 end

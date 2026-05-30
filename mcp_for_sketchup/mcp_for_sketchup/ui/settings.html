@@ -203,9 +203,21 @@
       }
       // ok === true → Ruby will close the dialog (deferred via UI.start_timer)
       // and optionally prompt for restart via a native messagebox.
+      // Re-enable the Save button (it was disabled on click to prevent a
+      // double-submit during the async eval-confirm window). refreshSaveButton
+      // respects dirtiness: still-dirty (e.g. validation failed) → enabled;
+      // reverted/saved (applyState already ran) → stays disabled. Covers both
+      // ok:true and ok:false / revert paths.
+      refreshSaveButton();
     };
 
     document.getElementById('btn-save').addEventListener('click', function () {
+      // Disable immediately so the button can't be clicked a second time while
+      // the save round-trip is in flight — in particular during the blocking
+      // eval-enable confirm, which can stay open for seconds. Re-enabled in
+      // window.onSaveResult.
+      if (document.getElementById('btn-save').disabled) return;
+      document.getElementById('btn-save').disabled = true;
       clearErrors();
       var payload = {
         host:           document.getElementById('host').value,

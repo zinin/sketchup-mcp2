@@ -10,6 +10,13 @@ module MCPforSketchUp
 
       DEFAULT_MAX_DEPTH = 3
 
+      # get_component_info reuses collect_components (see below) so a nested
+      # entity's bbox is world-correct. That traversal needs a depth bound;
+      # this one is deliberately generous (64) — it only limits how deeply
+      # nested an entity can be and still resolve via the world-frame path,
+      # falling back to describe_component (parent-frame) only beyond it.
+      LOOKUP_MAX_DEPTH = 64
+
       # ===== get_model_info ==================================================
 
       def self.get_model_info(_params)
@@ -116,12 +123,28 @@ module MCPforSketchUp
       end
 
       # ===== get_component_info ==============================================
+      #
+      # Reuses collect_components so the bbox is world-correct + depth correct
+      # BY CONSTRUCTION (consistent with list_components). The old code called
+      # describe_component(entity) with an identity parent_t, which returns
+      # bounds in the entity's PARENT frame — correct only for a top-level
+      # entity (parent == world), but WRONG (local, not world) for a nested
+      # one. Walking from model.entities accumulates the full parent-transform
+      # chain, so the returned bbox matches what list_components reports for the
+      # same id. Shared-definition entities resolve to the FIRST match (entity
+      # IDs are unique per instance, so an exact id match is unambiguous when
+      # present). Falls back to describe_component (parent-frame) only if the
+      # entity is nested deeper than LOOKUP_MAX_DEPTH.
 
       def self.get_component_info(params)
         id = V.require_id(params)
         entity = E.find!(id)
         E.require_group_or_component!(entity)
-        describe_component(entity)
+        m = E.active_model!
+        all = collect_components(m.entities, Geom::Transformation.new,
+                                 recursive: true, depth: 0,
+                                 max_depth: LOOKUP_MAX_DEPTH, seen: Set.new)
+        all.find { |c| c["id"] == entity.entityID } || describe_component(entity)
       end
 
       # ===== find_components =================================================

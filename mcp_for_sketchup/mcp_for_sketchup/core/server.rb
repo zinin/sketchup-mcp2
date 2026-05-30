@@ -9,7 +9,7 @@ module MCPforSketchUp
       READ_CHUNK                = 64 * 1024
       READ_MAX_ITERATIONS       = 50      # per client per tick
       ACCEPT_ABORTED_MAX        = 10      # defensive cap on ECONNABORTED churn
-      WRITE_DEADLINE_S          = 5.0     # cumulative drain deadline per pending-write
+      WRITE_DEADLINE_S          = 5.0     # idle (no-forward-progress) drain deadline
       PENDING_WRITE_MAX_BYTES   = 16 * 1024 * 1024  # 16 MiB per-client buffer cap
       MAX_CLIENTS               = 64      # refuse connections beyond this (review F3)
 
@@ -26,6 +26,11 @@ module MCPforSketchUp
       def start
         return if @running
         @server = TCPServer.new(Config.host, Config.port)
+        # Server-side trail for the LAN-exposure risk the Settings dialog already
+        # warns about in its UI. Fires once, here at the actual bind site, so a
+        # non-loopback bind (e.g. 0.0.0.0) leaves a WARN in the console/log even
+        # if the server was started from the menu rather than the dialog.
+        warn_if_exposed_bind(Config.host)
         @running = true
         @timer_id = ::UI.start_timer(TIMER_INTERVAL, true) { on_timer_tick }
       end
@@ -47,6 +52,27 @@ module MCPforSketchUp
       end
 
       private
+
+      # Loopback hosts that keep the server reachable only from this machine.
+      # Anything else (0.0.0.0, ::, an explicit LAN IP, …) is reachable by other
+      # hosts on the network and warrants the exposure warning.
+      LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"].freeze
+
+      def loopback_host?(host)
+        h = host.to_s.strip.downcase
+        LOOPBACK_HOSTS.include?(h) || h.start_with?("127.")
+      end
+
+      # Concise server-log echo of the UI's host-security warning. Emitted at
+      # bind for any non-loopback host: such a bind exposes the unauthenticated
+      # MCP server — including eval_ruby (arbitrary Ruby) — to the LAN.
+      def warn_if_exposed_bind(host)
+        return if loopback_host?(host)
+        Logger.log("WARN",
+          "bound to non-loopback host #{host} — the MCP server (incl. eval_ruby: " \
+          "arbitrary Ruby) is reachable by other machines on the network with NO " \
+          "authentication. Use 127.0.0.1 unless this is a trusted isolated network.")
+      end
 
       def on_timer_tick
         return unless @running
@@ -322,6 +348,14 @@ module MCPforSketchUp
       # Called both from write_response (right after appending a new frame)
       # and from flush_pending_writes_all_clients (each tick). On full drain
       # honours close_after_response (used by handshake rejection).
+      #
+      # The deadline is an IDLE timeout, not a total-transfer cap (review #7):
+      # it bounds how long the buffer may go with NO forward progress. Every
+      # time write_nonblock actually moves bytes we push the deadline out by
+      # WRITE_DEADLINE_S, so a legitimately slow-but-progressing client (e.g. a
+      # ~43 MiB screenshot trickling over a slow link) is NOT force-closed
+      # mid-flush — only a genuinely stalled peer (send-buffer full, no drain
+      # for WRITE_DEADLINE_S) is.
       def flush_pending_write(state)
         return if state.closed?
         return if state.pending_write_empty?
@@ -344,13 +378,21 @@ module MCPforSketchUp
             end
             return
           end
-          # Defensive: if write_nonblock claimed success but wrote zero bytes,
-          # break out to avoid a tight loop. Treat it like WaitWritable —
-          # retry next tick.
-          return if n <= 0
+          # Forward progress: bytes left the buffer but it isn't empty yet.
+          # Extend the idle deadline so a slow-but-moving transfer survives —
+          # only a stall (no progress for WRITE_DEADLINE_S) trips the timeout.
+          if n > 0
+            state.pending_write_deadline_at = Time.now + WRITE_DEADLINE_S
+          else
+            # Defensive: write_nonblock claimed success but wrote zero bytes.
+            # Break out to avoid a tight loop; treat it like WaitWritable —
+            # retry next tick (deadline preserved, so a true stall still fires).
+            return
+          end
         end
       rescue IO::WaitWritable
         # Kernel send-buffer full — preserve buffer + deadline; retry next tick.
+        # No forward progress here, so the deadline is deliberately NOT extended.
         return
       rescue Errno::EPIPE, Errno::ECONNRESET, IOError
         close_client(state, "write_failed")

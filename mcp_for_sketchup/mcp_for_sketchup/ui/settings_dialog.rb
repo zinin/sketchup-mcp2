@@ -32,8 +32,8 @@ module MCPforSketchUp
           preferences_key: DIALOG_PREFS,
           scrollable:      true,
           resizable:       false,
-          width:           440,
-          height:          570,
+          width:           500,
+          height:          680,
           style:           ::UI::HtmlDialog::STYLE_DIALOG
         )
 
@@ -41,7 +41,8 @@ module MCPforSketchUp
         dialog.add_action_callback("save")       { |_ctx, json| on_save(dialog, json) }
         # Defer dialog.close out of the JS action_callback frame for the same
         # Windows-quirk reason we wrap UI.messagebox below — cheap insurance.
-        dialog.add_action_callback("cancel")     { |_ctx|       ::UI.start_timer(0, false) { dialog.close } }
+        # close_dialog_safely guarantees @dialog is reset even if close raises.
+        dialog.add_action_callback("cancel")     { |_ctx|       ::UI.start_timer(0, false) { close_dialog_safely(dialog) } }
 
         # Drop the @dialog singleton on close (Save / Cancel / OS X-button) so
         # the next `show` rebuilds a fresh HtmlDialog instead of probing a
@@ -172,7 +173,7 @@ module MCPforSketchUp
                        (normalized[:host] != current_runtime[:host] ||
                         normalized[:port] != current_runtime[:port])
 
-        ::UI.start_timer(0, false) { dialog.close }
+        ::UI.start_timer(0, false) { close_dialog_safely(dialog) }
 
         if need_restart
           ::UI.start_timer(0, false) do
@@ -223,6 +224,23 @@ module MCPforSketchUp
         end
       end
       private_class_method :report_general_error
+
+      # Close the dialog from inside a UI.start_timer callback, guaranteeing the
+      # @dialog singleton is reset even if dialog.close raises. set_on_closed
+      # normally nils @dialog, but it only fires on a *successful* close — if
+      # close itself raises (historical SU quirk), @dialog would stay pointing at
+      # a half-dead dialog and the next show() would probe .visible? on it (the
+      # very thing set_on_closed guards against). The ensure makes the reset
+      # unconditional. Matches the in-timer-rescue precedent in on_save.
+      def self.close_dialog_safely(dialog)
+        dialog.close
+      rescue StandardError => e
+        MCPforSketchUp::Core::Logger.log("DEBUG",
+          "settings_dialog.close: dialog.close raised: #{e.class}: #{e.message}")
+      ensure
+        @dialog = nil
+      end
+      private_class_method :close_dialog_safely
 
       # JSON.generate does not escape "</" inside a <script> block context.
       # Even though our payload is locally sourced, defense-in-depth: replace

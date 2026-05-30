@@ -39,6 +39,12 @@ module MCPforSketchUp
         return params if json.bytesize <= PARAMS_TRUNCATE_AT
         truncated = safe_byte_truncate(json, PARAMS_TRUNCATE_AT) + "...<truncated>"
         { "_truncated" => truncated }
+      rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
+        # The params themselves are un-encodable (e.g. a non-JSON object, or a
+        # string with invalid bytes). Error formatting must never itself crash —
+        # fall back to a safe marker rather than letting build_error_response
+        # propagate a second exception. Mirrors server.rb#encode_response_body.
+        { "_unserializable" => "#{e.class.name}: #{e.message.to_s.scrub("?")}" }
       end
 
       def self.safe_byte_truncate(s, n)

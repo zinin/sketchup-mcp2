@@ -93,4 +93,26 @@ class TestTruncateParams < Minitest::Test
     result = MCPforSketchUp::Core::Errors.truncate_params(big)
     assert result["_truncated"].valid_encoding?, "truncated string broke UTF-8"
   end
+
+  def test_unserializable_params_fall_back_to_safe_marker
+    # A string with invalid UTF-8 bytes makes JSON.generate raise. Error
+    # formatting must not crash — truncate_params returns a safe marker
+    # instead of propagating the exception (mirrors server.rb fallback).
+    bad = { "v" => "\xFF\xFE".dup.force_encoding("UTF-8") }
+    result = MCPforSketchUp::Core::Errors.truncate_params(bad)
+    assert result.key?("_unserializable"),
+      "expected _unserializable marker, got #{result.inspect}"
+    assert result["_unserializable"].valid_encoding?,
+      "marker itself must be valid UTF-8 (message scrubbed)"
+  end
+
+  def test_exception_to_data_survives_unserializable_params
+    # End-to-end: exception_to_data must produce a usable data hash even when
+    # the params can't be JSON-encoded.
+    bad = { "v" => "\xFF".dup.force_encoding("UTF-8") }
+    e = RuntimeError.new("boom")
+    data = MCPforSketchUp::Core::Errors.exception_to_data(e, "some_tool", bad)
+    assert_equal "some_tool", data["tool"]
+    assert data["params"].key?("_unserializable")
+  end
 end
