@@ -318,7 +318,15 @@ async def test_send_command_lock_serializes_concurrent(make_connection, fake_str
     # Запускаем оба send_command. Первый "застрянет" в drain.
     task1 = asyncio.create_task(conn.send_command("a", {}))
     task2 = asyncio.create_task(conn.send_command("b", {}))
-    await asyncio.sleep(0)  # отдать управление, чтобы оба попали в _send_frame
+    # asyncio.wait_for spawns a child task on CPython <=3.11 (inline on 3.12+,
+    # gh-96764), so the number of event-loop iterations before task1's write()
+    # lands in the buffer is version-dependent — poll (bounded) instead of a
+    # single sleep(0). With a broken lock both frames land in the same
+    # iteration, so the `== 1` assertion below still detects interleaving.
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if writer.buffer:
+            break
 
     # На этом этапе при работающем lock:
     #   - task1 в gated_drain, держит lock
