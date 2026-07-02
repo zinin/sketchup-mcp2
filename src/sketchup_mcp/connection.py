@@ -4,8 +4,10 @@ This module owns the wire protocol: 4-byte big-endian length prefix + JSON body,
 ``asyncio.Lock`` serialisation, lazy reconnect, total per-request timeout.
 
 Public entry points are :func:`get_connection`/:func:`close_connection` for
-singleton management, and :class:`SketchUpConnection.send_command` for
-actual JSON-RPC traffic.
+singleton management, :meth:`SketchUpConnection.ensure_connected` /
+:meth:`SketchUpConnection.aclose` for explicit connect/close (all socket
+mutation is serialized under the instance lock), and
+:meth:`SketchUpConnection.send_command` for actual JSON-RPC traffic.
 """
 import asyncio
 import json
@@ -397,7 +399,7 @@ class SketchUpConnection:
             await self.connect()
         except OSError as e:
             raise ConnectionError(
-                f"cannot reconnect to {self.host}:{self.port}: {e}"
+                f"cannot connect to {self.host}:{self.port}: {e}"
             ) from e
 
     async def _roundtrip(self, body: bytes) -> bytes:

@@ -302,7 +302,7 @@ async def main() -> int:
         # of the modeling steps: `delete_component` is itself an undoable
         # operation, so after the loop below step 24's undo rolls back the
         # LAST delete — resurrecting the most recently deleted ID — not the
-        # mortise_tenon creation. One resurrected group is expected to remain
+        # last modeling op (the step-21 dovetail). One resurrected group is expected to remain
         # in the model after the run. Running undo before cleanup would
         # instead revert the last modeling operation and stale-ify IDs held
         # by the cleanup loop.

@@ -27,7 +27,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     отработает на первом tool-call. Логируем warning, продолжаем.
     `SketchUpError` (its subclass `IncompatibleVersionError` for a Python↔Ruby
     handshake mismatch — review F6 — plus raw handshake faults from
-    get_connection(): timeout, malformed reply, zero-length frame) is also
+    conn.ensure_connected(): timeout, malformed reply, zero-length frame) is also
     caught: all mean "SketchUp side not ready", so we start degraded and let
     `get_version` and every tool surface the problem as a graceful error,
     instead of the server failing to load with no diagnostics in Claude Desktop.

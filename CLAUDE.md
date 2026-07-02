@@ -58,6 +58,12 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   carry no `server_version` field. Compatibility ranges live in
   `src/sketchup_mcp/compat.py` and `mcp_for_sketchup/mcp_for_sketchup/core/compat.rb`.
   `get_version` remains a regular tool returning the verdict payload.
+- **Literal source-guard tests**: `test/test_operation_names.rb`,
+  `test/test_transform_absolute.rb`, `test/test_joints_frame_compensation.rb`
+  pin exact handler source text (down to indentation) to protect invariants
+  like the reversed `Group#subtract`. Never run an auto-formatter over
+  handlers or tests; when refactoring pinned code, update the pins
+  deliberately.
 
 ## Development Commands
 
@@ -75,7 +81,7 @@ cd mcp_for_sketchup && ruby package.rb --variant=warehouse && cd ..
 cd mcp_for_sketchup && ruby package.rb --variant=github && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest, stdlib only) — 353 runs / 934 assertions
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip for the package test) — 353 runs / 934 assertions
 uv run pytest tests/ -q        # Python (pytest) — 136 tests
 
 # Live integration smoke-check (requires SketchUp running + plugin started)

@@ -181,7 +181,8 @@ class TestTransformComponentHandler < Minitest::Test
     t = @entity.transforms.first
     assert_instance_of TranslationMarker, t,
       "the single transform! must come from Geom::Transformation.translation " \
-      "(rotation/scaling are not stubbed and would have raised)"
+      "(this test stubs only translation — a rotation/scaling transform " \
+      "would not produce a TranslationMarker)"
     # Дельта = цель − bounds.min = 15 − 10 дюймов (НЕ сырые 15 relative-семантики).
     assert_equal [5.0, 0.0, 0.0], [t.x, t.y, t.z]
     assert_equal 4242, result["id"], "happy path must commit and describe the entity"

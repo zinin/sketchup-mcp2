@@ -327,6 +327,12 @@ async def test_send_command_lock_serializes_concurrent(make_connection, fake_str
         await asyncio.sleep(0)
         if writer.buffer:
             break
+    else:
+        pytest.fail(
+            "task1 never wrote a frame after 100 poll iterations — "
+            "environment/regression issue upstream of the lock, "
+            "not a lock-serialization failure"
+        )
 
     # На этом этапе при работающем lock:
     #   - task1 в gated_drain, держит lock
@@ -414,7 +420,7 @@ async def test_ensure_connected_raises_connection_error_when_refused(monkeypatch
         conn = await conn_module.get_connection()
         with pytest.raises(ConnectionError) as exc_info:
             await conn.ensure_connected()
-    assert "cannot reconnect" in str(exc_info.value)
+    assert "cannot connect" in str(exc_info.value)
     monkeypatch.setattr(conn_module, "_connection", None)
 
 
@@ -431,7 +437,7 @@ async def test_send_command_raises_connection_error_when_refused():
     ):
         with pytest.raises(ConnectionError) as exc_info:
             await conn.send_command("get_model_info", {})
-    assert "cannot reconnect" in str(exc_info.value)
+    assert "cannot connect" in str(exc_info.value)
 
 
 async def test_close_connection_resets_singleton(monkeypatch):

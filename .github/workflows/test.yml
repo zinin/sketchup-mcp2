@@ -20,7 +20,9 @@ jobs:
           ruby-version: '3.2'
       # test_package_default_variant.rb требует rubyzip (не stdlib);
       # Gemfile в проекте нет намеренно (см. deep-research T-20).
-      - run: gem install rubyzip
+      # Пин мажора: локально верифицирован rubyzip 3.x; неожиданный мажорный
+      # релиз гема не должен красить CI без отношения к коду проекта.
+      - run: gem install rubyzip -v '~> 3'
       - run: ruby test/run_all.rb
 
   python:

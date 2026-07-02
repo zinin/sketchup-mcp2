@@ -53,6 +53,8 @@ grep '"product_id"' mcp_for_sketchup/extension.json
 * `test_max_ruby_matches_python_version` (Python) — Python's view of Ruby max must equal current `CLIENT_VERSION` at release time.
 * `test_max_python_matches_server_version` (Ruby) — Ruby's view of Python max must equal plugin `SERVER_VERSION` at release time.
 
+**Pending contract break (unreleased, 2026-07-02, branch `fix/deep-review-p1`):** `transform_component.position` switched from a relative offset to an absolute bbox-min target (`feat!`, commit `6b7d133`). The first release that ships it MUST bump `MIN_RUBY` (Python side) **and** `MIN_PYTHON` (Ruby side): an old/new client–server mix would pass the handshake but silently misplace geometry. Call out the new semantics in the GitHub release notes.
+
 Run `uv lock` to refresh `uv.lock` with the new project version (otherwise the next `uv` call updates it post-release and you end up with a stray `chore: sync uv.lock` commit). Commit (`chore: bump to vX.Y.Z`) and push.
 
 ## 2. Pre-flight tests

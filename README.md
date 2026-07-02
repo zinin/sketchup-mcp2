@@ -78,7 +78,7 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 
 | Category | Tools |
 |---|---|
-| **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm** |
+| **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm**; `position` is an **absolute** bbox-min target |
 | **Materials** | `set_material` — named colors and hex `#rrggbb` |
 | **Booleans** | `boolean_operation` — union / difference / intersection |
 | **Edge ops** | `chamfer_edge`, `fillet_edge` — distance/radius in mm, segments configurable |
