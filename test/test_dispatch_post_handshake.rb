@@ -170,4 +170,100 @@ class TestDispatchPostHandshake < Minitest::Test
       MCPforSketchUp::Core::Config.eval_enabled = saved_eval
     end
   end
+
+  # --- T-01: не-StandardError исключения обязаны давать error-ответ ---
+  # SyntaxError < ScriptError (НЕ StandardError) — до фикса пролетал мимо
+  # всех rescue и запрос молча терялся (клиент ждал полный 60 s таймаут).
+
+  def test_eval_ruby_syntax_error_returns_structured_error_fast
+    with_eval_enabled do
+      req = make_request(
+        method: "tools/call",
+        params: { "name" => "eval_ruby", "arguments" => { "code" => "def broken(" } },
+        id: 101,
+      )
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      refute_nil resp, "syntax error must produce an error envelope, not a dropped request"
+      assert_equal 101, resp["id"]
+      assert_equal(-32603, resp["error"]["code"])
+      assert_match(/SyntaxError/, resp["error"]["message"])
+    end
+  end
+
+  def test_eval_ruby_runtime_error_message_includes_class
+    with_eval_enabled do
+      req = make_request(
+        method: "tools/call",
+        params: { "name" => "eval_ruby", "arguments" => { "code" => "raise 'boom'" } },
+        id: 102,
+      )
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      assert_equal(-32603, resp["error"]["code"])
+      assert_match(/RuntimeError: boom/, resp["error"]["message"])
+    end
+  end
+
+  def test_eval_ruby_stack_overflow_returns_structured_error
+    with_eval_enabled do
+      req = make_request(
+        method: "tools/call",
+        params: { "name" => "eval_ruby",
+                  # Самозацикленная lambda: SystemStackError без определения
+                  # глобального метода (не мусорим в shared-process сьюте).
+                  # Поведение специфично для MRI (SketchUp = MRI 3.2); на
+                  # JRuby/TruffleRuby стек-переполнение ведёт себя иначе.
+                  "arguments" => { "code" => "f = nil; f = -> { f.call }; f.call" } },
+        id: 103,
+      )
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      refute_nil resp
+      assert_equal(-32603, resp["error"]["code"])
+      assert_match(/SystemStackError/, resp["error"]["message"])
+    end
+  end
+
+  def test_eval_ruby_bare_exception_subclass_returns_structured_error
+    with_eval_enabled do
+      req = make_request(
+        method: "tools/call",
+        params: { "name" => "eval_ruby",
+                  # Не StandardError и не ScriptError: LLM-код так пишет
+                  # регулярно (питоний рефлекс raise Exception(...)).
+                  "arguments" => { "code" => "raise Exception, 'raw boom'" } },
+        id: 105,
+      )
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      refute_nil resp, "bare Exception must produce an error envelope"
+      assert_equal 105, resp["id"]
+      assert_equal(-32603, resp["error"]["code"])
+      assert_match(/Exception: raw boom/, resp["error"]["message"])
+    end
+  end
+
+  def test_dispatch_returns_error_envelope_for_script_error_from_any_handler
+    sys = MCPforSketchUp::Handlers::System
+    original = sys.method(:get_version)
+    sys.define_singleton_method(:get_version) { |_params| raise ScriptError, "handler exploded" }
+    begin
+      req = make_request(method: "tools/call",
+        params: { "name" => "get_version", "arguments" => {} }, id: 104)
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      refute_nil resp, "ScriptError from a handler must not drop the response"
+      assert_equal 104, resp["id"]
+      assert_equal(-32603, resp["error"]["code"])
+      assert_match(/handler exploded/, resp["error"]["message"])
+    ensure
+      sys.define_singleton_method(:get_version, original)
+    end
+  end
+
+  private
+
+  def with_eval_enabled
+    saved_eval = MCPforSketchUp::Core::Config.eval_enabled
+    MCPforSketchUp::Core::Config.eval_enabled = true
+    yield
+  ensure
+    MCPforSketchUp::Core::Config.eval_enabled = saved_eval
+  end
 end

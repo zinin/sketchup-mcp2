@@ -28,7 +28,29 @@ module MCPforSketchUp
         end
         code = V.require_string(params, "code")
         binding_obj = TOPLEVEL_BINDING.dup
-        result = eval(code, binding_obj)  # rubocop:disable Security/Eval
+        result =
+          begin
+            eval(code, binding_obj)  # rubocop:disable Security/Eval
+          rescue MCPforSketchUp::Core::StructuredError
+            # Structured-ошибки из eval'нутого кода сохраняют code/message.
+            raise
+          rescue NoMemoryError, SignalException
+            # Process-control не глотаем: VM умирает / внешний сигнал.
+            raise
+          rescue Exception => e  # rubocop:disable Lint/RescueException
+            # НАМЕРЕННО шире StandardError (ревью iter-1, MAJOR-4): eval'ится
+            # произвольный LLM-код. SyntaxError (< ScriptError),
+            # SystemStackError и даже голый `raise Exception` — не
+            # StandardError: без этого arm'а они пролетают мимо всех rescue
+            # в dispatch/server, запрос молча теряется и клиент висит полный
+            # таймаут (60 s). SystemExit конвертируется сознательно: `exit`
+            # в eval-коде не должен убивать SketchUp. Имя класса + сообщение —
+            # достаточная диагностика, чтобы LLM сам починил код со следующей
+            # попытки. Deep-research T-01.
+            raise MCPforSketchUp::Core::StructuredError.new(
+              -32603, "#{e.class}: #{e.message}"
+            )
+          end
         # Return raw string so dispatch.wrap_content puts it directly into
         # text-field without nesting (Python `_call` extracts text and Claude
         # sees a plain value rather than `{"result": "..."}`).

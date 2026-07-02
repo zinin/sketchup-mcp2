@@ -51,6 +51,18 @@ module MCPforSketchUp
           return nil if is_notification
           Core::Errors.build_error_response(-32603, e.message,
             Core::Errors.exception_to_data(e, tool || "?", params), request_id)
+        rescue ScriptError, SystemStackError => e
+          # Belt-and-braces: SyntaxError/LoadError/SystemStackError — не
+          # StandardError; без этого arm'а исключение любого БУДУЩЕГО хендлера
+          # молча роняло бы ответ (клиент ждал бы полный таймаут). eval.rb
+          # оборачивает свой eval сам; этот arm страхует остальные пути.
+          # Остаточная экспозиция (осознанная): timer-/framing-пути server.rb
+          # ловят только StandardError — не-хендлерные ScriptError туда не
+          # доходят через Dispatch и остаются вне этого фикса.
+          Core::Logger.log_error(tool || "?", e)
+          return nil if is_notification
+          Core::Errors.build_error_response(-32603, "#{e.class}: #{e.message}",
+            Core::Errors.exception_to_data(e, tool || "?", params), request_id)
         end
       end
 
