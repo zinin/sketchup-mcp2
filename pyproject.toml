@@ -18,7 +18,9 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "mcp[cli]>=1.3.0"
+    # <2: mcp v2 ships breaking changes to the import surface. Floor 1.27 =
+    # фактическая версия из uv.lock. Миграция на v2 — отдельный тикет.
+    "mcp[cli]>=1.27,<2"
 ]
 
 [project.optional-dependencies]
