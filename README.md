@@ -1,5 +1,7 @@
 # MCP Server for SketchUp
 
+[![test](https://github.com/zinin/sketchup-mcp2/actions/workflows/test.yml/badge.svg)](https://github.com/zinin/sketchup-mcp2/actions/workflows/test.yml)
+
 > Connect Claude (or any MCP-aware AI client) to SketchUp for prompt-driven 3D modeling.
 
 Two-process bridge:
