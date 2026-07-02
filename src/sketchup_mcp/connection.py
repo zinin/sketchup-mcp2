@@ -87,6 +87,11 @@ class SketchUpConnection:
         ``asyncio.wait_for(..., timeout=self.timeout)`` — without it, a
         Ruby that accepted TCP but never replied would block this
         coroutine forever.
+
+        Low-level/internal: мутирует ``_reader``/``_writer`` БЕЗ замка. Вызывать
+        только из-под ``self._lock`` (ensure_connected / aclose / _send_once) или
+        в заведомо однозадачном контексте (examples/smoke_check.py). Внешний
+        API — ``ensure_connected()`` / ``aclose()``.
         """
         # CRITICAL: the TCP connect itself is wrapped in wait_for too, not just
         # the handshake below. A host that accepts the SYN but never finishes
@@ -191,6 +196,13 @@ class SketchUpConnection:
         compat.check_ruby_version(server_version)
 
     async def disconnect(self) -> None:
+        """Close the socket and null the ``_reader``/``_writer`` pair.
+
+        Low-level/internal: мутирует ``_reader``/``_writer`` БЕЗ замка. Вызывать
+        только из-под ``self._lock`` (ensure_connected / aclose / _send_once) или
+        в заведомо однозадачном контексте (examples/smoke_check.py). Внешний
+        API — ``ensure_connected()`` / ``aclose()``.
+        """
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -201,6 +213,31 @@ class SketchUpConnection:
                 logger.debug("disconnect: ignored error during close: %s", e)
         self._reader = None
         self._writer = None
+
+    async def ensure_connected(self) -> None:
+        """Открыть сокет (и выполнить handshake), если он ещё не открыт.
+
+        Берёт тот же ``self._lock``, что и ``send_command`` — ЕДИНСТВЕННЫЙ
+        замок, под которым мутируются ``_reader``/``_writer`` (T-08:
+        connect из get_connection под модульным замком гонялся с
+        ``disconnect()`` внутри in-flight ``send_command`` — терял свежую
+        пару сокетов или утекал соединением).
+
+        Raises ``ConnectionError`` при сетевом отказе (как раньше поднимал
+        ``get_connection``) — lifespan ловит и стартует degraded.
+        """
+        async with self._lock:
+            # Health-check намеренно продублирован с _send_once, а не вынесен
+            # в общий «проверь-и-коннекть» хелпер, берущий замок: asyncio.Lock
+            # нереентерабелен — вызов такого хелпера из-под уже взятого
+            # self._lock (как в _send_once) был бы дедлоком.
+            if self._writer is None or self._writer.is_closing():
+                await self._connect_or_raise()
+
+    async def aclose(self) -> None:
+        """Закрыть сокет под ``self._lock`` — дождавшись in-flight запроса."""
+        async with self._lock:
+            await self.disconnect()
 
     async def _send_frame(self, body: bytes) -> None:
         if self._writer is None:
@@ -253,6 +290,9 @@ class SketchUpConnection:
                 ) from e
 
     async def _send_once(self, name: str, args: dict[str, Any]) -> Any:
+        # Health-check продублирован с ensure_connected (не общий хелпер):
+        # asyncio.Lock нереентерабелен, а обе точки уже выполняются под
+        # self._lock — общий «проверь-и-коннекть» под замком дедлочился бы.
         if self._writer is None or self._writer.is_closing():
             await self._connect_or_raise()
         rid = self._next_id
@@ -379,15 +419,14 @@ _get_connection_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_connection() -> SketchUpConnection:
-    """Lazy singleton accessor — connects on first call or after disconnect.
+    """Singleton accessor — только создаёт/возвращает объект, НЕ коннектит.
 
-    Защищён `_get_connection_lock` от cold-start race: два параллельных
-    `get_connection()` на холодном старте без lock'а могли бы оба создать
-    `SketchUpConnection` и вызвать `connect()` на разных объектах, оставив
-    один сокет бесхозным.
-
-    Raises ``ConnectionError`` if connect to ``config.HOST:config.PORT`` fails;
-    callers (``_call`` in tools) translate this into a graceful tool-response.
+    Коннект выполняется исключительно под инстансным ``conn._lock``: лениво
+    в ``_send_once`` или явно через ``ensure_connected()`` (eager-connect в
+    lifespan). Раньше здесь жил health-check + connect под модульным
+    ``_get_connection_lock`` — он гонялся с ``disconnect()`` параллельного
+    ``send_command`` (T-08/PY-CONN-01): ложные «internal: reader is None»
+    и утечка сокетов при рестарте SketchUp.
     """
     global _connection
     async with _get_connection_lock:
@@ -395,19 +434,19 @@ async def get_connection() -> SketchUpConnection:
             _connection = SketchUpConnection(
                 host=config.HOST, port=config.PORT, timeout=config.TIMEOUT
             )
-        if _connection._writer is None or _connection._writer.is_closing():
-            try:
-                await _connection.connect()
-            except OSError as e:
-                raise ConnectionError(
-                    f"cannot connect to {config.HOST}:{config.PORT}: {e}"
-                ) from e
         return _connection
 
 
 async def close_connection() -> None:
-    """Close and forget the module singleton."""
+    """Close and forget the module singleton (ждёт in-flight запрос под conn._lock).
+
+    Тело — под ``_get_connection_lock``: без него параллельный
+    ``get_connection()`` может получить полузакрытый объект, а после
+    обнуления ``_connection`` создать ВТОРОЙ «singleton» с собственным
+    сокетом (регрессия инварианта одного соединения).
+    """
     global _connection
-    if _connection is not None:
-        await _connection.disconnect()
-        _connection = None
+    async with _get_connection_lock:
+        if _connection is not None:
+            await _connection.aclose()
+            _connection = None

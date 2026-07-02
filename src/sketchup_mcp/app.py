@@ -36,7 +36,8 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     """
     setup_logging()
     try:
-        await get_connection()
+        conn = await get_connection()
+        await conn.ensure_connected()
     except (ConnectionError, SketchUpError) as e:
         logger.warning(f"Could not connect on startup: {e}")
     try:

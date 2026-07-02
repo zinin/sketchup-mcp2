@@ -83,3 +83,25 @@ async def test_lifespan_degrades_on_sketchup_error(monkeypatch, caplog):
     assert closed["called"], "close_connection must run on shutdown"
     assert any("startup" in r.getMessage().lower() for r in caplog.records), \
         "a handshake SketchUpError at startup must be logged as a warning, not raised"
+
+
+async def test_lifespan_degrades_when_eager_connect_fails(monkeypatch):
+    """Eager-connect теперь двухфазный: get_connection() отдаёт singleton,
+    ensure_connected() коннектит под инстансным замком. Отказ второй фазы
+    так же деградирует, а не роняет старт."""
+    class FakeConn:
+        async def ensure_connected(self):
+            raise ConnectionError("refused")
+
+    async def fake_get():
+        return FakeConn()
+
+    async def fake_close():
+        pass
+
+    monkeypatch.setattr(app_module, "setup_logging", lambda: None)
+    monkeypatch.setattr(app_module, "get_connection", fake_get)
+    monkeypatch.setattr(app_module, "close_connection", fake_close)
+
+    async with app_module.server_lifespan(app_module.mcp) as state:
+        assert state == {}

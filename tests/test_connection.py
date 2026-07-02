@@ -386,20 +386,52 @@ async def test_send_command_reconnects_after_disconnect(make_connection, fake_st
     assert conn._writer is new_writer
 
 
-async def test_get_connection_raises_connection_error_when_refused(monkeypatch):
-    """get_connection should raise ConnectionError if open_connection refuses."""
+async def test_get_connection_does_not_open_socket(monkeypatch):
+    """T-08: get_connection только создаёт/возвращает singleton. Любой connect
+    живёт под conn._lock (ensure_connected / ленивый _send_once) — иначе
+    disconnect() параллельного send_command гонялся бы с ним за _reader/_writer."""
     from sketchup_mcp import connection as conn_module
 
-    # сбросить singleton, если оставлен предыдущим тестом
+    monkeypatch.setattr(conn_module, "_connection", None)
+    with patch(
+        "sketchup_mcp.connection.asyncio.open_connection",
+        side_effect=AssertionError("get_connection must not connect"),
+    ):
+        conn = await conn_module.get_connection()
+    assert conn._writer is None
     monkeypatch.setattr(conn_module, "_connection", None)
 
+
+async def test_ensure_connected_raises_connection_error_when_refused(monkeypatch):
+    """Отказ TCP теперь всплывает из ensure_connected (как раньше из get_connection)."""
+    from sketchup_mcp import connection as conn_module
+
+    monkeypatch.setattr(conn_module, "_connection", None)
+    with patch(
+        "sketchup_mcp.connection.asyncio.open_connection",
+        side_effect=ConnectionRefusedError("nope"),
+    ):
+        conn = await conn_module.get_connection()
+        with pytest.raises(ConnectionError) as exc_info:
+            await conn.ensure_connected()
+    assert "cannot reconnect" in str(exc_info.value)
+    monkeypatch.setattr(conn_module, "_connection", None)
+
+
+async def test_send_command_raises_connection_error_when_refused():
+    """T-08: источник ConnectionError для callers переехал из get_connection в
+    send_command — ленивый connect в _send_once (под conn._lock) остался
+    единственным авто-коннектором. _connect_or_raise переводит OSError-семейство
+    (refused, gaierror, …) в ConnectionError; callers (tools._call) ловят её
+    как раньше."""
+    conn = SketchUpConnection(host="127.0.0.1", port=1, timeout=1.0)
     with patch(
         "sketchup_mcp.connection.asyncio.open_connection",
         side_effect=ConnectionRefusedError("nope"),
     ):
         with pytest.raises(ConnectionError) as exc_info:
-            await conn_module.get_connection()
-    assert "cannot connect" in str(exc_info.value)
+            await conn.send_command("get_model_info", {})
+    assert "cannot reconnect" in str(exc_info.value)
 
 
 async def test_close_connection_resets_singleton(monkeypatch):
@@ -413,13 +445,15 @@ async def test_close_connection_resets_singleton(monkeypatch):
 
 
 async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch):
-    """Concurrent first-callers of get_connection() must not each create a connection.
+    """Cold start двухфазный (T-08): get_connection() + ensure_connected() — один сокет.
 
-    Без `_get_connection_lock` (connection.py:225) две параллельные холодные
-    точки могли бы обе увидеть `_connection is None`, инстанциировать свой
-    SketchUpConnection и вызвать open_connection дважды — один сокет осиротел
-    бы. Тест регрессионно фиксирует: один общий singleton, один реальный
-    open_connection.
+    get_connection() только создаёт/возвращает singleton (под модульным
+    `_get_connection_lock`); коннектит ensure_connected() под инстансным
+    conn._lock. Без модульного замка две параллельные холодные точки могли бы
+    обе увидеть `_connection is None` и инстанциировать СВОЙ SketchUpConnection;
+    без conn._lock оба caller'а прошли бы health-check в ensure_connected и
+    вызвали open_connection дважды — один сокет осиротел бы. Тест регрессионно
+    фиксирует: один общий singleton, один реальный open_connection.
     """
     from sketchup_mcp import connection as conn_module
 
@@ -452,7 +486,7 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
         writer.drain = AsyncMock()
         writer.close = MagicMock()
         writer.wait_closed = AsyncMock()
-        # is_closing() должен явно вернуть False, иначе второй get_connection
+        # is_closing() должен явно вернуть False, иначе второй ensure_connected
         # увидит «writer is closing» и инициирует второй connect() уже не
         # из-за cold-start race, а из-за реконнекта. Это замаскировало бы
         # настоящий cold-start race в проверяемом коде.
@@ -460,8 +494,13 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
         return reader, writer
 
     with patch("sketchup_mcp.connection.asyncio.open_connection", side_effect=slow_open):
-        t1 = asyncio.create_task(conn_module.get_connection())
-        t2 = asyncio.create_task(conn_module.get_connection())
+        async def cold_caller():
+            conn = await conn_module.get_connection()
+            await conn.ensure_connected()
+            return conn
+
+        t1 = asyncio.create_task(cold_caller())
+        t2 = asyncio.create_task(cold_caller())
         # Дать обеим coroutines дойти до lock'а.
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -475,6 +514,52 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
 
     # Cleanup для последующих тестов.
     monkeypatch.setattr(conn_module, "_connection", None)
+
+
+async def test_aclose_cannot_clobber_concurrent_reconnect():
+    """Регрессия T-08. Старый код: disconnect() после await wait_closed
+    БЕЗУСЛОВНО нулил _reader/_writer и мог затереть свежую пару, открытую
+    параллельным connect'ом из-под другого замка. Теперь aclose() и
+    ensure_connected() сериализованы одним conn._lock: закрытие завершается
+    ДО реконнекта, свежая пара выживает."""
+    conn = SketchUpConnection(host="127.0.0.1", port=1, timeout=1.0)
+
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    old_writer = MagicMock()
+    old_writer.close = MagicMock()
+
+    async def slow_wait_closed():
+        started.set()   # сигнал: aclose взял conn._lock и дошёл до wait_closed
+        await gate.wait()
+
+    old_writer.wait_closed = slow_wait_closed
+    old_writer.is_closing = MagicMock(return_value=False)
+    conn._reader = asyncio.StreamReader()
+    conn._writer = old_writer
+
+    fresh_reader = asyncio.StreamReader()
+    fresh_writer = MagicMock()
+    fresh_writer.is_closing = MagicMock(return_value=False)
+
+    async def fake_connect():
+        conn._reader = fresh_reader
+        conn._writer = fresh_writer
+
+    conn.connect = fake_connect
+
+    close_task = asyncio.create_task(conn.aclose())
+    # Явная точка синхронизации вместо одиночного asyncio.sleep(0): порядок
+    # прохода одного yield — implementation detail планировщика CPython
+    # (флак на 3.13+/PyPy). started гарантирует: aclose УЖЕ держит lock.
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    reconnect_task = asyncio.create_task(conn.ensure_connected())
+    await asyncio.sleep(0)   # ensure_connected встал в очередь на conn._lock
+    gate.set()
+    await asyncio.gather(close_task, reconnect_task)
+
+    assert conn._writer is fresh_writer, "reconnect's fresh pair must survive aclose"
+    assert conn._reader is fresh_reader
 
 
 async def test_get_viewport_screenshot_is_retry_safe():

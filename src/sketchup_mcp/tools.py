@@ -42,7 +42,10 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     See the design's §5.8 for the rationale on error-handling asymmetry
     between text-returning and Image-returning tools.
     """
-    sketchup = await get_connection()              # may raise ConnectionError
+    sketchup = await get_connection()
+    # ConnectionError при недоступном SketchUp поднимает send_command
+    # (ленивый connect под conn._lock, T-08), не get_connection — callers
+    # ловят её как раньше.
     return await sketchup.send_command(tool_name, kwargs)  # raises SketchUpError
 
 
