@@ -81,7 +81,7 @@ cd mcp_for_sketchup && ruby package.rb --variant=warehouse && cd ..
 cd mcp_for_sketchup && ruby package.rb --variant=github && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip for the package test) — 353 runs / 934 assertions
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip for the package test) — 354 runs / 939 assertions
 uv run pytest tests/ -q        # Python (pytest) — 136 tests
 
 # Live integration smoke-check (requires SketchUp running + plugin started)

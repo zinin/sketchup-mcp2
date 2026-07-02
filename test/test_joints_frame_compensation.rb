@@ -232,4 +232,22 @@ class TestJointsFrameCompensation < Minitest::Test
         "#{name} must build via add_parent_frame_prototype(board)")
     end
   end
+
+  # Source-пин ОСОЗНАННОЙ асимметрии: carve_board2_slots НЕ идёт через
+  # add_parent_frame_prototype — его cutter обязан быть SIBLING'ом доски
+  # (current.parent.entities), иначе Group#subtract не сработает (паттерн
+  # place_mortise). Будущая «гармонизация» под общий prototype-хелпер —
+  # регрессия, а не рефакторинг (финальное ревью ветки: deepseek + minimax).
+  # Намеренный literal-пин: обновлять осознанно, не «чинить» под форматтер.
+  def test_carve_board2_slots_keeps_sibling_cutter_pattern
+    src = File.read(File.expand_path(
+      "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb", __dir__))
+    body = src[/def self\.carve_board2_slots\b(?:(?!\n      def self\.).)*/m]
+    refute_nil body, "carve_board2_slots not found in joints.rb"
+    assert_match(/current\.parent\.entities\.add_group/, body,
+      "carve_board2_slots must build its cutter as a SIBLING of the board " \
+      "(current.parent.entities) — Group#subtract requires sibling groups")
+    refute_match(/add_parent_frame_prototype/, body,
+      "carve_board2_slots must NOT route through add_parent_frame_prototype")
+  end
 end
