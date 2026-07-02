@@ -149,6 +149,9 @@ module MCPforSketchUp
       end
 
       def self.build_sphere(entities, pos, dims, segments)
+        # segments 1-2 молча дают вырожденную геометрию (нет ни одного
+        # полноценного кольца) — отклоняем как invalid params.
+        raise MCPforSketchUp::Core::StructuredError.new(-32602, "segments must be >= 3 for spheres") if segments < 3
         radius = dims[0] / 2.0
         center = [pos[0] + radius, pos[1] + radius, pos[2] + radius]
         group = entities.add_group
@@ -172,8 +175,20 @@ module MCPforSketchUp
             i3 = i1 + segments + 1
             i4 = i3 + 1
             begin
-              group.entities.add_face(points[i1], points[i2], points[i4], points[i3])
+              if lat_i == 0
+                # Северная полярная полоса: p1 и p2 — обе копии полюса
+                # (sin 0 = 0) ⇒ квад вырожден. Явный треугольник
+                # полюс → две точки первого кольца. Deep-research T-02.
+                group.entities.add_face(points[i1], points[i4], points[i3])
+              elsif lat_i == segments - 1
+                # Южная полоса: p3/p4 — копии южного полюса (sin π ≈ 1e-16).
+                group.entities.add_face(points[i1], points[i2], points[i4])
+              else
+                group.entities.add_face(points[i1], points[i2], points[i4], points[i3])
+              end
             rescue StandardError => e
+              # Последний рубеж: не должен срабатывать для сфер — полюсные
+              # вырождения обработаны выше явными треугольниками.
               MCPforSketchUp::Core::Logger.log("DEBUG",
                 "build_sphere: skipped degenerate face at pole: #{e.class}: #{e.message}")
             end
