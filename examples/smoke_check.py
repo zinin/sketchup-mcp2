@@ -122,8 +122,10 @@ async def main() -> int:
         bb = c1["bbox_mm"]
         assert abs((bb["max"][0] - bb["min"][0]) - 100) < 1.0, f"width: {bb}"
 
-        step = 6; print(f"[{step}] transform_component — move id1 to (200,0,0)")
-        await call(conn, "transform_component", id=id1, position=[200, 0, 0])
+        step = 6; print(f"[{step}] transform_component — move id1 to (200,0,0) [ABSOLUTE bbox-min]")
+        t1 = parse(await call(conn, "transform_component", id=id1, position=[200, 0, 0]))
+        assert abs(t1["bbox_mm"]["min"][0] - 200) < 0.5, \
+            f"absolute position semantics broken (T-04): {t1['bbox_mm']}"
 
         step = 7; print(f"[{step}] create_component cube id2 — 100×100×100mm at origin")
         c2 = parse(await call(conn, "create_component",

@@ -77,6 +77,15 @@ module MCPforSketchUp
       # selected instance (its transformation matrix), not the underlying
       # ComponentDefinition. Other instances of the same definition are
       # unchanged. To modify the definition, use eval_ruby.
+      #
+      # `position` — АБСОЛЮТНАЯ цель (T-04, решение 2026-07-02): entity
+      # переносится так, чтобы минимальный угол его bbox оказался ровно в
+      # заданной точке (тот же якорь, что у create_component.position).
+      # rotation/scale остаются относительными, вокруг центра bbox.
+      # Порядок применения: rotation → scale → position (ПОСЛЕДНЕЙ, и он
+      # намеренно не совпадает с порядком аргументов) — дельта берётся от
+      # пост-трансформационного bounds.min, итоговый bbox-min равен цели
+      # даже в комбинированных вызовах (ревью iter-1, CRIT-5).
       def self.transform_component(params)
         id = V.require_id(params)
         # position/scale in mm (rotation in degrees — not a size)
@@ -89,16 +98,17 @@ module MCPforSketchUp
         model.start_operation("Transform Component", true)
         begin
           entity = E.find!(id)
-          if position
-            entity.transform!(Geom::Transformation.translation(
-              Geom::Point3d.new(position[0], position[1], position[2])))
-          end
           if rotation
             apply_rotation(entity, rotation)
           end
           if scale
             center = entity.bounds.center
             entity.transform!(Geom::Transformation.scaling(center, scale[0], scale[1], scale[2]))
+          end
+          if position
+            delta = position_delta(entity.bounds.min, position)
+            entity.transform!(Geom::Transformation.translation(
+              Geom::Point3d.new(delta[0], delta[1], delta[2])))
           end
           model.commit_operation
           describe_entity(entity)
@@ -109,6 +119,14 @@ module MCPforSketchUp
       end
 
       # ----- private builders ----------------------------------------------
+
+      # Pure math (юнит-тестится без SketchUp): вектор переноса, доставляющий
+      # bbox-min `current_min` в точку `target`. Оба аргумента — в дюймах.
+      def self.position_delta(current_min, target)
+        [target[0] - current_min.x,
+         target[1] - current_min.y,
+         target[2] - current_min.z]
+      end
 
       def self.default_segments_for(type)
         case type

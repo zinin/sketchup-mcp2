@@ -32,6 +32,11 @@ Follow this strategy to be effective and avoid common pitfalls.
 - ALL linear dimensions are millimeters at the MCP boundary.
   SketchUp's Ruby API uses inches internally; the server converts.
 - ALL angles are degrees.
+- transform_component.position is an ABSOLUTE target: the entity's
+  bbox-min corner lands exactly there (same anchor as
+  create_component.position), applied AFTER rotation/scale — the
+  bbox-min promise holds for combined calls too. rotation/scale are
+  relative, about the bbox center.
 - Entity IDs are integers but accept strings (server casts via .to_i).
 - New geometry lives inside SketchUp Groups so it can be moved/deleted
   as a unit.

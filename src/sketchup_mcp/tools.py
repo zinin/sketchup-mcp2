@@ -124,7 +124,19 @@ async def transform_component(
     rotation: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
     scale: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
 ) -> str:
-    """Transform a component's position, rotation, or scale."""
+    """Move, rotate and/or scale a group or component (mm / degrees).
+
+    - position: ABSOLUTE target for the entity's bounding-box MIN corner,
+      in mm — the same anchor create_component uses. Applied LAST (after
+      rotation/scale), so the final bbox-min lands exactly at [x, y, z]
+      even in combined calls. It is NOT a relative offset: repeating the
+      same position is idempotent.
+    - rotation: RELATIVE rotation in degrees around the bbox center,
+      applied sequentially about world X, then Y, then Z.
+    - scale: RELATIVE scale factors about the bbox center.
+
+    Returns {id, name, type, bbox_mm} — read bbox_mm to verify the result.
+    """
     args: dict = {"id": id}
     if position is not None:
         args["position"] = position
