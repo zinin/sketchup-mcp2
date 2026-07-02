@@ -44,6 +44,10 @@ module MCPforSketchUp
           # cutter. To get "target - tool", call tool.subtract(target).
           # union/intersect are commutative, so receiver/argument order is
           # immaterial; only difference is affected.
+          # NB2: официальная документация Group#subtract противоречит сама себе
+          # (описание метода: this−arg; описание параметра: обратное) — не
+          # «чинить» под доки. Направление закреплено тестами:
+          # test_boolean_direction.rb + test_operation_names.rb (T-10).
           result = case operation
                    when "union"        then target_copy.union(tool_copy)
                    when "difference"   then tool_copy.subtract(target_copy)
