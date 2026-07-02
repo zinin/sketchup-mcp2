@@ -42,6 +42,7 @@
 **Files:**
 - Modify: `pyproject.toml:20-22`
 - Modify: `uv.lock` (регенерация командой, не руками)
+- Delete: `requirements.txt` (реликт upstream-форка: не упоминается нигде в репо, не менялся с initial import, несёт незакапленный `mcp[cli]>=1.3.0` и НЕиспользуемые websockets/aiohttp — оставленный, он реоткрывает T-30 через `pip install -r`)
 
 **Interfaces:**
 - Consumes: —
@@ -69,6 +70,11 @@ dependencies = [
 
 (Комментарий намеренно без деталей чужого роадмапа — «Dispatcher», даты спеки и месяц релиза v2 устаревают; cap самодостаточен.)
 
+- [ ] **Step 1b: Удалить legacy `requirements.txt`**
+
+Run: `git rm requirements.txt`
+(Файл — из upstream-форка, единственная точка правды по зависимостям — `pyproject.toml`.)
+
 - [ ] **Step 2: Регенерировать lock**
 
 Run: `uv lock`
@@ -83,8 +89,10 @@ Expected: `132 passed`
 
 ```bash
 git add pyproject.toml uv.lock
-git commit -m "build: cap mcp dependency below 2.0 (v2 ships breaking changes in July 2026)"
+git commit -m "build: cap mcp dependency below 2.0 and drop legacy requirements.txt"
 ```
+
+(`git rm` из Step 1b уже застейджил удаление `requirements.txt` — оно войдёт в этот же коммит.)
 
 ---
 
@@ -180,7 +188,7 @@ git commit -m "ci: add GitHub Actions workflow — Ruby suite + Python 3.11-3.13
 
 **Interfaces:**
 - Consumes: `Core::StructuredError.new(code, message)` (`core/errors.rb:7`), диспатч-паттерн `Dispatch.handle(request) → envelope-hash` и существующий приём с toggle `Config.eval_enabled` (образец — `test_eval_ruby_succeeds_when_enabled` в том же файле).
-- Produces: контракт «НИКАКОЕ исключение хендлера не роняет ответ»: `SyntaxError`/`ScriptError`/`SystemStackError` из eval'нутого кода → JSON-RPC `-32603` с `"#{класс}: #{сообщение}"` (диагностика парсера доходит до LLM); belt-and-braces arm в `Dispatch.handle` для любых будущих хендлеров. Механика бага: `SyntaxError < ScriptError`, а НЕ `StandardError`, поэтому пролетает мимо всех трёх `rescue StandardError` (dispatch.rb:49, server.rb:230, server.rb:86) — запрос молча теряется, Python ждёт полный таймаут.
+- Produces: контракт: eval-путь возвращает ответ при ЛЮБОМ исключении eval'нутого кода — `rescue Exception` с re-raise только process-control (`NoMemoryError`, `SignalException`); `SystemExit` конвертируется НАМЕРЕННО (`exit` в LLM-коде не должен убивать SketchUp) → JSON-RPC `-32603` с `"#{класс}: #{сообщение}"` (диагностика доходит до LLM); belt-and-braces arm в `Dispatch.handle` (`ScriptError`/`SystemStackError`) страхует остальные хендлеры — там код наш, не user-injected, Exception-наследники — патология (решение ревью iter-1, MAJOR-4). Механика бага: `SyntaxError < ScriptError`, а НЕ `StandardError`, поэтому пролетает мимо всех трёх `rescue StandardError` (dispatch.rb:49, server.rb:230, server.rb:86) — запрос молча теряется, Python ждёт полный таймаут.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -238,6 +246,24 @@ git commit -m "ci: add GitHub Actions workflow — Ruby suite + Python 3.11-3.13
     end
   end
 
+  def test_eval_ruby_bare_exception_subclass_returns_structured_error
+    with_eval_enabled do
+      req = make_request(
+        method: "tools/call",
+        params: { "name" => "eval_ruby",
+                  # Не StandardError и не ScriptError: LLM-код так пишет
+                  # регулярно (питоний рефлекс raise Exception(...)).
+                  "arguments" => { "code" => "raise Exception, 'raw boom'" } },
+        id: 105,
+      )
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(req)
+      refute_nil resp, "bare Exception must produce an error envelope"
+      assert_equal 105, resp["id"]
+      assert_equal(-32603, resp["error"]["code"])
+      assert_match(/Exception: raw boom/, resp["error"]["message"])
+    end
+  end
+
   def test_dispatch_returns_error_envelope_for_script_error_from_any_handler
     sys = MCPforSketchUp::Handlers::System
     original = sys.method(:get_version)
@@ -269,7 +295,7 @@ git commit -m "ci: add GitHub Actions workflow — Ruby suite + Python 3.11-3.13
 - [ ] **Step 2: Убедиться, что тесты падают**
 
 Run: `ruby test/test_dispatch_post_handshake.rb`
-Expected: 4 новых теста красные. `test_eval_ruby_syntax_error...` и `test_eval_ruby_stack_overflow...` и `..._script_error_from_any_handler` падают НЕ ассертом, а неперехваченным исключением (SyntaxError/SystemStackError/ScriptError вылетает из `Dispatch.handle` — ровно баг). `..._runtime_error_message_includes_class` падает ассертом (сейчас message = `"boom"` без префикса класса).
+Expected: 5 новых тестов красные. `test_eval_ruby_syntax_error...`, `test_eval_ruby_stack_overflow...`, `..._bare_exception_subclass...` и `..._script_error_from_any_handler` падают НЕ ассертом, а неперехваченным исключением (SyntaxError/SystemStackError/Exception/ScriptError вылетает из `Dispatch.handle` — ровно баг). `..._runtime_error_message_includes_class` падает ассертом (сейчас message = `"boom"` без префикса класса).
 
 - [ ] **Step 3: Фикс `eval.rb`**
 
@@ -284,12 +310,19 @@ Expected: 4 новых теста красные. `test_eval_ruby_syntax_error..
           rescue MCPforSketchUp::Core::StructuredError
             # Structured-ошибки из eval'нутого кода сохраняют code/message.
             raise
-          rescue ScriptError, SystemStackError, StandardError => e
-            # SyntaxError (< ScriptError) и SystemStackError — НЕ StandardError:
-            # без этого arm'а они пролетают мимо всех rescue в dispatch/server,
-            # запрос молча теряется и клиент висит полный таймаут (60 s).
-            # Имя класса + сообщение парсера — достаточная диагностика, чтобы
-            # LLM сам починил код со следующей попытки. Deep-research T-01.
+          rescue NoMemoryError, SignalException
+            # Process-control не глотаем: VM умирает / внешний сигнал.
+            raise
+          rescue Exception => e  # rubocop:disable Lint/RescueException
+            # НАМЕРЕННО шире StandardError (ревью iter-1, MAJOR-4): eval'ится
+            # произвольный LLM-код. SyntaxError (< ScriptError),
+            # SystemStackError и даже голый `raise Exception` — не
+            # StandardError: без этого arm'а они пролетают мимо всех rescue
+            # в dispatch/server, запрос молча теряется и клиент висит полный
+            # таймаут (60 s). SystemExit конвертируется сознательно: `exit`
+            # в eval-коде не должен убивать SketchUp. Имя класса + сообщение —
+            # достаточная диагностика, чтобы LLM сам починил код со следующей
+            # попытки. Deep-research T-01.
             raise MCPforSketchUp::Core::StructuredError.new(
               -32603, "#{e.class}: #{e.message}"
             )
@@ -325,7 +358,7 @@ Run: `ruby test/test_dispatch_post_handshake.rb`
 Expected: все тесты файла PASS.
 
 Run: `ruby test/run_all.rb`
-Expected: 0 failures, 0 errors (runs/assertions выросли на 4/≥12).
+Expected: 0 failures, 0 errors (runs/assertions выросли на 5/≥15).
 
 - [ ] **Step 6: Commit**
 
@@ -333,7 +366,7 @@ Expected: 0 failures, 0 errors (runs/assertions выросли на 4/≥12).
 git add mcp_for_sketchup/mcp_for_sketchup/handlers/eval.rb \
         mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch.rb \
         test/test_dispatch_post_handshake.rb
-git commit -m "fix: eval_ruby SyntaxError/SystemStackError now returns -32603 with parser diagnostics instead of silently dropping the request"
+git commit -m "fix: eval_ruby converts any exception from evaluated code to -32603 with diagnostics instead of silently dropping the request"
 ```
 
 ---
@@ -838,7 +871,7 @@ git commit -m "fix: build_sphere emits pole triangles — spheres are now manifo
 
 **Interfaces:**
 - Consumes: `entity.bounds.min` (`.x/.y/.z`, parent-frame), `entity.transform!(Geom::Transformation.translation(Geom::Point3d.new(dx, dy, dz)))`.
-- Produces: **решение пользователя (зафиксировано 2026-07-02): вариант (б) отчёта — абсолютная семантика.** `position` = абсолютная цель для МИНИМАЛЬНОГО угла bbox (тот же якорь, что у `create_component`; подтверждено живьём: position — bbox-min, не центр). Ruby переводит в дельту `target − bounds.min`. `rotation`/`scale` НЕ трогаем (остаются относительными вокруг центра bbox). Wire-имя параметра `position` сохраняется. Новый pure-хелпер: `Geometry.position_delta(current_min, target) → [dx, dy, dz]` (числа в дюймах, но функция единиц не знает). Это ПОВЕДЕНЧЕСКИЙ BREAKING CHANGE для сценариев, полагавшихся на relative-сдвиг; до фикса два вызова `position=[100,0,0]` смещали суммарно на 200 мм (подтверждено живьём).
+- Produces: **решение пользователя (зафиксировано 2026-07-02): вариант (б) отчёта — абсолютная семантика.** `position` = абсолютная цель для МИНИМАЛЬНОГО угла bbox (тот же якорь, что у `create_component`; подтверждено живьём: position — bbox-min, не центр). Ruby переводит в дельту `target − bounds.min`. Ветка position применяется ПОСЛЕДНЕЙ — rotation → scale → position (решение ревью iter-1 CRIT-5): дельта считается от пост-rotation/scale `bounds.min`, поэтому итоговый bbox-min равен цели и в КОМБИНИРОВАННЫХ вызовах — verify-паттерн «сверь bbox_mm» работает без оговорок. `rotation`/`scale` НЕ трогаем (остаются относительными вокруг центра bbox). Wire-имя параметра `position` сохраняется. Новый pure-хелпер: `Geometry.position_delta(current_min, target) → [dx, dy, dz]` (числа в дюймах, но функция единиц не знает). Это ПОВЕДЕНЧЕСКИЙ BREAKING CHANGE для сценариев, полагавшихся на relative-сдвиг; до фикса два вызова `position=[100,0,0]` смещали суммарно на 200 мм (подтверждено живьём).
 
 - [ ] **Step 1: Написать падающий тест — создать `test/test_transform_absolute.rb`**
 
@@ -927,9 +960,13 @@ Expected: FAIL — `NoMethodError: undefined method 'position_delta'` + крас
       # переносится так, чтобы минимальный угол его bbox оказался ровно в
       # заданной точке (тот же якорь, что у create_component.position).
       # rotation/scale остаются относительными, вокруг центра bbox.
+      # Порядок применения: rotation → scale → position (ПОСЛЕДНЕЙ, и он
+      # намеренно не совпадает с порядком аргументов) — дельта берётся от
+      # пост-трансформационного bounds.min, итоговый bbox-min равен цели
+      # даже в комбинированных вызовах (ревью iter-1, CRIT-5).
 ```
 
-ветку `if position` внутри метода заменить на:
+ветку `if position` внутри метода заменить на приведённую ниже и ПЕРЕНЕСТИ В КОНЕЦ метода — ПОСЛЕ веток rotation/scale (дельта должна считаться от актуального, пост-rotation/scale `bounds.min`):
 
 ```ruby
           if position
@@ -974,9 +1011,10 @@ Position-путь хендлера (mm→inch на границе + дельта
     """Move, rotate and/or scale a group or component (mm / degrees).
 
     - position: ABSOLUTE target for the entity's bounding-box MIN corner,
-      in mm. The entity is translated so bbox-min lands exactly at
-      [x, y, z] — the same anchor create_component uses. It is NOT a
-      relative offset: repeating the same position is idempotent.
+      in mm — the same anchor create_component uses. Applied LAST (after
+      rotation/scale), so the final bbox-min lands exactly at [x, y, z]
+      even in combined calls. It is NOT a relative offset: repeating the
+      same position is idempotent.
     - rotation: RELATIVE rotation in degrees around the bbox center,
       applied sequentially about world X, then Y, then Z.
     - scale: RELATIVE scale factors about the bbox center.
@@ -992,8 +1030,9 @@ Position-путь хендлера (mm→inch на границе + дельта
 ```python
 - transform_component.position is an ABSOLUTE target: the entity's
   bbox-min corner lands exactly there (same anchor as
-  create_component.position). rotation/scale are relative, about the
-  bbox center.
+  create_component.position), applied AFTER rotation/scale — the
+  bbox-min promise holds for combined calls too. rotation/scale are
+  relative, about the bbox center.
 ```
 
 - [ ] **Step 7: smoke_check шаг 6 — комментарий стал правдой + поведенческий ассерт**
