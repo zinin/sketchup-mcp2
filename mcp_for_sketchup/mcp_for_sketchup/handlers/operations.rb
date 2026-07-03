@@ -156,7 +156,7 @@ module MCPforSketchUp
         begin
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
-          target_entities = E.entity_collection(entity)
+          target_entities = E.mutable_entity_collection(entity)
           edges = target_entities.grep(Sketchup::Edge)
           edges = filter_edges(edges, edge_indices) if edge_indices
           if edges.empty?

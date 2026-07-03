@@ -223,7 +223,7 @@ module MCPforSketchUp
         # `prot.transform!` accumulates T_inv into prot.transformation but does
         # NOT rewrite the geometry inside prot.definition. So we read back
         # prot.transformation (= T_inv) and pass it to add_instance.
-        entities = E.entity_collection(board)
+        entities = E.mutable_entity_collection(board)
         origin   = face_origin(face_dir, board.bounds, w, h, ox, oy, oz)
         prot     = MCPforSketchUp::Helpers::Entities.active_model!.active_entities.add_group
         begin
@@ -285,7 +285,7 @@ module MCPforSketchUp
           yield prot
           prot.transform!(board.transformation.inverse)
           if prot.valid?
-            E.entity_collection(board).add_instance(prot.definition, prot.transformation)
+            E.mutable_entity_collection(board).add_instance(prot.definition, prot.transformation)
           end
         ensure
           # NB: если add_instance бросит, erase! уничтожит и построенный
