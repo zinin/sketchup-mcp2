@@ -19,6 +19,16 @@ from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError, format_
 
 logger = logging.getLogger("sketchup_mcp.tools")
 
+# T-06: хендлеры возвращают id как JSON-число (entity.entityID), а схемы
+# требовали строго str — модель, отдающая {"id": 12345} обратно как int,
+# получала ValidationError (клиентская коэрция это часто маскирует, но
+# прямой call_tool — нет). Принимаем оба типа; на провод уходит str(id),
+# wire-формат неизменен (Ruby require_id парсит строку).
+# P-05: int-ветка СТРОГАЯ — bool является подклассом int, и без strict
+# True тихо коэрсился бы в id "1" (валидная операция над чужой сущностью
+# из мусорного вызова). Строка "3" при этом спокойно проходит str-веткой.
+EntityId = Annotated[int, Field(strict=True)] | Annotated[str, Field(min_length=1)]
+
 
 async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     """Acquire the connection and execute one tools/call.
@@ -113,16 +123,16 @@ async def create_component(
 @mcp.tool()
 async def delete_component(
     ctx: Context,
-    id: Annotated[str, Field(min_length=1)],
+    id: EntityId,
 ) -> str:
     """Delete a component by entity ID."""
-    return await _call(ctx, "delete_component", id=id)
+    return await _call(ctx, "delete_component", id=str(id))
 
 
 @mcp.tool()
 async def transform_component(
     ctx: Context,
-    id: Annotated[str, Field(min_length=1)],
+    id: EntityId,
     position: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
     rotation: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
     scale: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
@@ -140,7 +150,7 @@ async def transform_component(
 
     Returns {id, name, type, bbox_mm} — read bbox_mm to verify the result.
     """
-    args: dict = {"id": id}
+    args: dict = {"id": str(id)}
     if position is not None:
         args["position"] = position
     if rotation is not None:
@@ -159,11 +169,11 @@ async def get_selection(ctx: Context) -> str:
 @mcp.tool()
 async def set_material(
     ctx: Context,
-    id: Annotated[str, Field(min_length=1)],
+    id: EntityId,
     material: Annotated[str, Field(min_length=1)],
 ) -> str:
     """Set material for a component (named color or hex)."""
-    return await _call(ctx, "set_material", id=id, material=material)
+    return await _call(ctx, "set_material", id=str(id), material=material)
 
 
 @mcp.tool()
@@ -178,8 +188,8 @@ async def export_scene(
 @mcp.tool()
 async def create_mortise_tenon(
     ctx: Context,
-    mortise_id: Annotated[str, Field(min_length=1)],
-    tenon_id: Annotated[str, Field(min_length=1)],
+    mortise_id: EntityId,
+    tenon_id: EntityId,
     width: Annotated[float, Field(gt=0)] = 50.0,
     height: Annotated[float, Field(gt=0)] = 25.0,
     depth: Annotated[float, Field(gt=0)] = 10.0,
@@ -197,8 +207,8 @@ async def create_mortise_tenon(
     return await _call(
         ctx,
         "create_mortise_tenon",
-        mortise_id=mortise_id,
-        tenon_id=tenon_id,
+        mortise_id=str(mortise_id),
+        tenon_id=str(tenon_id),
         width=width,
         height=height,
         depth=depth,
@@ -211,8 +221,8 @@ async def create_mortise_tenon(
 @mcp.tool()
 async def create_dovetail(
     ctx: Context,
-    tail_id: Annotated[str, Field(min_length=1)],
-    pin_id: Annotated[str, Field(min_length=1)],
+    tail_id: EntityId,
+    pin_id: EntityId,
     width: Annotated[float, Field(gt=0)] = 50.0,
     height: Annotated[float, Field(gt=0)] = 50.0,
     depth: Annotated[float, Field(gt=0)] = 15.0,
@@ -226,8 +236,8 @@ async def create_dovetail(
     return await _call(
         ctx,
         "create_dovetail",
-        tail_id=tail_id,
-        pin_id=pin_id,
+        tail_id=str(tail_id),
+        pin_id=str(pin_id),
         width=width,
         height=height,
         depth=depth,
@@ -242,8 +252,8 @@ async def create_dovetail(
 @mcp.tool()
 async def create_finger_joint(
     ctx: Context,
-    board1_id: Annotated[str, Field(min_length=1)],
-    board2_id: Annotated[str, Field(min_length=1)],
+    board1_id: EntityId,
+    board2_id: EntityId,
     width: Annotated[float, Field(gt=0)] = 50.0,
     height: Annotated[float, Field(gt=0)] = 25.0,
     depth: Annotated[float, Field(gt=0)] = 10.0,
@@ -256,8 +266,8 @@ async def create_finger_joint(
     return await _call(
         ctx,
         "create_finger_joint",
-        board1_id=board1_id,
-        board2_id=board2_id,
+        board1_id=str(board1_id),
+        board2_id=str(board2_id),
         width=width,
         height=height,
         depth=depth,
@@ -299,8 +309,8 @@ async def eval_ruby(
 @mcp.tool()
 async def boolean_operation(
     ctx: Context,
-    target_id: Annotated[str, Field(min_length=1)],
-    tool_id: Annotated[str, Field(min_length=1)],
+    target_id: EntityId,
+    tool_id: EntityId,
     operation: Literal["union", "difference", "intersection"] = "union",
     delete_originals: bool = False,
 ) -> str:
@@ -308,8 +318,8 @@ async def boolean_operation(
     return await _call(
         ctx,
         "boolean_operation",
-        target_id=target_id,
-        tool_id=tool_id,
+        target_id=str(target_id),
+        tool_id=str(tool_id),
         operation=operation,
         delete_originals=delete_originals,
     )
@@ -318,7 +328,7 @@ async def boolean_operation(
 @mcp.tool()
 async def chamfer_edge(
     ctx: Context,
-    id: Annotated[str, Field(min_length=1)],
+    id: EntityId,
     distance: Annotated[float, Field(gt=0)] = 5.0,
 ) -> str:
     """Chamfer all edges of a group/component by ``distance`` (mm).
@@ -326,13 +336,13 @@ async def chamfer_edge(
     Default 5mm — visible on the documented 100mm-cube use case. Ruby tool name
     is ``chamfer_edges`` (plural); Python parameter ``id`` maps to Ruby ``entity_id``.
     """
-    return await _call(ctx, "chamfer_edges", entity_id=id, distance=distance)
+    return await _call(ctx, "chamfer_edges", entity_id=str(id), distance=distance)
 
 
 @mcp.tool()
 async def fillet_edge(
     ctx: Context,
-    id: Annotated[str, Field(min_length=1)],
+    id: EntityId,
     radius: Annotated[float, Field(gt=0)] = 5.0,
     segments: Annotated[int, Field(gt=0)] = 8,
 ) -> str:
@@ -342,7 +352,7 @@ async def fillet_edge(
     maps to Ruby parameter ``entity_id``.
     """
     return await _call(
-        ctx, "fillet_edges", entity_id=id, radius=radius, segments=segments
+        ctx, "fillet_edges", entity_id=str(id), radius=radius, segments=segments
     )
 
 
@@ -459,10 +469,10 @@ async def list_components(
 @mcp.tool()
 async def get_component_info(
     ctx: Context,
-    id: Annotated[str, Field(min_length=1)],
+    id: EntityId,
 ) -> str:
     """Detailed info for a single Group or ComponentInstance by entity ID."""
-    return await _call(ctx, "get_component_info", id=id)
+    return await _call(ctx, "get_component_info", id=str(id))
 
 
 @mcp.tool()

@@ -37,7 +37,8 @@ Follow this strategy to be effective and avoid common pitfalls.
   create_component.position), applied AFTER rotation/scale — the
   bbox-min promise holds for combined calls too. rotation/scale are
   relative, about the bbox center.
-- Entity IDs are integers but accept strings (server casts via .to_i).
+- Entity IDs: pass them back exactly as returned — integer or string,
+  both are accepted by every id parameter.
 - New geometry lives inside SketchUp Groups so it can be moved/deleted
   as a unit.
 

@@ -207,6 +207,57 @@ async def test_schema_accepts_full_transform_combination(dispatch_conn):
          "rotation": [0.0, 0.0, 90.0], "scale": [2.0, 1.0, 1.0]})
 
 
+# --- T-06: id принимается и как int, и как str; на провод уходит str(id) ---
+
+async def test_entity_id_accepts_int_and_forwards_as_str(dispatch_conn):
+    """Хендлеры возвращают id как JSON-число; модель, отдающая его обратно
+    без кавычек, не должна ловить ValidationError (T-06/PY-TOOLS-05)."""
+    await mcp.call_tool("delete_component", {"id": 12345})
+    dispatch_conn.send_command.assert_called_once_with(
+        "delete_component", {"id": "12345"})
+
+
+async def test_entity_id_str_passes_unchanged(dispatch_conn):
+    await mcp.call_tool("get_component_info", {"id": "67"})
+    dispatch_conn.send_command.assert_called_once_with(
+        "get_component_info", {"id": "67"})
+
+
+async def test_boolean_operation_accepts_int_ids(dispatch_conn):
+    await mcp.call_tool("boolean_operation", {"target_id": 1, "tool_id": 2})
+    dispatch_conn.send_command.assert_called_once_with(
+        "boolean_operation",
+        {"target_id": "1", "tool_id": "2",
+         "operation": "union", "delete_originals": False})
+
+
+async def test_empty_string_id_still_rejected(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("delete_component", {"id": ""})
+    assert "id" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_entity_id_schema_exposes_int_and_string():
+    """T-06: LLM-видимая схема id обязана предлагать ОБА типа —
+    anyOf [{integer}, {string, minLength 1}]. Регистрация union в FastMCP
+    проверена пробой на mcp 1.27; пин защищает от тихой деградации схемы
+    (например, в {}) при апгрейде mcp."""
+    tools = {t.name: t for t in await mcp.list_tools()}
+    id_schema = tools["delete_component"].inputSchema["properties"]["id"]
+    variants = {v.get("type") for v in id_schema.get("anyOf", [])}
+    assert variants == {"integer", "string"}, f"unexpected id schema: {id_schema}"
+
+
+async def test_bool_id_rejected(dispatch_conn):
+    """P-05: bool — подкласс int; без strict-ветки True тихо коэрсился бы в
+    id "1". Зелёный и ДО правки (id пока строго str) — роль теста: пин
+    против bool-дыры ПОСЛЕ введения int-ветки."""
+    with pytest.raises(Exception):
+        await mcp.call_tool("delete_component", {"id": True})
+    dispatch_conn.send_command.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "tool_name, kwargs, expected_ruby_name, expected_ruby_kwargs",
     [
