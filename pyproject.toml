@@ -37,9 +37,6 @@ Upstream = "https://github.com/mhyrr/sketchup-mcp"
 [project.scripts]
 sketchup-mcp2 = "sketchup_mcp.server:main"
 
-[project.entry-points.mcp]
-sketchup = "sketchup_mcp.app:mcp"
-
 [build-system]
 requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
