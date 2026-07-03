@@ -25,6 +25,20 @@ def env_clean(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True, scope="module")
+def restore_config_after_module():
+    """T-26: не оставлять модуль config с окружением последнего теста.
+
+    Тесты файла перегружают sketchup_mcp.config под monkeypatched ENV; без
+    финального reload модуль оставался бы, например, с HOST="0.0.0.0" для
+    всех последующих тестовых файлов сессии. Teardown module-scoped фикстуры
+    выполняется ПОСЛЕ function-scoped восстановления ENV monkeypatch'ем,
+    поэтому финальный reload читает уже реальное окружение.
+    """
+    yield
+    importlib.reload(config_module)
+
+
 def test_defaults(env_clean):
     cfg = reload_config()
     assert cfg.PORT == 9876
