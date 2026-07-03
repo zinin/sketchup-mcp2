@@ -132,49 +132,79 @@ async def test_call_fills_tool_name_when_error_lacks_it(mock_send_command, mock_
     assert "tool=?" not in result
 
 
-from typing import Annotated, Literal
-
-from pydantic import Field, TypeAdapter, ValidationError
-
-
-def test_field_rejects_zero_or_negative_size():
-    adapter = TypeAdapter(Annotated[float, Field(gt=0)])
-    adapter.validate_python(1.5)  # ok
-    with pytest.raises(ValidationError):
-        adapter.validate_python(0)
-    with pytest.raises(ValidationError):
-        adapter.validate_python(-1.0)
+# --- T-22: валидация через РЕАЛЬНЫЕ схемы (mcp.call_tool), не TypeAdapter-зеркала.
+# Убери Field(gt=0) из tools.py — зеркальный тест продолжил бы зеленеть, а эти
+# упадут. Паттерн mcp.call_tool — как в tests/test_screenshot.py.
+from sketchup_mcp.app import mcp
 
 
-def test_literal_rejects_value_outside_set():
-    adapter = TypeAdapter(Literal["cube", "cylinder", "cone", "sphere"])
-    adapter.validate_python("cube")  # ok
-    with pytest.raises(ValidationError):
-        adapter.validate_python("invalid")
+@pytest.fixture
+def dispatch_conn():
+    """Мокнутое соединение для вызовов через mcp.call_tool: валидация должна
+    отработать ДО send_command; happy-path возвращает MCP-текст «ok»."""
+    conn = MagicMock()
+    conn.send_command = AsyncMock(return_value={"content": [{"text": "ok"}]})
+    with patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn)):
+        yield conn
 
 
-def test_field_rejects_wrong_coord_length():
-    adapter = TypeAdapter(Annotated[list[float], Field(min_length=3, max_length=3)])
-    adapter.validate_python([1.0, 2.0, 3.0])  # ok
-    with pytest.raises(ValidationError):
-        adapter.validate_python([1.0, 2.0])
-    with pytest.raises(ValidationError):
-        adapter.validate_python([1.0, 2.0, 3.0, 4.0])
+async def test_schema_rejects_zero_dimension(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_component", {"dimensions": [100.0, 0.0, 100.0]})
+    assert "dimensions" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
 
 
-def test_dimensions_rejects_zero_or_negative_element():
-    """Element-wise gt=0 rejects [1, 0, 1] и [1, -2, 3]."""
-    adapter = TypeAdapter(
-        Annotated[
-            list[Annotated[float, Field(gt=0)]],
-            Field(min_length=3, max_length=3),
-        ]
+async def test_schema_rejects_negative_dimension(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_component", {"dimensions": [100.0, -2.0, 100.0]})
+    assert "dimensions" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_rejects_wrong_dimensions_length(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_component", {"dimensions": [100.0, 100.0]})
+    assert "dimensions" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_rejects_unknown_component_type(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_component", {"type": "pyramid"})
+    assert "type" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_rejects_wrong_position_length_in_transform(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("transform_component", {"id": "5", "position": [1.0, 2.0]})
+    assert "position" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_accepts_valid_create_component(dispatch_conn):
+    """Happy-path сквозь реальный дispatcher: валидация пропускает, wire-вызов
+    уходит с дефолтами. dimensions заданы явно, чтобы тест не зависел от
+    смены дефолта в Task 6 (T-50)."""
+    await mcp.call_tool("create_component", {"dimensions": [120.0, 60.0, 40.0]})
+    dispatch_conn.send_command.assert_called_once_with(
+        "create_component",
+        {"type": "cube", "position": [0, 0, 0], "dimensions": [120.0, 60.0, 40.0]},
     )
-    adapter.validate_python([1.0, 2.0, 3.0])  # ok
-    with pytest.raises(ValidationError):
-        adapter.validate_python([1.0, 0.0, 1.0])
-    with pytest.raises(ValidationError):
-        adapter.validate_python([1.0, -2.0, 3.0])
+
+
+async def test_schema_accepts_full_transform_combination(dispatch_conn):
+    """T-22 (требование дизайна): happy-path полной комбинации
+    position+rotation+scale — валидация пропускает, все три уходят на провод
+    как есть (пин против случайной потери одного из optional-полей)."""
+    await mcp.call_tool("transform_component", {
+        "id": "5", "position": [1.0, 2.0, 3.0],
+        "rotation": [0.0, 0.0, 90.0], "scale": [2.0, 1.0, 1.0]})
+    dispatch_conn.send_command.assert_called_once_with(
+        "transform_component",
+        {"id": "5", "position": [1.0, 2.0, 3.0],
+         "rotation": [0.0, 0.0, 90.0], "scale": [2.0, 1.0, 1.0]})
 
 
 @pytest.mark.parametrize(
