@@ -257,6 +257,26 @@ class TestDispatchPostHandshake < Minitest::Test
     end
   end
 
+  # ---------- T-23.3: error-path dispatch (StandardError) ----------
+  # ScriptError-arm уже запинен test_dispatch_returns_error_envelope_for_
+  # script_error_from_any_handler — здесь только непокрытый StandardError.
+
+  def test_handler_standard_error_becomes_minus_32603_with_id
+    sys = MCPforSketchUp::Handlers::System
+    original = sys.method(:get_version)
+    sys.define_singleton_method(:get_version) { |_params| raise "handler exploded" }
+    begin
+      resp = MCPforSketchUp::Handlers::Dispatch.handle(
+        "jsonrpc" => "2.0", "method" => "tools/call",
+        "params" => { "name" => "get_version", "arguments" => {} }, "id" => 7)
+      assert_equal(-32603, resp["error"]["code"])
+      assert_includes resp["error"]["message"], "handler exploded"
+      assert_equal 7, resp["id"], "id обязан пережить error-path (matching на клиенте)"
+    ensure
+      sys.define_singleton_method(:get_version, original)
+    end
+  end
+
   private
 
   def with_eval_enabled
