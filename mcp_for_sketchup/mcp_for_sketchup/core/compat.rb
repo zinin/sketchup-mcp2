@@ -61,10 +61,14 @@ module MCPforSketchUp
       end
 
       def self.msg_python_too_new(cv)
+        # T-14: MAX_PYTHON == SERVER_VERSION, поэтому прежний совет
+        # «Reinstall …v#{MAX_PYTHON}…» предлагал переустановить уже
+        # установленную версию плагина. Указываем в обе стороны.
         "sketchup-mcp2 v#{cv} is newer than SketchUp plugin v#{SERVER_VERSION} " \
         "supports (max v#{MAX_PYTHON}). Handshake rejected. " \
-        "Reinstall mcp_for_sketchup_v#{MAX_PYTHON}-warehouse.rbz (or the " \
-        "-github variant for eval_ruby) from the GitHub release. " \
+        "Either install a newer plugin .rbz from the GitHub releases page " \
+        "(if one exists for v#{cv}), or downgrade the client: " \
+        "uv pip install sketchup-mcp2==#{MAX_PYTHON}. " \
         "Call `get_version` to inspect handshake state."
       end
 
