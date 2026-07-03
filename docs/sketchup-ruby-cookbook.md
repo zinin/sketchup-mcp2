@@ -517,3 +517,4 @@ Used internally by `Handlers::View.viewport_screenshot` (see
 | `bounds` of nested sub-group assumed to be world space | Bounds of sub-group are in parent's local space; apply parent's transformation if needed |
 | `A.subtract(B)` expecting `A - B` | `Group#subtract` is reversed: returns `B - A`. Call `tool.subtract(target)` to get «target - tool» |
 | `Sketchup::Model#undo` | Doesn't exist — use `Sketchup.send_action("editUndo:")` |
+| `copy.name = "..."` on a group copy sharing a definition | `Group#name=` silently makes a shared-definition group unique (definitions diverge; verified on SU 2026). `add_instance` itself shares the definition — name the original before copying, or don't name copies you want shared |
