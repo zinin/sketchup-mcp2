@@ -26,6 +26,10 @@ module MCPforSketchUp
         pos  = pos_mm.map  { |v| U.mm_to_inch(v) }
         dims = dims_mm.map { |v| U.mm_to_inch(v) }
         segments = V.optional_int_positive(params, "segments", default_segments_for(type))
+        # T-54: опциональное имя группы. Без него все созданные группы
+        # безымянны — find_components(name=...) бессилен, а модель не может
+        # назвать то, что строит, иначе как через eval_ruby.
+        name = params.key?("name") ? V.require_string(params, "name") : nil
 
         model = E.active_model!
         model.start_operation("Create Component (#{type.capitalize})", true)
@@ -36,6 +40,7 @@ module MCPforSketchUp
                   when "cone"     then build_cone(model.active_entities, pos, dims, segments)
                   when "sphere"   then build_sphere(model.active_entities, pos, dims, segments)
                   end
+          group.name = name if name
           model.commit_operation
           describe_entity(group)
         rescue StandardError

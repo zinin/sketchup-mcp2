@@ -19,6 +19,9 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
 
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
+
 module MCPforSketchUp
   module Helpers
     module Validation; end
@@ -27,6 +30,14 @@ module MCPforSketchUp
     module Units; end
   end
 end
+
+unless defined?(Sketchup)
+  module Sketchup
+    class Group; end
+    class ComponentInstance; end
+  end
+end
+
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 
 class TestGeometryBuilders < Minitest::Test
@@ -121,6 +132,84 @@ class TestGeometryBuilders < Minitest::Test
   # segments 1-2 молча давали вырожденную геометрию — теперь -32602 сразу.
   def test_sphere_rejects_segments_below_three
     err = assert_raises(MCPforSketchUp::Core::StructuredError) { GEO.build_sphere(FakeEntities.new, [0.0, 0.0, 0.0], [4.0, 4.0, 4.0], 2) }
+    assert_equal(-32602, err.code)
+  end
+end
+
+class TestCreateComponentName < Minitest::Test
+  GEO = MCPforSketchUp::Handlers::Geometry
+
+  FakePoint = Struct.new(:x, :y, :z)
+  FakeBounds = Struct.new(:min, :max)
+
+  class NamedGroup
+    attr_reader :entities
+    attr_accessor :name
+    def initialize
+      @entities = TestGeometryBuilders::FaceCollector.new
+      @name = ""
+    end
+    def entityID; 42; end
+    def bounds
+      FakeBounds.new(FakePoint.new(0, 0, 0), FakePoint.new(4, 4, 4))
+    end
+  end
+
+  class NamedEntities
+    attr_reader :group
+    def add_group
+      @group = NamedGroup.new
+    end
+  end
+
+  class FakeModel
+    attr_reader :active_entities
+    def initialize
+      @active_entities = NamedEntities.new
+    end
+    def start_operation(*); true; end
+    def commit_operation; true; end
+    def abort_operation; true; end
+  end
+
+  def with_fake_model(model)
+    e = MCPforSketchUp::Helpers::Entities
+    original = e.respond_to?(:active_model!) ? e.method(:active_model!) : nil
+    e.define_singleton_method(:active_model!) { model }
+    yield
+  ensure
+    if original
+      e.define_singleton_method(:active_model!, original)
+    else
+      e.singleton_class.send(:remove_method, :active_model!)
+    end
+  end
+
+  def create_sphere(extra = {})
+    params = {
+      "type" => "sphere",
+      "dimensions" => [100.0, 100.0, 100.0],
+    }.merge(extra)
+    model = FakeModel.new
+    result = with_fake_model(model) { GEO.create_component(params) }
+    [model, result]
+  end
+
+  def test_name_applied_when_given
+    model, result = create_sphere("name" => "Ball")
+    assert_equal "Ball", model.active_entities.group.name
+    assert_equal "Ball", result["name"]
+  end
+
+  def test_name_absent_leaves_default
+    model, _result = create_sphere
+    assert_equal "", model.active_entities.group.name
+  end
+
+  def test_empty_name_rejected
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      create_sphere("name" => "")
+    end
     assert_equal(-32602, err.code)
   end
 end

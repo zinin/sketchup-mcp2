@@ -108,16 +108,14 @@ async def create_component(
     dimensions: Annotated[
         list[Annotated[float, Field(gt=0)]],
         Field(min_length=3, max_length=3),
-    ] = [1, 1, 1],
+    ] = [100, 100, 100],
+    name: Optional[Annotated[str, Field(min_length=1)]] = None,
 ) -> str:
     """Create a new component in Sketchup."""
-    return await _call(
-        ctx,
-        "create_component",
-        type=type,
-        position=position,
-        dimensions=dimensions,
-    )
+    args: dict = {"type": type, "position": position, "dimensions": dimensions}
+    if name is not None:
+        args["name"] = name
+    return await _call(ctx, "create_component", **args)
 
 
 @mcp.tool()

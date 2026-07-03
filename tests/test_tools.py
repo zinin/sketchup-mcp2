@@ -258,6 +258,38 @@ async def test_bool_id_rejected(dispatch_conn):
     dispatch_conn.send_command.assert_not_called()
 
 
+# --- T-50 + T-54: видимый дефолт dimensions; опциональный name ---
+
+async def test_create_component_default_dimensions_visible(dispatch_conn):
+    """T-50: дефолт [1,1,1] мм — невидимый кубик (тот же класс бага, что чинили
+    в joints: «1.0 inch становится невидимым 1 mm»). Теперь [100,100,100]."""
+    await mcp.call_tool("create_component", {})
+    dispatch_conn.send_command.assert_called_once_with(
+        "create_component",
+        {"type": "cube", "position": [0, 0, 0], "dimensions": [100, 100, 100]},
+    )
+
+
+async def test_create_component_forwards_name_when_given(dispatch_conn):
+    """T-54: name уходит на провод только когда задан (wire-совместимость)."""
+    await mcp.call_tool("create_component", {"name": "TableLeg"})
+    wire_args = dispatch_conn.send_command.call_args.args[1]
+    assert wire_args["name"] == "TableLeg"
+
+
+async def test_create_component_omits_name_when_absent(dispatch_conn):
+    await mcp.call_tool("create_component", {})
+    wire_args = dispatch_conn.send_command.call_args.args[1]
+    assert "name" not in wire_args
+
+
+async def test_create_component_rejects_empty_name(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_component", {"name": ""})
+    assert "name" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "tool_name, kwargs, expected_ruby_name, expected_ruby_kwargs",
     [
