@@ -9,6 +9,8 @@ module MCPforSketchUp
       U = MCPforSketchUp::Helpers::Units
 
       DEFAULT_MAX_DEPTH = 3
+      DEFAULT_LIMIT = 50
+      LIMIT_MAX     = 500   # верхняя граница limit — зеркало Python Field(le=500)
 
       # get_component_info reuses collect_components (see below) so a nested
       # entity's bbox is world-correct. That traversal needs a depth bound;
@@ -48,6 +50,7 @@ module MCPforSketchUp
       def self.list_components(params)
         recursive = params.fetch("recursive", false)
         max_depth = params.fetch("max_depth", DEFAULT_MAX_DEPTH)
+        limit, offset, response_format = pagination_params(params)
         m = E.active_model!
         identity = Geom::Transformation.new
         seen = Set.new
@@ -56,7 +59,7 @@ module MCPforSketchUp
                                         depth: 0,
                                         max_depth: max_depth,
                                         seen: seen)
-        { "components" => components }
+        paginate(components, limit, offset, response_format)
       end
 
       # parent_t is the accumulated world transformation; bounds in describe
@@ -94,6 +97,33 @@ module MCPforSketchUp
         out
       end
 
+      # T-07: тот же DFS, что collect_components (включая path-local cycle
+      # guard), но с ранним выходом на первом совпадении id — get_component_info
+      # больше не обходит всю модель ради одного entity.
+      def self.find_component_by_id(entities, target_id, parent_t, depth:, max_depth:, seen:)
+        return nil if depth > max_depth
+        entities.each do |entity|
+          next unless entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
+          return describe_component(entity, parent_t, depth: depth) if entity.entityID == target_id
+          def_id = nil
+          if entity.is_a?(Sketchup::ComponentInstance)
+            def_id = entity.definition.entityID
+            next if seen.include?(def_id)
+            seen.add(def_id)
+          end
+          begin
+            found = find_component_by_id(E.entity_collection(entity), target_id,
+                                         parent_t * entity.transformation,
+                                         depth: depth + 1, max_depth: max_depth,
+                                         seen: seen)
+            return found if found
+          ensure
+            seen.delete(def_id) if def_id
+          end
+        end
+        nil
+      end
+
       def self.describe_component(entity, parent_t = Geom::Transformation.new, depth: 0)
         bb = entity.bounds
         # Project local-space bounds corners through parent transformation chain
@@ -122,9 +152,40 @@ module MCPforSketchUp
         }
       end
 
+      # T-07: единые параметры и форма пагинации для list/find. Без лимитов
+      # рекурсивный обход тяжёлой модели выгружал мегабайты JSON прямо в
+      # контекст модели (отказ только на 64 MiB фрейм-капе).
+      # P-03 (решение ревью): обход остаётся ПОЛНЫМ (collect + slice) —
+      # точный total иначе не получить, а обход всей модели был нормой
+      # этого хендлера и до пагинации; цель тикета — размер ОТВЕТА, и она
+      # достигнута. Материализация хешей вне страницы — не bottleneck для
+      # реальных SketchUp-моделей; traversal-аккумулятор отклонён как
+      # сложность без болевой точки.
+      def self.pagination_params(params)
+        [
+          V.optional_int_range(params, "limit", min: 1, max: LIMIT_MAX, default: DEFAULT_LIMIT),
+          V.optional_int_nonneg(params, "offset", 0),
+          V.optional_enum(params, "response_format", %w[concise detailed], "detailed"),
+        ]
+      end
+
+      def self.paginate(components, limit, offset, response_format)
+        page = components.slice(offset, limit) || []
+        if response_format == "concise"
+          page = page.map { |c| c.slice("id", "name", "type", "layer", "depth") }
+        end
+        {
+          "components" => page,
+          "total"      => components.length,
+          "offset"     => offset,
+          "truncated"  => offset + page.length < components.length,
+        }
+      end
+
       # ===== get_component_info ==============================================
       #
-      # Reuses collect_components so the bbox is world-correct + depth correct
+      # Uses find_component_by_id (early-exit DFS, same world-frame math as
+      # collect_components) so the bbox is world-correct + depth correct
       # BY CONSTRUCTION (consistent with list_components). The old code called
       # describe_component(entity) with an identity parent_t, which returns
       # bounds in the entity's PARENT frame — correct only for a top-level
@@ -134,17 +195,19 @@ module MCPforSketchUp
       # same id. Shared-definition entities resolve to the FIRST match (entity
       # IDs are unique per instance, so an exact id match is unambiguous when
       # present). Falls back to describe_component (parent-frame) only if the
-      # entity is nested deeper than LOOKUP_MAX_DEPTH.
+      # entity is nested deeper than LOOKUP_MAX_DEPTH. That fallback returns
+      # the bbox in the PARENT frame (identity transformation) — bbox precision
+      # degrades for entities nested deeper than LOOKUP_MAX_DEPTH; deliberate,
+      # depth 64 never occurs in real-world models.
 
       def self.get_component_info(params)
         id = V.require_id(params)
         entity = E.find!(id)
         E.require_group_or_component!(entity)
         m = E.active_model!
-        all = collect_components(m.entities, Geom::Transformation.new,
-                                 recursive: true, depth: 0,
-                                 max_depth: LOOKUP_MAX_DEPTH, seen: Set.new)
-        all.find { |c| c["id"] == entity.entityID } || describe_component(entity)
+        find_component_by_id(m.entities, entity.entityID, Geom::Transformation.new,
+                             depth: 0, max_depth: LOOKUP_MAX_DEPTH, seen: Set.new) ||
+          describe_component(entity)
       end
 
       # ===== find_components =================================================
@@ -154,6 +217,7 @@ module MCPforSketchUp
         layer_name     = params["layer"]
         type_filter    = params["type"]  # "group" | "component" | nil
         max_depth      = params.fetch("max_depth", DEFAULT_MAX_DEPTH)
+        limit, offset, response_format = pagination_params(params)
         m = E.active_model!
         identity = Geom::Transformation.new
         seen = Set.new
@@ -167,7 +231,7 @@ module MCPforSketchUp
             (layer_name.nil? || c["layer"] == layer_name) &&
             (type_filter.nil? || c["type"] == type_filter)
         end
-        { "components" => results }
+        paginate(results, limit, offset, response_format)
       end
 
       # ===== list_layers =====================================================

@@ -454,14 +454,21 @@ async def list_components(
     ctx: Context,
     recursive: bool = False,
     max_depth: Annotated[int, Field(ge=1, le=10)] = 3,
+    limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    offset: Annotated[int, Field(ge=0)] = 0,
+    response_format: Literal["concise", "detailed"] = "detailed",
 ) -> str:
-    """List groups and component instances in the model.
+    """List groups and component instances in the model (paginated).
 
-    Returns each as {id, name, type, layer, depth, bbox_mm}. Bounds are in
-    world coordinates. Set recursive=true to descend into nested components
-    (bounded by max_depth, default 3).
+    Returns {components: [...], total, offset, truncated}. Each component is
+    {id, name, type, layer, depth, bbox_mm} (detailed) or {id, name, type,
+    layer, depth} (concise). Bounds are in world coordinates. Set
+    recursive=true to descend into nested components (bounded by max_depth,
+    default 3).
     """
-    return await _call(ctx, "list_components", recursive=recursive, max_depth=max_depth)
+    return await _call(ctx, "list_components", recursive=recursive,
+                       max_depth=max_depth, limit=limit, offset=offset,
+                       response_format=response_format)
 
 
 @mcp.tool()
@@ -480,12 +487,16 @@ async def find_components(
     layer: str | None = None,
     type: Literal["group", "component"] | None = None,
     max_depth: Annotated[int, Field(ge=1, le=10)] = 3,
+    limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    offset: Annotated[int, Field(ge=0)] = 0,
+    response_format: Literal["concise", "detailed"] = "detailed",
 ) -> str:
     """Find components matching name substring, layer, and/or type.
 
     Recursive (bounded by max_depth). At least one filter should be supplied.
     """
-    args: dict = {"max_depth": max_depth}
+    args: dict = {"max_depth": max_depth, "limit": limit, "offset": offset,
+                  "response_format": response_format}
     if name is not None:
         args["name"] = name
     if layer is not None:

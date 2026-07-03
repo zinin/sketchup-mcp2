@@ -290,6 +290,33 @@ async def test_create_component_rejects_empty_name(dispatch_conn):
     dispatch_conn.send_command.assert_not_called()
 
 
+# --- T-07: пагинация интроспекции ---
+
+async def test_list_components_forwards_pagination(dispatch_conn):
+    await mcp.call_tool("list_components", {"limit": 10, "offset": 20,
+                                            "response_format": "concise"})
+    dispatch_conn.send_command.assert_called_once_with(
+        "list_components",
+        {"recursive": False, "max_depth": 3,
+         "limit": 10, "offset": 20, "response_format": "concise"})
+
+
+async def test_pagination_rejects_out_of_range(dispatch_conn):
+    for bad_args in ({"limit": 0}, {"limit": 501}, {"offset": -1},
+                     {"response_format": "tiny"}):
+        with pytest.raises(Exception):
+            await mcp.call_tool("list_components", bad_args)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_find_components_forwards_pagination(dispatch_conn):
+    await mcp.call_tool("find_components", {"name": "leg", "limit": 5})
+    dispatch_conn.send_command.assert_called_once_with(
+        "find_components",
+        {"name": "leg", "max_depth": 3,
+         "limit": 5, "offset": 0, "response_format": "detailed"})
+
+
 @pytest.mark.parametrize(
     "tool_name, kwargs, expected_ruby_name, expected_ruby_kwargs",
     [
@@ -324,9 +351,13 @@ async def test_create_component_rejects_empty_name(dispatch_conn):
         ("fillet_edge", {"id": "1"}, "fillet_edges", {"entity_id": "1", "radius": 5.0, "segments": 8}),
         # Read-only / introspection tools (без user-параметра name)
         ("get_model_info", {}, "get_model_info", {}),
-        ("list_components", {}, "list_components", {"recursive": False, "max_depth": 3}),
+        ("list_components", {}, "list_components",
+         {"recursive": False, "max_depth": 3,
+          "limit": 50, "offset": 0, "response_format": "detailed"}),
         ("list_components", {"recursive": True, "max_depth": 5},
-         "list_components", {"recursive": True, "max_depth": 5}),
+         "list_components",
+         {"recursive": True, "max_depth": 5,
+          "limit": 50, "offset": 0, "response_format": "detailed"}),
         ("get_component_info", {"id": "abc"}, "get_component_info", {"id": "abc"}),
         ("list_layers", {}, "list_layers", {}),
         ("undo", {}, "undo", {}),
@@ -334,13 +365,17 @@ async def test_create_component_rejects_empty_name(dispatch_conn):
         # До фикса сигнатура `_call(ctx, name, **kwargs)` ловила позиционное
         # tool-name И kwarg-name (через **args), вызывая
         # `TypeError: _call() got multiple values for argument 'name'`.
-        ("find_components", {}, "find_components", {"max_depth": 3}),
+        ("find_components", {}, "find_components",
+         {"max_depth": 3, "limit": 50, "offset": 0, "response_format": "detailed"}),
         ("find_components", {"name": "Casting"},
-         "find_components", {"name": "Casting", "max_depth": 3}),
+         "find_components",
+         {"name": "Casting", "max_depth": 3,
+          "limit": 50, "offset": 0, "response_format": "detailed"}),
         ("find_components",
          {"name": "X", "layer": "Frame_BSR", "type": "group", "max_depth": 5},
          "find_components",
-         {"name": "X", "layer": "Frame_BSR", "type": "group", "max_depth": 5}),
+         {"name": "X", "layer": "Frame_BSR", "type": "group", "max_depth": 5,
+          "limit": 50, "offset": 0, "response_format": "detailed"}),
         ("create_layer", {"name": "Frame_BSR"}, "create_layer", {"name": "Frame_BSR"}),
     ],
 )

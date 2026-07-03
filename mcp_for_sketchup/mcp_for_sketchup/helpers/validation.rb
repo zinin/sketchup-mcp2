@@ -90,6 +90,32 @@ module MCPforSketchUp
         v
       end
 
+      def self.optional_int_nonneg(params, key, default = nil)
+        return default unless params.key?(key)
+        v = params[key]
+        raise E.new(-32602, "field #{key} must be an integer") unless v.is_a?(Integer)
+        raise E.new(-32602, "field #{key} must be >= 0, got #{v}") unless v >= 0
+        v
+      end
+
+      def self.optional_enum(params, key, allowed, default = nil)
+        return default unless params.key?(key)
+        require_enum(params, key, allowed)
+      end
+
+      # P-04 (ревью): верхняя граница на Ruby-стороне — контракт «1..500»
+      # обязан держаться и для direct-TCP клиентов, а не только через
+      # Python-схему (Field(le=500)).
+      def self.optional_int_range(params, key, min:, max:, default:)
+        return default unless params.key?(key)
+        v = params[key]
+        raise E.new(-32602, "field #{key} must be an integer") unless v.is_a?(Integer)
+        unless v.between?(min, max)
+          raise E.new(-32602, "field #{key} must be in #{min}..#{max}, got #{v}")
+        end
+        v
+      end
+
       # Strict boolean: only TrueClass / FalseClass are accepted.
       # Reject coercion-style truthy values like "false", "0", 0, etc. —
       # JSON-RPC clients in dynamic languages can produce these unintentionally,
