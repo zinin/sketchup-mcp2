@@ -1688,7 +1688,7 @@ NB (P-16, проверено ревью): `describe_entity` НЕ пинится 
 ruby test/test_model_empty_bbox.rb    # 4 runs, 0 failures
 ruby test/test_transform_absolute.rb  # standalone smoke: describe_entity не пинится — зелёный без правок
 ruby test/run_all.rb                  # 371 runs (367+4), 0 failures
-uv run pytest tests/ -q               # 166 passed (Python не задет)
+uv run pytest tests/ -q               # 167 passed (Python не задет)
 git add mcp_for_sketchup/mcp_for_sketchup/handlers/model.rb mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb test/test_model_empty_bbox.rb
 git commit -m "fix: return null instead of 2.54e31 sentinel for empty bounding boxes (T-55)"
 ```
