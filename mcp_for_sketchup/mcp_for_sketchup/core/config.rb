@@ -70,7 +70,8 @@ module MCPforSketchUp
         # Guard defined?(Logger) like warn_invalid_pref: this can run before
         # core/logger is loaded (early boot) or in a unit test that requires
         # only config.rb — a diagnostic log must never break the fallback.
-        if defined?(Logger)
+        # T-19: именно Core::Logger — голое defined?(Logger) находило stdlib ::Logger (паттерн client_state.rb).
+        if defined?(Core::Logger)
           Logger.log("WARN", "config: non-boolean #{key} pref value #{value.inspect}; falling back to #{default.inspect}")
         end
         default
@@ -86,7 +87,7 @@ module MCPforSketchUp
       end
 
       def self.warn_invalid_pref(key, bad_value)
-        if defined?(Logger)
+        if defined?(Core::Logger)
           Logger.log("WARN", "config: invalid persisted #{key}=#{bad_value.inspect}, falling back to default")
         end
         DEFAULTS[key]
