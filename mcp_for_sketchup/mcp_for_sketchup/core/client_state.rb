@@ -3,7 +3,7 @@ module MCPforSketchUp
   module Core
     class ClientState
       attr_reader   :id, :sock, :reader, :label, :pending_write_bytes,
-                    :head_frame_remaining
+                    :head_frame_remaining, :connected_at
       attr_accessor :handshaked, :client_version, :close_after_response,
                     :pending_write_deadline_at, :close_reason
 
@@ -19,6 +19,8 @@ module MCPforSketchUp
         @pending_write_bytes       = String.new(encoding: Encoding::ASCII_8BIT)
         @pending_write_deadline_at = nil
         @head_frame_remaining      = 0
+        # T-13.5: монотонная отметка подключения — pre-handshake дедлайн.
+        @connected_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
       def closed?

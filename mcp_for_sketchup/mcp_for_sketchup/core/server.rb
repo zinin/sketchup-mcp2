@@ -22,6 +22,7 @@ module MCPforSketchUp
       # FIFO-порядок важнее fairness чтения; kernel-буферы данные удержат.
       DISPATCH_MAX_PER_TICK     = 50      # фреймов за тик; флуд мелких фреймов не должен морозить UI (T-13.2)
       FRAME_QUEUE_SOFT_MAX      = 256     # очередь насыщена — чтение приостанавливается (T-13.2, P-06)
+      PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект без валидного hello закрывается (T-13.5)
 
       def initialize
         @server         = nil
@@ -96,6 +97,7 @@ module MCPforSketchUp
         @processing = true
         begin
           accept_pending_clients
+          close_pre_handshake_stragglers
           flush_pending_writes_all_clients
           drain_reads_all_clients
           process_frame_queue
@@ -160,6 +162,27 @@ module MCPforSketchUp
           @next_client_id += 1
           @clients[sock] = state
           Logger.log_tool("server", "client_connected", client_label: state.label)
+        end
+      end
+
+      # T-13.5: коннект, не приславший валидный hello за
+      # PRE_HANDSHAKE_DEADLINE_S, закрывается. Без этого 64 молчаливых
+      # TCP-коннекта навсегда исчерпывают слоты MAX_CLIENTS (DoS при
+      # exposed-bind; до дедлайна слоты, естественно, заняты — 30 с и есть
+      # граница этой уязвимости). 30 с заведомо щедро: hello уходит первым
+      # же фреймом сразу после connect(), даже WAN-RTT на порядки меньше.
+      # Wire-протокол не меняется — это чисто серверный таймер.
+      def close_pre_handshake_stragglers
+        now = monotonic_now
+        @clients.values.each do |state|
+          next if state.handshaked
+          # P-07: клиент с reject/error-envelope в буфере доживает до
+          # доставки — его закроет close-after-drain (свой WRITE_DEADLINE_S).
+          next if state.close_after_response
+          next if now - state.connected_at < PRE_HANDSHAKE_DEADLINE_S
+          Logger.log_tool("server", "pre_handshake_timeout",
+            client_label: state.label)
+          close_client(state, "pre_handshake_timeout")
         end
       end
 

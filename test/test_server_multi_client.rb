@@ -691,4 +691,59 @@ class TestServerMultiClient < Minitest::Test
     assert_kind_of Float, state.pending_write_deadline_at,
       "deadline должен быть монотонным Float, а не Time"
   end
+
+  # ---------- T-13.5: pre-handshake дедлайн ----------
+
+  def test_silent_pre_handshake_client_closed_after_deadline
+    # 64 молчаливых коннекта (без hello) навсегда исчерпывали MAX_CLIENTS —
+    # DoS на exposed-bind. Не завершившие handshake за PRE_HANDSHAKE_DEADLINE_S
+    # закрываются.
+    sock = FakeSocket.new   # молчит: ни hello, ни байта
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    state = srv.instance_variable_get(:@clients)[sock]
+    refute_nil state, "клиент зарегистрирован"
+    refute sock.closed?, "свежий клиент жив"
+
+    # Состариваем подключение за дедлайн.
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)
+    assert sock.closed?, "молчаливый pre-handshake клиент закрыт по дедлайну"
+    refute srv.instance_variable_get(:@clients).key?(sock)
+  end
+
+  def test_handshaked_client_not_touched_by_pre_handshake_deadline
+    sock = FakeSocket.new(read_chunks: [hello_frame])
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    state = srv.instance_variable_get(:@clients)[sock]
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)
+    refute sock.closed?, "handshake завершён — дедлайн не применяется"
+  end
+
+  def test_pre_handshake_sweep_spares_client_draining_reject_envelope
+    # P-07 (ревью): клиент с framing-error-envelope в pending-write
+    # (close_after_response, T-13.1) закрывается механизмом close-after-drain
+    # со СВОИМ дедлайном (WRITE_DEADLINE_S) — pre-handshake свип не должен
+    # убивать его раньше доставки envelope.
+    sock = FakeSocket.new(read_chunks: [oversize_header])
+    sock.stub_write_pending(times: 1)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)   # framing-ошибка → envelope в буфере, close_after_response
+    state = srv.instance_variable_get(:@clients)[sock]
+    refute_nil state, "клиент ещё жив: envelope не доставлен"
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)   # свип обязан пропустить; дренаж доставит envelope
+    frames = all_frames(sock.written)
+    assert_equal 1, frames.size,
+      "error-envelope обязан быть доставлен, а не срезан pre-handshake свипом"
+    assert_equal(-32600, frames[0]["error"]["code"])
+  end
 end
