@@ -746,4 +746,58 @@ class TestServerMultiClient < Minitest::Test
       "error-envelope обязан быть доставлен, а не срезан pre-handshake свипом"
     assert_equal(-32600, frames[0]["error"]["code"])
   end
+
+  # ---------- T-23.1: глобальный FIFO — прямой spy на Dispatch.handle ----------
+
+  def test_global_dispatch_order_is_decode_arrival_fifo
+    # Существующие FIFO-тесты смотрят на per-socket ответы — интерливинг
+    # МЕЖДУ клиентами они не поймают. Spy пишет глобальную последовательность
+    # request-id: клиент A дренируется целиком раньше B (accept-order), внутри
+    # клиента — decode-order. Ожидание: [1, 2, 101, 102].
+    dispatch_mod = MCPforSketchUp::Handlers::Dispatch
+    original = dispatch_mod.method(:handle)
+    seen_ids = []
+    dispatch_mod.define_singleton_method(:handle) do |request|
+      seen_ids << request["id"] if request.is_a?(Hash) && request["method"] == "tools/call"
+      original.call(request)
+    end
+    begin
+      a = FakeSocket.new(read_chunks: [hello_frame + gv_frame(1) + gv_frame(2)])
+      b = FakeSocket.new(read_chunks: [hello_frame + gv_frame(101) + gv_frame(102)])
+      fs = FakeServer.new([a, b])
+      run_one_tick(fs)
+      assert_equal [1, 2, 101, 102], seen_ids,
+        "FIFO по (accept-order, decode-order) нарушен"
+    ensure
+      dispatch_mod.define_singleton_method(:handle, original)
+    end
+  end
+
+  # ---------- T-23.2: READ_MAX_ITERATIONS ----------
+
+  class CountingSocket < FakeSocket
+    attr_reader :reads
+    def initialize(*args, **kwargs)
+      super
+      @reads = 0
+    end
+    def read_nonblock(n)
+      @reads += 1
+      super
+    end
+  end
+
+  def test_reads_per_client_capped_per_tick
+    cap = MCPforSketchUp::Core::Server::READ_MAX_ITERATIONS
+    # cap+5 чанков по одному мелкому фрейму: за тик — ровно cap чтений,
+    # остаток дочитывается следующим тиком (кап держит UI отзывчивым).
+    chunks = [hello_frame] + (1..(cap + 4)).map { |i| gv_frame(i) }
+    sock = CountingSocket.new(read_chunks: chunks)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    assert_equal cap, sock.reads,
+      "за тик допустимо ровно READ_MAX_ITERATIONS чтений"
+    srv.send(:on_timer_tick)
+    assert_operator sock.reads, :>, cap, "следующий тик дочитывает остаток"
+  end
 end
