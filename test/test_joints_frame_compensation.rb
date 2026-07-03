@@ -251,3 +251,209 @@ class TestJointsFrameCompensation < Minitest::Test
       "carve_board2_slots must NOT route through add_parent_frame_prototype")
   end
 end
+
+# MR-3 (финальное ревью батча 1): translation-only алгебра не доказывает
+# компенсацию T⁻¹ для ПОВЁРНУТЫХ досок. Аффинная подгруппа: повороты вокруг
+# Z на 0/90/180/270 (точная целочисленная математика — без float-фазза) +
+# сдвиг. Компенсация add_parent_frame_prototype (T_inst = T_board⁻¹) обязана
+# сокращать И поворот: world = T_board ∘ T_board⁻¹ ∘ p = p.
+# C-09: тест доказывает АЛГОРИТМ компенсации (логику T⁻¹); float-поведение
+# реального Geom::Transformation при композиции матриц покрывает только
+# живой smoke на SketchUp.
+class TestJointsFrameCompensationRotated < Minitest::Test
+  J  = MCPforSketchUp::Handlers::Joints
+  EH = MCPforSketchUp::Helpers::Entities
+
+  def self.subtract_log
+    @subtract_log ||= []
+  end
+
+  FakePoint = Struct.new(:x, :y, :z)
+
+  class FakeBounds
+    attr_reader :min, :max
+    def initialize(min, max)
+      @min, @max = min, max
+    end
+    def center
+      FakePoint.new((min.x + max.x) / 2.0, (min.y + max.y) / 2.0, (min.z + max.z) / 2.0)
+    end
+  end
+
+  # Поворот вокруг Z на deg ∈ {0, 90, 180, 270} + сдвиг: apply = R(p) + d.
+  class FakeAffineZ
+    attr_reader :deg, :dx, :dy, :dz
+    def initialize(deg = 0, dx = 0.0, dy = 0.0, dz = 0.0)
+      @deg = deg % 360
+      @dx, @dy, @dz = dx, dy, dz
+    end
+
+    def rot(x, y)
+      case deg
+      when 0   then [x, y]
+      when 90  then [-y, x]
+      when 180 then [-x, -y]
+      else          [y, -x]
+      end
+    end
+
+    def apply(p)
+      x, y = rot(p[0], p[1])
+      [x + dx, y + dy, p[2] + dz]
+    end
+
+    # self ∘ other: сначала other, потом self.
+    # (A∘B).apply(p) = R_A(R_B(p) + d_B) + d_A = R_{A+B}(p) + (R_A(d_B) + d_A)
+    def compose(other)
+      ox, oy = rot(other.dx, other.dy)
+      FakeAffineZ.new(deg + other.deg, ox + dx, oy + dy, dz + other.dz)
+    end
+
+    # T⁻¹: R⁻¹(p − d) = R_{−deg}(p) − R_{−deg}(d)
+    def inverse
+      inv = FakeAffineZ.new((360 - deg) % 360)
+      ix, iy = inv.rot(-dx, -dy)
+      FakeAffineZ.new((360 - deg) % 360, ix, iy, -dz)
+    end
+  end
+
+  class FakeFace
+    def pushpull(_amount); end
+  end
+
+  class FakeCollection
+    attr_reader :faces, :groups, :instances
+    def initialize
+      @faces, @groups, @instances = [], [], []
+    end
+    def add_face(*pts)
+      @faces << pts
+      FakeFace.new
+    end
+    def add_group
+      g = FakeGroup.new(parent_collection: self)
+      @groups << g
+      g
+    end
+    def add_instance(definition, transformation)
+      @instances << { definition: definition, transformation: transformation }
+      definition.owner
+    end
+  end
+
+  class FakeGroup
+    attr_reader :entities, :transformation
+    def initialize(parent_collection: nil)
+      @parent_collection = parent_collection
+      @entities = FakeCollection.new
+      @transformation = FakeAffineZ.new
+      @valid = true
+    end
+    def definition
+      @definition ||= Struct.new(:owner).new(self)
+    end
+    def transform!(t)
+      # SketchUp transform!: результат = t ∘ старая (t применяется ПОСЛЕ).
+      @transformation = t.compose(@transformation)
+      self
+    end
+    def valid?
+      @valid
+    end
+    def erase!
+      @valid = false
+    end
+    def subtract(target)
+      TestJointsFrameCompensationRotated.subtract_log << [self, target]
+      result = FakeGroup.new(parent_collection: @parent_collection)
+      @parent_collection.groups << result if @parent_collection
+      erase!
+      target.erase! if target.respond_to?(:erase!)
+      result
+    end
+  end
+
+  class FakeBoard < Sketchup::Group
+    attr_reader :entities, :bounds, :transformation
+    def initialize(bounds:, transformation:)
+      @entities = FakeCollection.new
+      @bounds = bounds
+      @transformation = transformation
+    end
+  end
+
+  class FakeModel
+    attr_reader :active_entities
+    def initialize
+      @active_entities = FakeCollection.new
+    end
+  end
+
+  # Доска «создана у origin (x 0..4, y 0..4), повёрнута на 90° и сдвинута
+  # на dx=30»: R90 даёт x' = −y + 30 ∈ [26..30], y' = x ∈ [0..4] — мировой
+  # bbox (родительский фрейм) x 26..30, y 0..4 (C-14: легенда согласована
+  # с трансформацией алгебраически).
+  def make_rotated_board
+    FakeBoard.new(
+      bounds: FakeBounds.new(FakePoint.new(26.0, 0.0, 0.0), FakePoint.new(30.0, 4.0, 1.0)),
+      transformation: FakeAffineZ.new(90, 30.0, 0.0, 0.0),
+    )
+  end
+
+  def setup
+    self.class.subtract_log.clear
+    @model = FakeModel.new
+    model = @model
+    @saved_active_model = EH.method(:active_model!)
+    EH.define_singleton_method(:active_model!) { model }
+  end
+
+  def teardown
+    EH.define_singleton_method(:active_model!, @saved_active_model)
+  end
+
+  # Мировые (x, y) всех точек, достижимых из коллекции доски: аккумулируем
+  # композицию трансформаций сверху вниз.
+  def world_points(board)
+    pts = []
+    walk = lambda do |coll, acc|
+      coll.faces.each { |face| face.each { |p| pts << acc.apply(p) } }
+      coll.groups.each { |g| walk.call(g.entities, acc.compose(g.transformation)) }
+      coll.instances.each do |inst|
+        walk.call(inst[:definition].owner.entities, acc.compose(inst[:transformation]))
+      end
+    end
+    walk.call(board.entities, board.transformation)
+    pts
+  end
+
+  DEPTH = 0.5
+
+  def assert_geometry_on_board(board, label)
+    pts = world_points(board)
+    refute_empty pts, "#{label} must add geometry into the board"
+    lo_x = board.bounds.min.x - DEPTH - 1e-6
+    hi_x = board.bounds.max.x + DEPTH + 1e-6
+    lo_y = board.bounds.min.y - DEPTH - 1e-6
+    hi_y = board.bounds.max.y + DEPTH + 1e-6
+    xs = pts.map { |p| p[0] }
+    ys = pts.map { |p| p[1] }
+    assert xs.min >= lo_x && xs.max <= hi_x && ys.min >= lo_y && ys.max <= hi_y,
+      "#{label}: геометрия ушла с ПОВЁРНУТОЙ доски (x #{xs.min.round(3)}..#{xs.max.round(3)}, " \
+      "y #{ys.min.round(3)}..#{ys.max.round(3)}; допустимо x #{lo_x}..#{hi_x}, y #{lo_y}..#{hi_y}) — " \
+      "компенсация T_board⁻¹ не сокращает поворот (MR-3)"
+  end
+
+  def test_carve_tails_lands_on_rotated_board
+    board = make_rotated_board
+    J.carve_tails(board, 2.0, 2.0, DEPTH, 15.0, 3, 0, 0, 0)
+    assert_geometry_on_board(board, "carve_tails")
+  end
+
+  def test_carve_board1_fingers_lands_on_rotated_board
+    board = make_rotated_board
+    J.reset_joint_stats!
+    J.carve_board1_fingers(board, 2.0, 2.0, DEPTH, 5, 0, 0, 0)
+    assert_geometry_on_board(board, "carve_board1_fingers")
+  end
+end
