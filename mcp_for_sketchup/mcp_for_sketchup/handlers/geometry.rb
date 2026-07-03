@@ -23,6 +23,7 @@ module MCPforSketchUp
         # mm → inches for SketchUp internal API
         pos_mm  = V.optional_coords3(params, "position") || [0, 0, 0]
         dims_mm = V.require_dimensions3(params, "dimensions")
+        validate_min_dimensions!(dims_mm, type)
         pos  = pos_mm.map  { |v| U.mm_to_inch(v) }
         dims = dims_mm.map { |v| U.mm_to_inch(v) }
         segments = V.optional_int_positive(params, "segments", default_segments_for(type))
@@ -105,6 +106,14 @@ module MCPforSketchUp
         position_mm = V.optional_coords3(params, "position")
         rotation    = V.optional_coords3(params, "rotation")
         scale       = V.optional_coords3(params, "scale")
+        # T-17: |s| ≤ 1e-9 — сингулярная матрица, необратимая порча геометрии;
+        # на SU2026 Transformation#inverse на ней кидает ArgumentError.
+        # Fail-closed до старта operation.
+        scale&.each_with_index do |s, i|
+          next if s.abs > 1e-9
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "field scale[#{i}] must be non-zero (|s| > 1e-9), got #{s}")
+        end
         position    = position_mm&.map { |v| U.mm_to_inch(v) }
 
         model = E.active_model!
@@ -149,6 +158,27 @@ module MCPforSketchUp
         end
       end
 
+      # MR-2 (финальное ревью батча 1) + P-13/C-13 (ревью батча 2): floor
+      # per-type. Box вырождается только у merge-tolerance SketchUp
+      # (0.001" = 0.0254 мм) — floor 0.1 мм (4× запас) пропускает
+      # легитимный шпон/лист 0.5–0.8 мм. Криволинейные (sphere/cylinder/
+      # cone) вырождаются раньше из-за тесселяции — floor 1.0 мм; полюса
+      # сфер дополнительно проверяет polar-chord формула в build_sphere.
+      MIN_DIMENSION_MM_BOX    = 0.1
+      MIN_DIMENSION_MM_CURVED = 1.0
+      MIN_POLAR_CHORD_MM = 0.04  # ~1.6 × merge-tolerance (0.0254 мм) — P-13
+
+      def self.validate_min_dimensions!(dims_mm, type)
+        floor = type == "cube" ? MIN_DIMENSION_MM_BOX : MIN_DIMENSION_MM_CURVED
+        dims_mm.each_with_index do |d, i|
+          next if d >= floor
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "dimensions[#{i}] must be >= #{floor} mm for type #{type}, got #{d} — " \
+            "sub-millimeter geometry collapses into SketchUp's merge tolerance")
+        end
+        dims_mm
+      end
+
       def self.build_cube(entities, pos, dims)
         G.make_box(entities, pos[0], pos[1], pos[2], dims[0], dims[1], dims[2])
       end
@@ -184,6 +214,17 @@ module MCPforSketchUp
         # полноценного кольца) — отклоняем как invalid params.
         raise MCPforSketchUp::Core::StructuredError.new(-32602, "segments must be >= 3 for spheres") if segments < 3
         radius = dims[0] / 2.0
+        # MR-2: самое короткое ребро UV-сферы — хорда первого полярного
+        # кольца: 2·r·sin²(π/segments). Тоньше MIN_POLAR_CHORD_MM (~1.6×
+        # merge-tolerance) — add_face молча склеит вершины, оболочка выйдет
+        # дырявой (floor'ом это не ловится: d=10 мм при segments=96 вырожден).
+        polar_chord_mm = 2.0 * U.inch_to_mm(radius) * Math.sin(Math::PI / segments)**2
+        if polar_chord_mm < MIN_POLAR_CHORD_MM
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "sphere too small for #{segments} segments: polar-ring chord " \
+            "#{polar_chord_mm.round(4)} mm < #{MIN_POLAR_CHORD_MM} mm — " \
+            "reduce segments or enlarge the sphere")
+        end
         center = [pos[0] + radius, pos[1] + radius, pos[2] + radius]
         group = entities.add_group
         # UV-sphere: latitude × longitude grid

@@ -19,9 +19,9 @@ module MCPforSketchUp
         width      = U.mm_to_inch(V.optional_positive(params, "width",  50.0))
         height     = U.mm_to_inch(V.optional_positive(params, "height", 25.0))
         depth      = U.mm_to_inch(V.optional_positive(params, "depth",  10.0))
-        ox = U.mm_to_inch((params["offset_x"] || 0.0).to_f)
-        oy = U.mm_to_inch((params["offset_y"] || 0.0).to_f)
-        oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
+        ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
+        oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
+        oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
 
         model = E.active_model!
         model.start_operation("Mortise and Tenon", true)
@@ -61,10 +61,16 @@ module MCPforSketchUp
         height   = U.mm_to_inch(V.optional_positive(params, "height", 50.0))
         depth    = U.mm_to_inch(V.optional_positive(params, "depth",  15.0))
         angle    = V.optional_positive(params, "angle", 15.0)  # degrees, не конвертим
+        # T-17: tan(angle) при angle→90° взрывается — «ласточкины хвосты»
+        # вырождаются в мусорную геометрию. Практичный предел — 60°.
+        if angle > 60.0
+          raise Core::StructuredError.new(-32602,
+            "field angle must be in (0, 60] degrees, got #{angle}")
+        end
         num_tails = V.optional_int_positive(params, "num_tails", 3)
-        ox = U.mm_to_inch((params["offset_x"] || 0.0).to_f)
-        oy = U.mm_to_inch((params["offset_y"] || 0.0).to_f)
-        oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
+        ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
+        oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
+        oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
 
         model = E.active_model!
         model.start_operation("Dovetail Joint", true)
@@ -100,9 +106,9 @@ module MCPforSketchUp
         height = U.mm_to_inch(V.optional_positive(params, "height", 25.0))
         depth  = U.mm_to_inch(V.optional_positive(params, "depth",  10.0))
         num_fingers = V.optional_int_positive(params, "num_fingers", 5)
-        ox = U.mm_to_inch((params["offset_x"] || 0.0).to_f)
-        oy = U.mm_to_inch((params["offset_y"] || 0.0).to_f)
-        oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
+        ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
+        oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
+        oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
 
         model = E.active_model!
         model.start_operation("Finger Joint", true)

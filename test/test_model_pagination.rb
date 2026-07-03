@@ -185,4 +185,42 @@ class TestModelPagination < Minitest::Test
     e.define_singleton_method(:find!, orig_find)
     e.define_singleton_method(:require_group_or_component!, orig_rgc)
   end
+
+  # ---------- T-17: типы параметров ----------
+
+  def test_list_components_rejects_string_recursive
+    with_model_stub do
+      err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+        M.list_components({ "recursive" => "false" })
+      end
+      assert_equal(-32602, err.code)
+    end
+  end
+
+  def test_list_components_rejects_string_max_depth
+    with_model_stub do
+      assert_raises(MCPforSketchUp::Core::StructuredError) do
+        M.list_components({ "max_depth" => "3" })
+      end
+    end
+  end
+
+  def test_find_components_rejects_non_string_name_and_bad_type
+    with_model_stub do
+      assert_raises(MCPforSketchUp::Core::StructuredError) { M.find_components({ "name" => 123 }) }
+      assert_raises(MCPforSketchUp::Core::StructuredError) { M.find_components({ "type" => "polygon" }) }
+    end
+  end
+
+  # ---------- T-18: case-insensitive поиск ----------
+
+  def test_find_components_is_case_insensitive
+    with_model_stub do
+      @groups[0].name = "Table Leg"
+      res = M.find_components({ "name" => "table" })
+      assert_equal ["Table Leg"], res["components"].map { |c| c["name"] },
+        "поиск «table» обязан находить «Table Leg» — иначе модель решает, " \
+        "что объекта нет, и пересоздаёт геометрию (T-18)"
+    end
+  end
 end

@@ -135,6 +135,58 @@ class TestGeometryBuilders < Minitest::Test
     err = assert_raises(MCPforSketchUp::Core::StructuredError) { GEO.build_sphere(FakeEntities.new, [0.0, 0.0, 0.0], [4.0, 4.0, 4.0], 2) }
     assert_equal(-32602, err.code)
   end
+
+  # ---------- MR-2: минимальные размеры (per-type — решение P-13+C-13) ----------
+
+  def test_validate_min_dimensions_per_type_floors
+    # C-13: box пропускает легитимный шпон 0.5 мм; криволинейные держат 1.0.
+    assert_equal [0.5, 100.0, 100.0],
+      GEO.validate_min_dimensions!([0.5, 100.0, 100.0], "cube")
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.validate_min_dimensions!([0.5, 100.0, 100.0], "cylinder")
+    end
+    assert_equal(-32602, err.code)
+    assert_match(/dimensions\[0\]/, err.message)
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.validate_min_dimensions!([0.05, 100.0, 100.0], "cube")
+    end
+    assert_equal(-32602, err.code)
+  end
+
+  def test_validate_min_dimensions_accepts_floor
+    assert_equal [1.0, 100.0, 100.0], GEO.validate_min_dimensions!([1.0, 100.0, 100.0], "sphere")
+    assert_equal [0.1, 100.0, 100.0], GEO.validate_min_dimensions!([0.1, 100.0, 100.0], "cube")
+  end
+
+  def test_sphere_rejects_subtolerance_polar_chord_at_default_segments
+    # d = 0.02" (0.508 мм): хорда полярного кольца 2r·sin²(π/16) ≈ 0.019 мм —
+    # тоньше merge-tolerance, add_face молча склеит вершины.
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.build_sphere(FakeEntities.new, [0.0, 0.0, 0.0], [0.02, 0.02, 0.02], SEGMENTS)
+    end
+    assert_equal(-32602, err.code)
+    assert_match(/segments|polar/i, err.message)
+  end
+
+  def test_sphere_rejects_high_segment_count_on_small_sphere
+    # d = 10 мм (0.394"), 96 сегментов: статический floor 1 мм ПРОХОДИТ, но
+    # хорда 2·5·sin²(π/96) ≈ 0.011 мм — вырождение ловится только формулой.
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.build_sphere(FakeEntities.new, [0.0, 0.0, 0.0], [0.394, 0.394, 0.394], 96)
+    end
+    assert_equal(-32602, err.code)
+  end
+
+  # ---------- T-17: scale ≈ 0 ----------
+
+  def test_transform_component_rejects_zero_scale_before_touching_model
+    # Валидация стоит ДО E.active_model! — пустой стаб Entities не нужен.
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.transform_component("id" => 1, "scale" => [0.0, 1.0, 1.0])
+    end
+    assert_equal(-32602, err.code)
+    assert_match(/scale\[0\]/, err.message)
+  end
 end
 
 class TestCreateComponentName < Minitest::Test

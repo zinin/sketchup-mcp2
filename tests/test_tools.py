@@ -317,6 +317,33 @@ async def test_find_components_forwards_pagination(dispatch_conn):
          "limit": 5, "offset": 0, "response_format": "detailed"})
 
 
+# --- T-17 + MR-2: зеркальные констрейнты схем ---
+
+async def test_schema_rejects_below_absolute_floor(dispatch_conn):
+    """Python держит АБСОЛЮТНЫЙ floor 0.1 мм; per-type floor (1.0 для
+    криволинейных) — Ruby-инстанция: кросс-полевая (type+dimensions)
+    валидация на pydantic-стороне неоправданно сложна (P-05/P-13)."""
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_component", {"dimensions": [0.05, 100.0, 100.0]})
+    assert "dimensions" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_rejects_zero_scale_component(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("transform_component", {"id": "5", "scale": [0.0, 1.0, 1.0]})
+    assert "scale" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_rejects_dovetail_angle_above_60(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_dovetail",
+                            {"tail_id": "1", "pin_id": "2", "angle": 75.0})
+    assert "angle" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "tool_name, kwargs, expected_ruby_name, expected_ruby_kwargs",
     [

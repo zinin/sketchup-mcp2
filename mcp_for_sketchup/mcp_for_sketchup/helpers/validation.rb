@@ -129,6 +129,20 @@ module MCPforSketchUp
         end
         v
       end
+
+      # T-17: строгий опциональный Numeric (joints-offsets шли через голый
+      # .to_f — строка "abc" молча становилась 0.0).
+      def self.optional_number(params, key, default = 0.0)
+        return default unless params.key?(key)
+        v = params[key]
+        raise E.new(-32602, "field #{key} must be a number, got #{v.inspect}") unless v.is_a?(Numeric)
+        v.to_f
+      end
+
+      def self.optional_string(params, key)
+        return nil unless params.key?(key)
+        require_string(params, key)
+      end
     end
   end
 end

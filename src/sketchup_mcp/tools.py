@@ -10,7 +10,7 @@ import logging
 from typing import Annotated, Literal, Optional
 
 from mcp.server.fastmcp import Context, Image
-from pydantic import Field
+from pydantic import AfterValidator, Field
 
 from sketchup_mcp import compat, config
 from sketchup_mcp.app import mcp
@@ -28,6 +28,15 @@ logger = logging.getLogger("sketchup_mcp.tools")
 # True тихо коэрсился бы в id "1" (валидная операция над чужой сущностью
 # из мусорного вызова). Строка "3" при этом спокойно проходит str-веткой.
 EntityId = Annotated[int, Field(strict=True)] | Annotated[str, Field(min_length=1)]
+
+
+def _validate_scale_nonzero(v: list[float]) -> list[float]:
+    # T-17 (зеркало Ruby): |s| <= 1e-9 — сингулярная матрица; SU2026
+    # Transformation#inverse на ней кидает ArgumentError.
+    for i, s in enumerate(v):
+        if abs(s) <= 1e-9:
+            raise ValueError(f"scale[{i}] must be non-zero (|s| > 1e-9)")
+    return v
 
 
 async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
@@ -106,7 +115,7 @@ async def create_component(
     type: Literal["cube", "cylinder", "cone", "sphere"] = "cube",
     position: Annotated[list[float], Field(min_length=3, max_length=3)] = [0, 0, 0],
     dimensions: Annotated[
-        list[Annotated[float, Field(gt=0)]],
+        list[Annotated[float, Field(ge=0.1)]],
         Field(min_length=3, max_length=3),
     ] = [100, 100, 100],
     name: Optional[Annotated[str, Field(min_length=1)]] = None,
@@ -133,7 +142,10 @@ async def transform_component(
     id: EntityId,
     position: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
     rotation: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
-    scale: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
+    scale: Optional[
+        Annotated[list[float], Field(min_length=3, max_length=3),
+                  AfterValidator(_validate_scale_nonzero)]
+    ] = None,
 ) -> str:
     """Move, rotate and/or scale a group or component (mm / degrees).
 
@@ -224,7 +236,7 @@ async def create_dovetail(
     width: Annotated[float, Field(gt=0)] = 50.0,
     height: Annotated[float, Field(gt=0)] = 50.0,
     depth: Annotated[float, Field(gt=0)] = 15.0,
-    angle: Annotated[float, Field(gt=0)] = 15.0,
+    angle: Annotated[float, Field(gt=0, le=60)] = 15.0,
     num_tails: Annotated[int, Field(gt=0)] = 3,
     offset_x: float = 0.0,
     offset_y: float = 0.0,
@@ -492,8 +504,8 @@ async def get_component_info(
 @mcp.tool()
 async def find_components(
     ctx: Context,
-    name: str | None = None,
-    layer: str | None = None,
+    name: Annotated[str, Field(min_length=1)] | None = None,
+    layer: Annotated[str, Field(min_length=1)] | None = None,
     type: Literal["group", "component"] | None = None,
     max_depth: Annotated[int, Field(ge=1, le=10)] = 3,
     limit: Annotated[int, Field(ge=1, le=500)] = 50,

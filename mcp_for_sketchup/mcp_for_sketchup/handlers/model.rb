@@ -12,7 +12,7 @@ module MCPforSketchUp
       DEFAULT_LIMIT = 50
       LIMIT_MAX     = 500   # верхняя граница limit — зеркало Python Field(le=500)
 
-      # get_component_info reuses collect_components (see below) so a nested
+      # get_component_info reuses find_component_by_id (see below) so a nested
       # entity's bbox is world-correct. That traversal needs a depth bound;
       # this one is deliberately generous (64) — it only limits how deeply
       # nested an entity can be and still resolve via the world-frame path,
@@ -45,8 +45,8 @@ module MCPforSketchUp
       # know about local-space nesting.
 
       def self.list_components(params)
-        recursive = params.fetch("recursive", false)
-        max_depth = params.fetch("max_depth", DEFAULT_MAX_DEPTH)
+        recursive = V.optional_bool(params, "recursive", false)
+        max_depth = V.optional_int_positive(params, "max_depth", DEFAULT_MAX_DEPTH)
         limit, offset, response_format = pagination_params(params)
         m = E.active_model!
         identity = Geom::Transformation.new
@@ -230,10 +230,10 @@ module MCPforSketchUp
       # ===== find_components =================================================
 
       def self.find_components(params)
-        name_substring = params["name"]
-        layer_name     = params["layer"]
-        type_filter    = params["type"]  # "group" | "component" | nil
-        max_depth      = params.fetch("max_depth", DEFAULT_MAX_DEPTH)
+        name_substring = V.optional_string(params, "name")
+        layer_name     = V.optional_string(params, "layer")
+        type_filter    = V.optional_enum(params, "type", %w[group component])
+        max_depth      = V.optional_int_positive(params, "max_depth", DEFAULT_MAX_DEPTH)
         limit, offset, response_format = pagination_params(params)
         m = E.active_model!
         identity = Geom::Transformation.new
@@ -243,8 +243,10 @@ module MCPforSketchUp
                                  depth: 0,
                                  max_depth: max_depth,
                                  seen: seen)
+        # T-18: case-insensitive — «table» находит «Table Leg»
+        needle = name_substring&.downcase
         results = all.select do |c|
-          (name_substring.nil? || c["name"].include?(name_substring)) &&
+          (needle.nil? || c["name"].downcase.include?(needle)) &&
             (layer_name.nil? || c["layer"] == layer_name) &&
             (type_filter.nil? || c["type"] == type_filter)
         end
