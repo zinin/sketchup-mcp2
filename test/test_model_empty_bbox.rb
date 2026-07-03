@@ -58,6 +58,7 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/model"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 
 class TestModelEmptyBbox < Minitest::Test
   M = MCPforSketchUp::Handlers::Model
@@ -138,5 +139,33 @@ class TestModelEmptyBbox < Minitest::Test
       Geom::Point3d.new(0, SENTINEL, 0), Geom::Point3d.new(1, -SENTINEL, 1))
     out = M.describe_component(g)
     assert_nil out["bbox_mm"]
+  end
+
+  def test_degenerate_min_eq_max_bbox_is_not_empty
+    # T-55 follow-up: предикат empty_bbox? — СТРОГОЕ `>` по каждой оси.
+    # Вырожденный bbox (min == max: точка, ребро, плоская грань) — НЕ
+    # «пусто»: empty_bbox? false, bbox_mm_or_nil отдаёт хеш, не null.
+    bb = Geom::BoundingBox.new(
+      Geom::Point3d.new(10, 20, 30), Geom::Point3d.new(10, 20, 30))
+    refute MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb),
+      "min == max — вырожденный, но НЕ пустой bbox (строгое >)"
+    out = M.bbox_mm_or_nil(bb)
+    refute_nil out, "вырожденный bbox обязан отдавать хеш, а не null"
+    assert_equal [254.0, 508.0, 762.0], out["min"]
+    assert_equal [254.0, 508.0, 762.0], out["max"]
+  end
+
+  def test_describe_entity_empty_bounds_returns_null_bbox
+    # T-55 follow-up: nil-ветка Handlers::Geometry.describe_entity до сих
+    # пор была покрыта только косвенно (describe_component — другой метод).
+    g = Sketchup::Group.new
+    g.name = "hollow-entity"
+    g.entityID = 8
+    g.bounds = empty_bbox
+    out = MCPforSketchUp::Handlers::Geometry.describe_entity(g)
+    assert_nil out["bbox_mm"]
+    assert_equal 8, out["id"]
+    assert_equal "hollow-entity", out["name"]
+    assert_equal "group", out["type"]
   end
 end
