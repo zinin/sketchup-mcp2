@@ -343,7 +343,9 @@ async def main() -> int:
         print("    matched-pair: compatible=true")
 
         print("\nALL STEPS PASSED ✓")
-        print(f"Smoke complete: 25 steps total, {eval_skipped[0]} skipped (eval gate closed)")
+        skips = (f", {eval_skipped[0]} skipped (eval gate closed)"
+                 if eval_skipped[0] else "")
+        print(f"Smoke complete: 25 steps total{skips}")
         return 0
     except Exception as e:
         print(f"\nFAILED at step {step}: {e}", file=sys.stderr)
