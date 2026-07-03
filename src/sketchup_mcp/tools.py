@@ -365,8 +365,8 @@ async def get_viewport_screenshot(
     zoom_extents: bool = False,
     style: Literal["default", "shaded", "hidden_line", "wireframe"] = "default",
     restore_view: bool = True,
-) -> Image:
-    """Capture the current SketchUp viewport as a PNG and return it as an MCP Image.
+) -> list:
+    """Capture the current SketchUp viewport; returns the PNG image plus a JSON text block {width, height, preset_used, style_used}.
 
     Useful for letting Claude visually verify the scene between steps.
 
@@ -440,7 +440,16 @@ async def get_viewport_screenshot(
         png_bytes = base64.b64decode(b64, validate=True)
     except (ValueError, base64.binascii.Error) as e:
         raise SketchUpError(-32603, f"png_base64 decode failed: {e}") from e
-    return Image(data=png_bytes, format="png")
+    # T-28: Ruby отдаёт размеры и фактически применённые preset/style —
+    # пробрасываем их текстовым блоком рядом с картинкой, чтобы модель могла
+    # проверить параметры захвата (а не выбрасываем, как раньше).
+    meta = {
+        "width": payload.get("width"),
+        "height": payload.get("height"),
+        "preset_used": payload.get("preset_used"),
+        "style_used": payload.get("style_used"),
+    }
+    return [Image(data=png_bytes, format="png"), json.dumps(meta)]
 
 
 @mcp.tool()
