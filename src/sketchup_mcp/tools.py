@@ -221,8 +221,9 @@ async def transform_component(
 async def get_selection(ctx: Context) -> str:
     """Get the entities currently selected in the SketchUp UI.
 
-    Returns: JSON {entities: [...]} — each entity is {id, name, type,
-    bbox_mm|null}.
+    Returns: JSON {entities: [...]} — groups/components are {id, name, type,
+    layer, depth, bbox_mm|null}; other selected entities (edges, faces, ...)
+    are {id, type} only.
     """
     return await _call(ctx, "get_selection")
 
