@@ -376,7 +376,7 @@ class TestServerMultiClient < Minitest::Test
       "deadline should be set after first append"
 
     # Push the deadline into the past — the next flush must close the client.
-    state.pending_write_deadline_at = Time.now - 1.0
+    state.pending_write_deadline_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1.0
     srv.send(:on_timer_tick)
 
     assert sock.closed?, "client should be closed after the deadline elapses"
@@ -420,7 +420,7 @@ class TestServerMultiClient < Minitest::Test
     near    = "x" * (cap - 64)   # just below the cap; can't trigger overflow alone
     state.append_pending_write("h" * 8)   # малый head (T-13.3) — near ниже становится ХВОСТОМ
     state.append_pending_write(near)
-    state.pending_write_deadline_at = Time.now + 60   # don't deadline during test
+    state.pending_write_deadline_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60   # don't deadline during test
 
     # Crafting an overflow: ask write_response to encode a typical small
     # response — the projected buffer (~near + frame_bytes) overshoots cap.
@@ -477,7 +477,7 @@ class TestServerMultiClient < Minitest::Test
     # Buffer enough that an 8-byte/call partial write can't drain it in one go.
     state.append_pending_write("z" * 4096)
     # Set a near-future deadline (not yet expired) we can prove gets extended.
-    original_deadline = Time.now + 0.5
+    original_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
     state.pending_write_deadline_at = original_deadline
     # Each flush call writes 8 bytes then signals WaitWritable (calls: 1).
     sock.stub_partial_write(max_bytes_per_call: 8, calls: 1)
@@ -675,5 +675,20 @@ class TestServerMultiClient < Minitest::Test
     assert_equal 40, state.head_frame_remaining
     state.consume_pending_write(60)           # head дожат (40) + 20 из хвоста
     assert_equal 0, state.head_frame_remaining
+  end
+
+  # ---------- T-13.4: write-deadline на монотонных часах ----------
+
+  def test_write_deadline_uses_monotonic_clock
+    # Wall-clock Time.now прыгает (NTP-коррекция, перевод часов) — idle-дедлайн
+    # на нём ложно закрывает/вечно держит клиента. Монотонные секунды — Float.
+    sock = FakeSocket.new
+    sock.stub_write_pending(times: 1)
+    state = MCPforSketchUp::Core::ClientState.new(0, sock)
+    srv = MCPforSketchUp::Core::Server.new
+    srv.instance_variable_get(:@clients)[sock] = state
+    srv.send(:write_response, state, response_of_size(1, 10))
+    assert_kind_of Float, state.pending_write_deadline_at,
+      "deadline должен быть монотонным Float, а не Time"
   end
 end

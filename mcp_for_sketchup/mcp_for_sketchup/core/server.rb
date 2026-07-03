@@ -73,6 +73,12 @@ module MCPforSketchUp
         LOOPBACK_HOSTS.include?(h) || h.start_with?("127.")
       end
 
+      # T-13.4: все дедлайны — на монотонных часах; wall-clock (Time.now)
+      # прыгает при NTP-коррекции и переводе времени.
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
       # Concise server-log echo of the UI's host-security warning. Emitted at
       # bind for any non-loopback host: such a bind exposes the unauthenticated
       # MCP server — including eval_ruby (arbitrary Ruby) — to the LAN.
@@ -368,7 +374,7 @@ module MCPforSketchUp
         end
         state.append_pending_write(frame)
         if state.pending_write_deadline_at.nil?
-          state.pending_write_deadline_at = Time.now + WRITE_DEADLINE_S
+          state.pending_write_deadline_at = monotonic_now + WRITE_DEADLINE_S
         end
         # Attempt to drain right now — avoids wasting one tick when the
         # kernel send-buffer is ready.
@@ -392,7 +398,7 @@ module MCPforSketchUp
         return if state.pending_write_empty?
 
         if state.pending_write_deadline_at &&
-           Time.now > state.pending_write_deadline_at
+           monotonic_now > state.pending_write_deadline_at
           Logger.log_tool("server", "write_timeout",
             client_label: state.label)
           close_client(state, "write_timeout")
@@ -413,7 +419,7 @@ module MCPforSketchUp
           # Extend the idle deadline so a slow-but-moving transfer survives —
           # only a stall (no progress for WRITE_DEADLINE_S) trips the timeout.
           if n > 0
-            state.pending_write_deadline_at = Time.now + WRITE_DEADLINE_S
+            state.pending_write_deadline_at = monotonic_now + WRITE_DEADLINE_S
           else
             # Defensive: write_nonblock claimed success but wrote zero bytes.
             # Break out to avoid a tight loop; treat it like WaitWritable —
