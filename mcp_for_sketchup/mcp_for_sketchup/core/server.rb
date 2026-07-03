@@ -12,6 +12,16 @@ module MCPforSketchUp
       WRITE_DEADLINE_S          = 5.0     # idle (no-forward-progress) drain deadline
       PENDING_WRITE_MAX_BYTES   = 16 * 1024 * 1024  # 16 MiB per-client buffer cap
       MAX_CLIENTS               = 64      # refuse connections beyond this (review F3)
+      # T-13.2: связка капов (M-08 ревью). Чтение (READ_MAX_ITERATIONS=50
+      # НА КЛИЕНТА) может опережать глобальный диспатч (50 НА ТИК); при
+      # TIMER_INTERVAL 0.1 с потолок ~500 диспатчей/с — за глаза для
+      # односкетчаповых нагрузок. Разница поглощается очередью до
+      # FRAME_QUEUE_SOFT_MAX (~5 тиков разгрузки), дальше чтение
+      # приостанавливается и TCP-окно передаёт backpressure клиенту.
+      # Стоп чтения ГЛОБАЛЬНЫЙ (все сокеты) — осознанно: очередь одна,
+      # FIFO-порядок важнее fairness чтения; kernel-буферы данные удержат.
+      DISPATCH_MAX_PER_TICK     = 50      # фреймов за тик; флуд мелких фреймов не должен морозить UI (T-13.2)
+      FRAME_QUEUE_SOFT_MAX      = 256     # очередь насыщена — чтение приостанавливается (T-13.2, P-06)
 
       def initialize
         @server         = nil
@@ -156,6 +166,10 @@ module MCPforSketchUp
       # design §5.3 / §13.1 for the rationale (round-robin reads were
       # considered and explicitly rejected).
       def drain_reads_all_clients
+        # T-13.2: backpressure. Очередь и так забита — оставляем данные в
+        # kernel-буфере (TCP-окно заполнится, клиент притормозит сам). FIFO
+        # не страдает: недочитанное придёт в том же порядке следующим тиком.
+        return if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX
         # `Hash#values` returns a fresh array — iteration is safe even when
         # drain_one_client triggers close_client, which mutates @clients.
         @clients.values.each do |state|
@@ -177,6 +191,10 @@ module MCPforSketchUp
           state.reader.feed(chunk).each do |body|
             @frame_queue << [state, body]
           end
+          # P-06: стоп посреди дренажа, как только очередь насыщена; перелёт
+          # ограничен фреймами ОДНОГО read_nonblock-куска (≤64 KiB), а не
+          # всем бюджетом READ_MAX_ITERATIONS.
+          break if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX
           iterations += 1
         end
       rescue IO::WaitReadable
@@ -202,7 +220,11 @@ module MCPforSketchUp
       end
 
       def process_frame_queue
+        dispatched = 0
         until @frame_queue.empty?
+          # T-13.2: кап на тик. shift с головы + return сохраняют FIFO —
+          # остаток обрабатывается следующим тиком, UI SketchUp дышит.
+          return if dispatched >= DISPATCH_MAX_PER_TICK
           state, body = @frame_queue.shift
           next if state.closed? || state.close_after_response
 
@@ -210,6 +232,7 @@ module MCPforSketchUp
           if response
             write_response(state, response)
           end
+          dispatched += 1
         end
       end
 

@@ -542,4 +542,76 @@ class TestServerMultiClient < Minitest::Test
     assert_equal 0, frames[0]["id"]
     assert_equal(-32700, frames.last["error"]["code"])
   end
+
+  # ---------- T-13.2: кап диспатча/тик + backpressure ----------
+
+  def gv_frame(id)
+    fr("jsonrpc" => "2.0", "method" => "tools/call",
+       "params" => { "name" => "get_version", "arguments" => {} },
+       "id" => id)
+  end
+
+  def test_dispatch_capped_per_tick_preserving_fifo
+    # 1 hello + 60 запросов одним chunk'ом: раньше все 61 диспатчились за
+    # один тик (флуд мелких фреймов морозит UI SketchUp). Теперь — не больше
+    # DISPATCH_MAX_PER_TICK за тик, остаток уходит на следующий, FIFO цел.
+    payload = hello_frame + (1..60).map { |i| gv_frame(i) }.join
+    sock = FakeSocket.new(read_chunks: [payload])
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    cap = MCPforSketchUp::Core::Server::DISPATCH_MAX_PER_TICK
+    tick1 = all_frames(sock.written)
+    assert_equal cap, tick1.size,
+      "tick 1 обязан диспатчить ровно DISPATCH_MAX_PER_TICK (#{cap}) фреймов"
+
+    srv.send(:on_timer_tick)
+    tick2 = all_frames(sock.written)
+    assert_equal 61, tick2.size, "tick 2 дорабатывает остаток"
+    assert_equal [0] + (1..60).to_a, tick2.map { |f| f["id"] }, "FIFO сохранён"
+  end
+
+  def test_read_backpressure_when_frame_queue_saturated
+    # Очередь фреймов забита (>= FRAME_QUEUE_SOFT_MAX) — новые чтения из
+    # сокетов откладываются (kernel-буфер удержит данные, TCP даст естественный
+    # backpressure). Раньше чтение продолжалось без ограничений.
+    sock = FakeSocket.new(read_chunks: [hello_frame])
+    fs = FakeServer.new([sock])
+    srv = MCPforSketchUp::Core::Server.new
+    srv.instance_variable_set(:@server, fs)
+    srv.instance_variable_set(:@running, true)
+
+    dead = FakeSocket.new
+    dead.close
+    dummy = MCPforSketchUp::Core::ClientState.new(999, dead)
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    srv.instance_variable_set(:@frame_queue, Array.new(soft_max) { [dummy, "{}"] })
+
+    srv.send(:on_timer_tick)
+    assert_equal "", sock.written.b,
+      "tick 1: при забитой очереди клиента читать нельзя — hello не должен быть обработан"
+
+    srv.send(:on_timer_tick)   # очередь освободилась (закрытые dummy-фреймы скипнуты)
+    frames = all_frames(sock.written)
+    assert_equal 1, frames.size, "tick 2: hello обработан после разгрузки очереди"
+    assert_equal 0, frames[0]["id"]
+  end
+
+  def test_flood_stops_reading_mid_drain_once_queue_saturated
+    # P-06 (ревью): guard только на ВХОДЕ в фазу чтения недостаточен — один
+    # клиент за один тик мог накачать очередь сильно выше SOFT_MAX. Чтение
+    # обязано останавливаться и ПОСРЕДИ дренажа: второй chunk не читается,
+    # когда первый уже насытил очередь.
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    flood = (1..(soft_max + 50)).map { |i| gv_frame(i) }.join
+    marker = gv_frame(99_999)
+    sock = FakeSocket.new(read_chunks: [hello_frame + flood, marker])
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    queue_ids = srv.instance_variable_get(:@frame_queue)
+                   .map { |_st, body| JSON.parse(body)["id"] }
+    answered_ids = all_frames(sock.written).map { |f| f["id"] }
+    refute_includes queue_ids + answered_ids, 99_999,
+      "marker-фрейм из второго chunk не должен быть прочитан: очередь насыщена первым"
+  end
 end
