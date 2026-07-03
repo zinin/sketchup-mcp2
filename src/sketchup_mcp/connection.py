@@ -160,7 +160,10 @@ class SketchUpConnection:
             ) from e
         try:
             response = json.loads(response_body)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError: json.loads(bytes) декодирует UTF-8 сам;
+            # не-UTF8 тело кидало голый UnicodeDecodeError мимо таксономии
+            # (валил lifespan вместо degraded-старта). T-11/PY-CONN-02.
             raise SketchUpError(-32700, f"handshake parse error: {e}") from e
         if not isinstance(response, dict):
             raise SketchUpError(
@@ -341,6 +344,14 @@ class SketchUpConnection:
             # _StaleSocketError будет проброшен наверх caller'у.
             await self.disconnect()
             raise _StaleSocketError(-32000, f"connection error: {e}") from e
+        except OSError as e:
+            # Голый OSError вне ConnectionError-подсемейства: EHOSTUNREACH /
+            # ENETUNREACH (split-host из README), ETIMEDOUT на py3.10. Порядок
+            # важен: ConnectionError ⊂ OSError, поэтому эта ветка стоит ПОСЛЕ.
+            # НЕ _StaleSocketError: это не «peer закрыл сокет», гарантий о
+            # необработанности запроса нет — retry не предлагаем. T-11.
+            await self.disconnect()
+            raise SketchUpError(-32000, f"connection error: {e}") from e
         except SketchUpError:
             # Транспортные ошибки (-32600 oversize/zero-length от _recv_frame).
             # Stream после них рассинхронизирован — обязательно disconnect.
@@ -355,7 +366,8 @@ class SketchUpConnection:
             raise
         try:
             response = json.loads(response_body)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # См. _handshake: не-UTF8 тело = тот же parse-класс ошибок. T-11.
             await self.disconnect()
             raise SketchUpError(-32700, f"parse error: {e}") from e
         # Reject malformed non-dict top-level JSON before any .get() call.

@@ -105,6 +105,38 @@ async def test_send_command_parse_error_disconnects(make_connection, fake_stream
     assert conn._writer is None
 
 
+async def test_send_command_non_utf8_frame_raises_parse_error(make_connection, fake_streams):
+    """T-11: не-UTF8 тело фрейма → -32700 + disconnect, а не голый
+    UnicodeDecodeError мимо `except json.JSONDecodeError` (PY-CONN-02)."""
+    reader, _ = fake_streams
+    conn = make_connection()
+    bad = b'{"jsonrpc": "2.0", "id": 1, "result": "\xff\xfe"}'
+    reader.feed_data(struct.pack(">I", len(bad)) + bad)
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("x", {})
+    assert exc_info.value.code == -32700
+    assert conn._writer is None
+
+
+async def test_send_command_raw_oserror_disconnects_and_wraps(make_connection, fake_streams):
+    """T-11: голый OSError (EHOSTUNREACH/ENETUNREACH — задокументированный
+    split-host сценарий; ETIMEDOUT на py3.10) должен войти в таксономию:
+    disconnect + SketchUpError(-32000), НЕ _StaleSocketError (нет гарантии,
+    что peer не обработал запрос) и НЕ голое исключение без disconnect
+    (PY-CONN-03). Выбран именно EHOSTUNREACH: OSError(errno, ...) для
+    ECONNRESET/EPIPE авто-инстанцирует подклассы ConnectionError — тест с
+    «привычным» errno молча перестал бы проверять голую OSError-ветку."""
+    import errno
+    _, writer = fake_streams
+    conn = make_connection()
+    writer.drain = AsyncMock(side_effect=OSError(errno.EHOSTUNREACH, "No route to host"))
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("get_model_info", {})
+    assert exc_info.value.code == -32000
+    assert "No route to host" in exc_info.value.message
+    assert conn._writer is None
+
+
 async def test_send_command_oversized_response_disconnects(make_connection, fake_streams):
     """Если Ruby пришлёт frame > MAX_MESSAGE_SIZE, send_command должен disconnect'нуть.
 
@@ -867,3 +899,16 @@ async def test_connect_timeout_when_open_connection_hangs():
     assert ei.value.code == -32000
     assert "connect timed out" in str(ei.value).lower()
     assert conn._writer is None  # no half-open socket left behind
+
+
+async def test_handshake_non_utf8_reply_raises_sketchup_error():
+    """T-11: не-UTF8 тело hello-ответа → SketchUpError(-32700). До фикса голый
+    UnicodeDecodeError пролетал сквозь lifespan-catch (ConnectionError,
+    SketchUpError) и валил старт сервера вместо degraded-режима."""
+    bad_body = b'{"jsonrpc": "2.0", "id": 0, "result": "\xff\xfe"}'
+    async with FakeServer([encode_frame(bad_body)]) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+        assert ei.value.code == -32700
+        assert "handshake parse error" in ei.value.message
