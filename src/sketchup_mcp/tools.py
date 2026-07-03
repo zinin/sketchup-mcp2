@@ -27,7 +27,12 @@ logger = logging.getLogger("sketchup_mcp.tools")
 # P-05: int-ветка СТРОГАЯ — bool является подклассом int, и без strict
 # True тихо коэрсился бы в id "1" (валидная операция над чужой сущностью
 # из мусорного вызова). Строка "3" при этом спокойно проходит str-веткой.
-EntityId = Annotated[int, Field(strict=True)] | Annotated[str, Field(min_length=1)]
+# T-05: description запечён в alias — все девять id-параметров получают
+# единый LLM-видимый текст по построению.
+EntityId = Annotated[
+    Annotated[int, Field(strict=True)] | Annotated[str, Field(min_length=1)],
+    Field(description="Entity ID from a previous response (integer or its string form)"),
+]
 
 
 def _validate_scale_nonzero(v: list[float]) -> list[float]:
@@ -112,15 +117,40 @@ async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
 @mcp.tool()
 async def create_component(
     ctx: Context,
-    type: Literal["cube", "cylinder", "cone", "sphere"] = "cube",
-    position: Annotated[list[float], Field(min_length=3, max_length=3)] = [0, 0, 0],
+    type: Annotated[
+        Literal["cube", "cylinder", "cone", "sphere"],
+        Field(description="Primitive type to create"),
+    ] = "cube",
+    position: Annotated[
+        list[float],
+        Field(min_length=3, max_length=3,
+              description="Bounding-box MIN corner [x, y, z] in mm (not the center)"),
+    ] = [0, 0, 0],
     dimensions: Annotated[
         list[Annotated[float, Field(ge=0.1)]],
-        Field(min_length=3, max_length=3),
+        Field(min_length=3, max_length=3,
+              description="Sizes [x, y, z] in mm; cylinder/cone use "
+                          "[0]=diameter, [2]=height; sphere uses [0]=diameter"),
     ] = [100, 100, 100],
-    name: Optional[Annotated[str, Field(min_length=1)]] = None,
+    name: Annotated[
+        Optional[Annotated[str, Field(min_length=1)]],
+        Field(description="Optional name for the new group so "
+                          "find_components can locate it later"),
+    ] = None,
 ) -> str:
-    """Create a new component in Sketchup."""
+    """Create a primitive (cube / cylinder / cone / sphere) in SketchUp.
+
+    All linear values are millimeters (mm). Minimum size per dimension:
+    0.1 mm for cube (thin stock like veneer is fine), 1.0 mm for sphere /
+    cylinder / cone (tessellated types degenerate earlier). position is the
+    bounding-box MIN corner (not the center); the same anchor is used by
+    transform_component.position. Per-type dimensions: cube uses [x, y, z];
+    cylinder and cone use [0]=diameter, [2]=height ([1] is ignored); sphere
+    uses [0]=diameter only. New geometry is wrapped in a SketchUp Group.
+
+    Returns: JSON {id, name, type, bbox_mm{min,max}|null}. Read bbox_mm to
+    verify the result before the next step.
+    """
     args: dict = {"type": type, "position": position, "dimensions": dimensions}
     if name is not None:
         args["name"] = name
@@ -132,7 +162,10 @@ async def delete_component(
     ctx: Context,
     id: EntityId,
 ) -> str:
-    """Delete a component by entity ID."""
+    """Delete a group or component by entity ID.
+
+    Returns: JSON {ok: true}.
+    """
     return await _call(ctx, "delete_component", id=str(id))
 
 
@@ -140,11 +173,21 @@ async def delete_component(
 async def transform_component(
     ctx: Context,
     id: EntityId,
-    position: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
-    rotation: Optional[Annotated[list[float], Field(min_length=3, max_length=3)]] = None,
-    scale: Optional[
-        Annotated[list[float], Field(min_length=3, max_length=3),
-                  AfterValidator(_validate_scale_nonzero)]
+    position: Annotated[
+        Optional[Annotated[list[float], Field(min_length=3, max_length=3)]],
+        Field(description="ABSOLUTE target for the bbox-min corner, mm"),
+    ] = None,
+    rotation: Annotated[
+        Optional[Annotated[list[float], Field(min_length=3, max_length=3)]],
+        Field(description="relative degrees around bbox center, "
+                          "applied X then Y then Z"),
+    ] = None,
+    scale: Annotated[
+        Optional[
+            Annotated[list[float], Field(min_length=3, max_length=3),
+                      AfterValidator(_validate_scale_nonzero)]
+        ],
+        Field(description="relative factors about bbox center, each |s| > 1e-9"),
     ] = None,
 ) -> str:
     """Move, rotate and/or scale a group or component (mm / degrees).
@@ -158,7 +201,11 @@ async def transform_component(
       applied sequentially about world X, then Y, then Z.
     - scale: RELATIVE scale factors about the bbox center.
 
-    Returns {id, name, type, bbox_mm} — read bbox_mm to verify the result.
+    These validations (3-element lists, non-zero scale) apply only to this
+    typed tool — raw Ruby driven through eval_ruby bypasses them.
+
+    Returns: JSON {id, name, type, bbox_mm{min,max}|null}. Read bbox_mm to
+    verify the result; it is null for empty geometry.
     """
     args: dict = {"id": str(id)}
     if position is not None:
@@ -172,7 +219,11 @@ async def transform_component(
 
 @mcp.tool()
 async def get_selection(ctx: Context) -> str:
-    """Get currently selected components."""
+    """Get the entities currently selected in the SketchUp UI.
+
+    Returns: JSON {entities: [...]} — each entity is {id, name, type,
+    bbox_mm|null}.
+    """
     return await _call(ctx, "get_selection")
 
 
@@ -180,39 +231,75 @@ async def get_selection(ctx: Context) -> str:
 async def set_material(
     ctx: Context,
     id: EntityId,
-    material: Annotated[str, Field(min_length=1)],
+    material: Annotated[
+        str,
+        Field(min_length=1,
+              description="Named color or 6-digit hex string like #a05030"),
+    ],
 ) -> str:
-    """Set material for a component (named color or hex)."""
+    """Assign a material (color) to a group or component.
+
+    material accepts a named color — red, green, blue, yellow, cyan,
+    turquoise, magenta, purple, white, black, brown, wood, orange, gray,
+    grey — or a 6-digit hex string like "#a05030" (#rrggbb). Anything else
+    fails with error -32602. Named colors are case-insensitive. Painting
+    affects only this instance (it is made unique first).
+
+    Returns: JSON {id, name, type, bbox_mm{min,max}|null}.
+    """
     return await _call(ctx, "set_material", id=str(id), material=material)
 
 
+# Note: Ruby tool name is 'export' (wire mapping pinned in tests/test_tools.py).
 @mcp.tool()
 async def export_scene(
     ctx: Context,
-    format: Literal["skp", "obj", "dae", "stl", "png", "jpg"] = "skp",
+    format: Annotated[
+        Literal["skp", "obj", "dae", "stl", "png", "jpg"],
+        Field(description="skp (native), obj / dae / stl (geometry), "
+                          "png / jpg (viewport render)"),
+    ] = "skp",
 ) -> str:
-    """Export the current scene. Note: Ruby tool name is 'export'."""
+    """Export the current scene to a temp file on the SketchUp host.
+
+    Formats: skp (native), obj / dae / stl (geometry), png / jpg (viewport
+    render, default 1920×1080). The file is written on the machine running
+    SketchUp — on a split-host setup the path is not directly readable here.
+
+    Returns: JSON {path, format} plus a "warning" field when exporting skp
+    from a never-saved model (SketchUp binds the live document to the export
+    path — relay the warning to the user).
+    """
     return await _call(ctx, "export", format=format)
 
 
+# Pydantic always sends the sized defaults (50/25/10 mm) on the wire, so they
+# override Ruby's V.optional_positive defaults — keep the two sides in sync
+# (see mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb).
 @mcp.tool()
 async def create_mortise_tenon(
     ctx: Context,
     mortise_id: EntityId,
     tenon_id: EntityId,
-    width: Annotated[float, Field(gt=0)] = 50.0,
-    height: Annotated[float, Field(gt=0)] = 25.0,
-    depth: Annotated[float, Field(gt=0)] = 10.0,
-    offset_x: float = 0.0,
-    offset_y: float = 0.0,
-    offset_z: float = 0.0,
+    width: Annotated[float, Field(gt=0, description="Joint width in mm")] = 50.0,
+    height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 25.0,
+    depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 10.0,
+    offset_x: Annotated[float, Field(
+        description="Joint offset from the board face's center along X, mm")] = 0.0,
+    offset_y: Annotated[float, Field(
+        description="Joint offset from the board face's center along Y, mm")] = 0.0,
+    offset_z: Annotated[float, Field(
+        description="Joint offset from the board face's center along Z, mm")] = 0.0,
 ) -> str:
-    """Create a mortise and tenon joint between two components.
+    """Create a mortise-and-tenon joint between two boards.
 
-    All dimensions in millimeters. Defaults sized for visibility on a typical
-    100mm-board: 50mm wide, 25mm tall, 10mm deep. Pydantic always sends these
-    on the wire, so they override Ruby's V.optional_positive defaults — keep
-    the two sides in sync (see mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb).
+    All dimensions in millimeters; offsets shift the joint from the board
+    face's center. Defaults are sized for ~100 mm boards. The two boards must
+    already touch/overlap along the joint axis.
+
+    Returns: JSON {mortise: {id, name, type, bbox_mm|null}, tenon: {...},
+    boolean_cuts: {attempted, failed}} — non-zero failed means some cuts did
+    not apply (likely non-manifold geometry); verify via bbox_mm.
     """
     return await _call(
         ctx,
@@ -233,16 +320,31 @@ async def create_dovetail(
     ctx: Context,
     tail_id: EntityId,
     pin_id: EntityId,
-    width: Annotated[float, Field(gt=0)] = 50.0,
-    height: Annotated[float, Field(gt=0)] = 50.0,
-    depth: Annotated[float, Field(gt=0)] = 15.0,
-    angle: Annotated[float, Field(gt=0, le=60)] = 15.0,
-    num_tails: Annotated[int, Field(gt=0)] = 3,
-    offset_x: float = 0.0,
-    offset_y: float = 0.0,
-    offset_z: float = 0.0,
+    width: Annotated[float, Field(gt=0, description="Joint width in mm")] = 50.0,
+    height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 50.0,
+    depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 15.0,
+    angle: Annotated[float, Field(
+        gt=0, le=60,
+        description="Dovetail flare angle in degrees, 0 < angle <= 60")] = 15.0,
+    num_tails: Annotated[int, Field(gt=0, description="Number of tails")] = 3,
+    offset_x: Annotated[float, Field(
+        description="Joint offset from the board face's center along X, mm")] = 0.0,
+    offset_y: Annotated[float, Field(
+        description="Joint offset from the board face's center along Y, mm")] = 0.0,
+    offset_z: Annotated[float, Field(
+        description="Joint offset from the board face's center along Z, mm")] = 0.0,
 ) -> str:
-    """Create a dovetail joint between two components. Dimensions in mm."""
+    """Create a dovetail joint between two boards.
+
+    All dimensions in millimeters; angle is in degrees, valid range (0, 60].
+    Offsets shift the joint from the board face's center. Defaults are sized
+    for ~100 mm boards. The two boards must already touch/overlap along the
+    joint axis.
+
+    Returns: JSON {tail: {id, name, type, bbox_mm|null}, pin: {...},
+    boolean_cuts: {attempted, failed}} — non-zero failed means some cuts did
+    not apply (likely non-manifold geometry); verify via bbox_mm.
+    """
     return await _call(
         ctx,
         "create_dovetail",
@@ -264,15 +366,27 @@ async def create_finger_joint(
     ctx: Context,
     board1_id: EntityId,
     board2_id: EntityId,
-    width: Annotated[float, Field(gt=0)] = 50.0,
-    height: Annotated[float, Field(gt=0)] = 25.0,
-    depth: Annotated[float, Field(gt=0)] = 10.0,
-    num_fingers: Annotated[int, Field(gt=0)] = 5,
-    offset_x: float = 0.0,
-    offset_y: float = 0.0,
-    offset_z: float = 0.0,
+    width: Annotated[float, Field(gt=0, description="Joint width in mm")] = 50.0,
+    height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 25.0,
+    depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 10.0,
+    num_fingers: Annotated[int, Field(gt=0, description="Number of fingers")] = 5,
+    offset_x: Annotated[float, Field(
+        description="Joint offset from the board face's center along X, mm")] = 0.0,
+    offset_y: Annotated[float, Field(
+        description="Joint offset from the board face's center along Y, mm")] = 0.0,
+    offset_z: Annotated[float, Field(
+        description="Joint offset from the board face's center along Z, mm")] = 0.0,
 ) -> str:
-    """Create a finger joint (box joint) between two components. Dimensions in mm."""
+    """Create a finger joint (box joint) between two boards.
+
+    All dimensions in millimeters; offsets shift the joint from the board
+    face's center. Defaults are sized for ~100 mm boards. The two boards must
+    already touch/overlap along the joint axis.
+
+    Returns: JSON {board1: {id, name, type, bbox_mm|null}, board2: {...},
+    boolean_cuts: {attempted, failed}} — non-zero failed means some cuts did
+    not apply (likely non-manifold geometry); verify via bbox_mm.
+    """
     return await _call(
         ctx,
         "create_finger_joint",
@@ -291,7 +405,10 @@ async def create_finger_joint(
 @mcp.tool()
 async def eval_ruby(
     ctx: Context,
-    code: Annotated[str, Field(min_length=1)],
+    code: Annotated[
+        str,
+        Field(min_length=1, description="Ruby code to evaluate inside SketchUp"),
+    ],
 ) -> str:
     """Evaluate arbitrary Ruby code in SketchUp.
 
@@ -300,6 +417,11 @@ async def eval_ruby(
     explaining how to enable it. This wrapper surfaces that message as a
     plain string so the LLM can repeat it to the user verbatim — without
     the `[code]` prefix that format_error would otherwise add.
+
+    Returns the .to_s of the LAST evaluated expression; stdout (puts) is NOT
+    captured. End scripts with an explicit expression — e.g. a final
+    `result.to_json` — to get structured data back. Errors return
+    "[code] message" with the Ruby exception class and message.
     """
     try:
         result = await _raw_call(ctx, "eval_ruby", code=code)
@@ -321,10 +443,27 @@ async def boolean_operation(
     ctx: Context,
     target_id: EntityId,
     tool_id: EntityId,
-    operation: Literal["union", "difference", "intersection"] = "union",
-    delete_originals: bool = False,
+    operation: Annotated[
+        Literal["union", "difference", "intersection"],
+        Field(description="union, difference (target minus tool), "
+                          "or intersection"),
+    ] = "union",
+    delete_originals: Annotated[
+        bool,
+        Field(description="erase the two source bodies after a "
+                          "successful operation"),
+    ] = False,
 ) -> str:
-    """Perform a boolean operation (union/difference/intersection) on two solids."""
+    """Perform a boolean operation (union / difference / intersection) on two solids.
+
+    difference = target minus tool. Operating on an instance of a shared
+    definition consumes only that instance — the result is a new group,
+    sibling instances are untouched. Unreliable on non-manifold geometry.
+
+    Returns: JSON {id, name, type, bbox_mm{min,max}|null}. Read bbox_mm to
+    verify the result; it is null for empty geometry (e.g. a difference that
+    consumed the whole body).
+    """
     return await _call(
         ctx,
         "boolean_operation",
@@ -335,48 +474,88 @@ async def boolean_operation(
     )
 
 
+# Ruby tool name is `chamfer_edges` (plural); Python parameter `id` maps to
+# Ruby `entity_id`. Default 5 mm is visible on the documented 100 mm-cube
+# use case.
 @mcp.tool()
 async def chamfer_edge(
     ctx: Context,
     id: EntityId,
-    distance: Annotated[float, Field(gt=0)] = 5.0,
+    distance: Annotated[
+        float, Field(gt=0, description="Chamfer distance in mm"),
+    ] = 5.0,
 ) -> str:
-    """Chamfer all edges of a group/component by ``distance`` (mm).
+    """Chamfer (bevel) edges of a group/component by ``distance`` mm.
 
-    Default 5mm — visible on the documented 100mm-cube use case. Ruby tool name
-    is ``chamfer_edges`` (plural); Python parameter ``id`` maps to Ruby ``entity_id``.
+    By default ALL edges are chamfered. Unreliable on non-manifold geometry.
+
+    Returns: JSON {id, name, type, bbox_mm|null, edges_chamfered,
+    stats{attempted, failed}} — check stats.failed == 0.
     """
     return await _call(ctx, "chamfer_edges", entity_id=str(id), distance=distance)
 
 
+# Ruby tool name is `fillet_edges` (plural); Python parameter `id` maps to
+# Ruby parameter `entity_id`.
 @mcp.tool()
 async def fillet_edge(
     ctx: Context,
     id: EntityId,
-    radius: Annotated[float, Field(gt=0)] = 5.0,
-    segments: Annotated[int, Field(gt=0)] = 8,
+    radius: Annotated[
+        float, Field(gt=0, description="Fillet radius in mm"),
+    ] = 5.0,
+    segments: Annotated[
+        int, Field(gt=0, description="Arc segments per rounded edge"),
+    ] = 8,
 ) -> str:
-    """Fillet (round) all edges of a group/component. Default radius 5mm.
+    """Round (fillet) edges of a group/component by ``radius`` mm with
+    ``segments`` arc segments.
 
-    Note: Ruby tool name is ``fillet_edges`` (plural); Python parameter ``id``
-    maps to Ruby parameter ``entity_id``.
+    By default ALL edges are filleted. Unreliable on non-manifold geometry.
+
+    Returns: JSON {id, name, type, bbox_mm|null, edges_filleted,
+    stats{attempted, failed}} — check stats.failed == 0.
     """
     return await _call(
         ctx, "fillet_edges", entity_id=str(id), radius=radius, segments=segments
     )
 
 
+# Note on operation order (Ruby handler): snapshot → preset → style →
+# zoom_extents → write_image → restore. Restore runs in an outer `ensure`
+# block, so an exception anywhere between snapshot and write_image still
+# leaves the viewport in its original state.
 @mcp.tool()
 async def get_viewport_screenshot(
     ctx: Context,
-    max_size: Annotated[int, Field(ge=64, le=4096)] = 800,
-    view_preset: Literal[
-        "current", "front", "back", "left", "right",
-        "top", "bottom", "iso",
+    max_size: Annotated[
+        int,
+        Field(ge=64, le=4096,
+              description="Largest side of the returned PNG in pixels; the "
+                          "other side follows the viewport aspect ratio"),
+    ] = 800,
+    view_preset: Annotated[
+        Literal[
+            "current", "front", "back", "left", "right",
+            "top", "bottom", "iso",
+        ],
+        Field(description="Camera preset to switch to before snapping; "
+                          "'current' leaves the camera alone"),
     ] = "current",
-    zoom_extents: bool = False,
-    style: Literal["default", "shaded", "hidden_line", "wireframe"] = "default",
-    restore_view: bool = True,
+    zoom_extents: Annotated[
+        bool,
+        Field(description="Zoom to fit the whole model before snapping"),
+    ] = False,
+    style: Annotated[
+        Literal["default", "shaded", "hidden_line", "wireframe"],
+        Field(description="Temporary rendering style for the shot; "
+                          "'default' leaves rendering options alone"),
+    ] = "default",
+    restore_view: Annotated[
+        bool,
+        Field(description="Restore the camera and rendering options after "
+                          "the shot, leaving the user's viewport unchanged"),
+    ] = True,
 ) -> list:
     """Capture the current SketchUp viewport; returns the PNG image plus a JSON text block {width, height, preset_used, style_used}.
 
@@ -394,10 +573,8 @@ async def get_viewport_screenshot(
       snapshotted before mutation and restored after the snapshot, so the
       user's viewport is unchanged.
 
-    Note on operation order (Ruby handler): snapshot → preset → style →
-    zoom_extents → write_image → restore. Restore runs in an outer ``ensure``
-    block, so an exception anywhere between snapshot and write_image still
-    leaves the viewport in its original state.
+    If the connection drops mid-response the call is retried automatically;
+    the viewport may briefly flicker in that rare case.
     """
     # Delegate connection + send_command to _raw_call so we don't duplicate
     # the transport logic of _call. _raw_call does NOT translate
@@ -466,26 +643,49 @@ async def get_viewport_screenshot(
 
 @mcp.tool()
 async def get_model_info(ctx: Context) -> str:
-    """Get current SketchUp model info: file path, title, units, bounding box, entity count, layer list."""
+    """Get current SketchUp model info: file path, title, units, bounding box, entity count, layer list.
+
+    Returns: JSON {path, title, units: "mm", bounding_box_mm|null,
+    entity_count, layers[]}.
+    """
     return await _call(ctx, "get_model_info")
 
 
 @mcp.tool()
 async def list_components(
     ctx: Context,
-    recursive: bool = False,
-    max_depth: Annotated[int, Field(ge=1, le=10)] = 3,
-    limit: Annotated[int, Field(ge=1, le=500)] = 50,
-    offset: Annotated[int, Field(ge=0)] = 0,
-    response_format: Literal["concise", "detailed"] = "detailed",
+    recursive: Annotated[
+        bool, Field(description="Descend into nested groups/components"),
+    ] = False,
+    max_depth: Annotated[
+        int,
+        Field(ge=1, le=10,
+              description="Maximum nesting depth to descend when recursive"),
+    ] = 3,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=500,
+              description="Page size — maximum components per response"),
+    ] = 50,
+    offset: Annotated[
+        int,
+        Field(ge=0, description="How many components to skip (pagination)"),
+    ] = 0,
+    response_format: Annotated[
+        Literal["concise", "detailed"],
+        Field(description="detailed includes bbox_mm per component; "
+                          "concise omits it"),
+    ] = "detailed",
 ) -> str:
     """List groups and component instances in the model (paginated).
 
-    Returns {components: [...], total, offset, truncated}. Each component is
-    {id, name, type, layer, depth, bbox_mm} (detailed) or {id, name, type,
-    layer, depth} (concise). Bounds are in world coordinates. Set
-    recursive=true to descend into nested components (bounded by max_depth,
-    default 3).
+    Each component is {id, name, type, layer, depth, bbox_mm} (detailed) or
+    {id, name, type, layer, depth} (concise); bounds are world-coordinate mm.
+    Set recursive=true to descend into nested components (bounded by
+    max_depth, default 3).
+
+    Returns: JSON {components[], total, offset, truncated} — if truncated,
+    request the next page with offset += limit.
     """
     return await _call(ctx, "list_components", recursive=recursive,
                        max_depth=max_depth, limit=limit, offset=offset,
@@ -497,24 +697,56 @@ async def get_component_info(
     ctx: Context,
     id: EntityId,
 ) -> str:
-    """Detailed info for a single Group or ComponentInstance by entity ID."""
+    """Detailed info for a single group or component instance by entity ID.
+
+    Returns: JSON {id, name, type, layer, depth, bbox_mm|null}.
+    """
     return await _call(ctx, "get_component_info", id=str(id))
 
 
 @mcp.tool()
 async def find_components(
     ctx: Context,
-    name: Annotated[str, Field(min_length=1)] | None = None,
-    layer: Annotated[str, Field(min_length=1)] | None = None,
-    type: Literal["group", "component"] | None = None,
-    max_depth: Annotated[int, Field(ge=1, le=10)] = 3,
-    limit: Annotated[int, Field(ge=1, le=500)] = 50,
-    offset: Annotated[int, Field(ge=0)] = 0,
-    response_format: Literal["concise", "detailed"] = "detailed",
+    name: Annotated[
+        Annotated[str, Field(min_length=1)] | None,
+        Field(description="Case-insensitive substring to match against "
+                          "component names"),
+    ] = None,
+    layer: Annotated[
+        Annotated[str, Field(min_length=1)] | None,
+        Field(description="Exact layer (tag) name to filter by"),
+    ] = None,
+    type: Annotated[
+        Literal["group", "component"] | None,
+        Field(description="Restrict results to groups or component instances"),
+    ] = None,
+    max_depth: Annotated[
+        int,
+        Field(ge=1, le=10, description="Maximum nesting depth to search"),
+    ] = 3,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=500,
+              description="Page size — maximum components per response"),
+    ] = 50,
+    offset: Annotated[
+        int,
+        Field(ge=0, description="How many components to skip (pagination)"),
+    ] = 0,
+    response_format: Annotated[
+        Literal["concise", "detailed"],
+        Field(description="detailed includes bbox_mm per component; "
+                          "concise omits it"),
+    ] = "detailed",
 ) -> str:
     """Find components matching name substring, layer, and/or type.
 
-    Recursive (bounded by max_depth). At least one filter should be supplied.
+    Name matching is case-insensitive substring; layer must match exactly.
+    Searches recursively (bounded by max_depth). At least one filter should
+    be supplied.
+
+    Returns: JSON {components[], total, offset, truncated} — if truncated,
+    request the next page with offset += limit.
     """
     args: dict = {"max_depth": max_depth, "limit": limit, "offset": offset,
                   "response_format": response_format}
@@ -529,22 +761,33 @@ async def find_components(
 
 @mcp.tool()
 async def list_layers(ctx: Context) -> str:
-    """List all model layers as {name, visible, color, id}."""
+    """List all model layers (tags).
+
+    Returns: JSON {layers: [{name, visible, color, id}]}.
+    """
     return await _call(ctx, "list_layers")
 
 
 @mcp.tool()
 async def create_layer(
     ctx: Context,
-    name: Annotated[str, Field(min_length=1)],
+    name: Annotated[
+        str, Field(min_length=1, description="Name for the new layer"),
+    ],
 ) -> str:
-    """Create a new layer with the given name. Returns {id, name, visible}."""
+    """Create a new layer (tag) with the given name.
+
+    Returns: JSON {id, name, visible}.
+    """
     return await _call(ctx, "create_layer", name=name)
 
 
 @mcp.tool()
 async def undo(ctx: Context) -> str:
-    """Undo the last atomic operation in SketchUp. One MCP tool-call = one undo step."""
+    """Undo the last atomic operation in SketchUp. One MCP tool-call = one undo step.
+
+    Returns: JSON {ok: true}.
+    """
     return await _call(ctx, "undo")
 
 
