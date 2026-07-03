@@ -70,6 +70,7 @@ end
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 
 module Sketchup
   class Group; end unless defined?(Group)

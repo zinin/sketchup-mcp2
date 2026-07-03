@@ -50,16 +50,24 @@ module MCPforSketchUp
       end
 
       # Returns {id, name, type, bbox_mm} so Claude can re-locate after destructive ops.
+      # bbox_mm == nil, если у entity пустые bounds (T-55: инвертированный
+      # сентинел SketchUp ±1e30" не должен утекать как ±2.54e31 мм).
       def self.describe_entity(entity)
         bb = entity.bounds
+        bbox_mm =
+          if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb)
+            nil
+          else
+            {
+              "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
+              "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
+            }
+          end
         {
           "id"   => entity.entityID,
           "name" => entity.name,
           "type" => entity.is_a?(Sketchup::Group) ? "group" : "component",
-          "bbox_mm" => {
-            "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
-            "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
-          }
+          "bbox_mm" => bbox_mm
         }
       end
 

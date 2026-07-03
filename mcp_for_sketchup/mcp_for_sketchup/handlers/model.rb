@@ -28,10 +28,7 @@ module MCPforSketchUp
           "path"        => m.path,
           "title"       => m.title,
           "units"       => "mm",
-          "bounding_box_mm" => {
-            "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
-            "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
-          },
+          "bounding_box_mm" => bbox_mm_or_nil(bb),
           "entity_count" => m.entities.length,
           "layers"       => m.layers.map(&:name)
         }
@@ -126,6 +123,16 @@ module MCPforSketchUp
 
       def self.describe_component(entity, parent_t = Geom::Transformation.new, depth: 0)
         bb = entity.bounds
+        if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb)  # T-55
+          return {
+            "id"    => entity.entityID,
+            "name"  => entity.name,
+            "type"  => entity.is_a?(Sketchup::Group) ? "group" : "component",
+            "layer" => entity.layer.name,
+            "depth" => depth,
+            "bbox_mm" => nil
+          }
+        end
         # Project local-space bounds corners through parent transformation chain
         # to get world-space bbox. For top-level entities, parent_t = identity,
         # behaviour identical to monolith.
@@ -149,6 +156,16 @@ module MCPforSketchUp
             "min" => [U.inch_to_mm(xs.min), U.inch_to_mm(ys.min), U.inch_to_mm(zs.min)],
             "max" => [U.inch_to_mm(xs.max), U.inch_to_mm(ys.max), U.inch_to_mm(zs.max)]
           }
+        }
+      end
+
+      # T-55: пустые bounds наружу утекали как ±2.54e31 мм и выглядели
+      # валидными координатами. Отдаём null.
+      def self.bbox_mm_or_nil(bb)
+        return nil if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb)
+        {
+          "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
+          "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
         }
       end
 

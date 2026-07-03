@@ -21,6 +21,7 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 
 module MCPforSketchUp
   module Helpers
