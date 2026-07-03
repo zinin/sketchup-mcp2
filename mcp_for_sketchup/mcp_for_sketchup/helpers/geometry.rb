@@ -6,8 +6,8 @@ module MCPforSketchUp
       # mm→inch conversion via Helpers::Units before invoking these.
 
       # Box in SketchUp internal coordinates (inches). Always extrudes UP by +Z
-      # regardless of the auto-selected face.normal direction. See CLAUDE.md
-      # «make_box» note for context.
+      # regardless of the auto-selected face.normal direction. See
+      # docs/sketchup-ruby-cookbook.md (make_box recipe) for context.
       def self.make_box(entities, x, y, z, w, d, h)
         grp = entities.add_group
         face = grp.entities.add_face(

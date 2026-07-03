@@ -45,7 +45,7 @@ In SketchUp: `Window → Extension Manager → Install Extension`, pick the `.rb
 
 ### 2. Start the server inside SketchUp
 
-`Plugins → MCP Server → Start` — by default listens on `127.0.0.1:9876`.
+`Plugins → MCP Server → Start Server` — by default listens on `127.0.0.1:9876`.
 
 ### 3. Configure your MCP client
 
@@ -134,8 +134,6 @@ Working examples and load tests live in [`examples/`](examples/):
 
 - `smoke_check.py` — 25-step end-to-end verification of every tool category.
 - `smoke_multi_client.py` — concurrent multi-client load test.
-- `arts_and_crafts_cabinet.py` — a non-trivial generative model via `eval_ruby`.
-- `simple_test.py`, `simple_ruby_eval.py`, `behavior_tester.py` — minimal scaffolds.
 
 ## Architecture
 
@@ -171,7 +169,7 @@ uvx sketchup-mcp2               # production-style (from PyPI)
 ### Tests
 
 ```bash
-ruby test/run_all.rb             # Ruby unit tests (minitest, stdlib only)
+ruby test/run_all.rb             # Ruby unit tests (minitest; stdlib + rubyzip for the package test)
 uv run pytest tests/ -q          # Python unit tests
 ```
 
@@ -191,7 +189,7 @@ For a split-host setup (e.g. Linux dev box + Windows SketchUp), prefix with `SKE
 The Python MCP server connected to the configured host/port but found nothing listening. Either:
 
 - SketchUp isn't running, or
-- The extension is installed but not started — open `Plugins → MCP Server → Start`.
+- The extension is installed but not started — open `Plugins → MCP Server → Start Server`.
 
 The Python server stays alive after this error; the next tool-call retries the connect.
 

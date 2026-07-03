@@ -88,7 +88,7 @@ uv run pytest tests/ -q        # Python (pytest) — 136 tests
 python examples/smoke_check.py # 25-step end-to-end (covers all handlers)
 ```
 
-Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.
+Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load check).
 
 ## Configuration
 
@@ -132,7 +132,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | `connection.py` | Persistent TCP socket, length-prefix framing, `asyncio.Lock` |
 | `config.py` | ENV-driven config |
 | `errors.py` | `SketchUpError` parsed from JSON-RPC error envelopes |
-| `server.py` | Legacy connection helpers (kept for compat) |
+| `server.py` | CLI entry point (`[project.scripts]` → `sketchup-mcp2`) |
 | `compat.py` | Single source of truth for Python↔Ruby version compatibility (MIN_RUBY, MAX_RUBY, check_ruby_version) |
 
 `eval_ruby` is the escape hatch — passes arbitrary Ruby code straight through.
@@ -142,7 +142,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | Subtree | Role |
 |---|---|
 | `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
-| `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
+| `core/` | `application.rb`, `server.rb`, `client_state.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
 | `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb`, `system.rb` |
 | `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb` |
 | `ui/` | Settings dialog: `settings_dialog.rb`, `settings_validator.rb`, `settings.html` |

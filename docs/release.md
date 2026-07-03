@@ -55,6 +55,13 @@ grep '"product_id"' mcp_for_sketchup/extension.json
 
 **Pending contract break (unreleased, 2026-07-02, branch `fix/deep-review-p1`):** `transform_component.position` switched from a relative offset to an absolute bbox-min target (`feat!`, commit `6b7d133`). The first release that ships it MUST bump `MIN_RUBY` (Python side) **and** `MIN_PYTHON` (Ruby side): an old/new client–server mix would pass the handshake but silently misplace geometry. Call out the new semantics in the GitHub release notes.
 
+Batch 2 (branch `fix/deep-review-p2`) widens the same pending break: new tool
+parameters (`name`, `limit`/`offset`/`response_format`), stricter validation
+(min dimension 1 mm, dovetail angle ≤ 60°, non-zero scale), and changed
+response shapes (`list/find_components` pagination envelope, `bbox_mm: null`
+for empty bounds, screenshot metadata block, `export` warning field). Same
+remedy: the release that ships them MUST bump both MIN floors.
+
 Run `uv lock` to refresh `uv.lock` with the new project version (otherwise the next `uv` call updates it post-release and you end up with a stray `chore: sync uv.lock` commit). Commit (`chore: bump to vX.Y.Z`) and push.
 
 ## 2. Pre-flight tests
@@ -221,7 +228,7 @@ This extension runs a local TCP server inside SketchUp that exposes the live mod
 ## Quickstart
 
 1. **Install this extension**: download the `.rbz`, install via `Window → Extension Manager → Install Extension`, restart SketchUp.
-2. **Start the server** inside SketchUp: `Plugins → MCP Server → Start`.
+2. **Start the server** inside SketchUp: `Plugins → MCP Server → Start Server`.
 3. **Run the Python MCP server**: `uvx sketchup-mcp2` (or `pip install sketchup-mcp2` + `python -m sketchup_mcp`).
 4. **Configure your MCP client** (Claude Desktop, Claude Code, etc.) to talk to `sketchup-mcp2`.
 
@@ -255,7 +262,7 @@ Quick in-SketchUp test (no external client or Python needed):
 1. Install the .rbz: Window → Extension Manager → Install Extension; restart SketchUp.
 2. Menu: "Plugins → MCP Server" shows Start, Stop, Settings...
 3. Settings: click Settings... — a dialog opens (Host=127.0.0.1, Port=9876, Log Level=WARN). Change Port to 9877 and Log Level to INFO, Save — closes without errors. Reopen: values persist.
-4. Start: "Plugins → MCP Server → Start". Ruby Console (Window → Ruby Console) shows a line ending "[MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9877". Repeated Start is idempotent.
+4. Start: "Plugins → MCP Server → Start Server". Ruby Console (Window → Ruby Console) shows a line ending "[MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9877". Repeated Start Server is idempotent.
 5. Stop: "Plugins → MCP Server → Stop". Stops cleanly.
 
 Local TCP server (loopback only — no firewall prompt) awaiting MCP-aware AI clients (e.g. Claude). Steps 1-5 cover the in-SketchUp surface; no external service or login required.
@@ -287,7 +294,7 @@ For this backend-only extension (no own viewport), useful captures — all takea
 
 1. **Settings dialog** — `Plugins → MCP Server → Settings...` shows the only HTML UI surface (3 fields). Take with Snipping Tool / Cmd+Shift+4.
 2. **`Plugins → MCP Server` menu expanded** — shows Start / Stop / Settings menu items. Proves SketchUp integration.
-3. **Ruby Console after Start** — set Log Level to `INFO` in Settings first (the default is `WARN`, which suppresses the start line), then `Window → Ruby Console` and `Plugins → MCP Server → Start`. Capture the `[<UTC iso8601>] [MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9876` line.
+3. **Ruby Console after Start** — set Log Level to `INFO` in Settings first (the default is `WARN`, which suppresses the start line), then `Window → Ruby Console` and `Plugins → MCP Server → Start Server`. Capture the `[<UTC iso8601>] [MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9876` line.
 
 Optional 4th (marketing hero shot): Claude Code or Claude Desktop + SketchUp viewport in split-screen with a Claude-driven build visible. ~10–15 min to set up if Claude isn't already configured against the running server.
 

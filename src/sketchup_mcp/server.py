@@ -8,7 +8,7 @@ from sketchup_mcp.app import mcp
 
 
 def main() -> None:
-    """CLI entry point: ``sketchup-mcp`` and ``python -m sketchup_mcp``."""
+    """CLI entry point: ``sketchup-mcp2`` and ``python -m sketchup_mcp``."""
     mcp.run()
 
 
