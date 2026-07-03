@@ -25,16 +25,21 @@ _DISCONNECT_TIMEOUT = 5.0  # секунд на graceful close сокета
 
 
 class _StaleSocketError(SketchUpError):
-    """Маркер «peer закрыл сокет до отправки хоть одного байта ответа».
+    """Маркер «транспорт умер посреди roundtrip'а» (EOF/RST до полного ответа).
 
-    Сам по себе индикатор НЕДОСТАТОЧЕН для безопасного retry: см. Codex review
-    на PR #1. Контр-пример — Ruby-сторонний `write_response`: `IO.select`
-    таймаутится за 1 сек, `reset_client` закрывает сокет **уже после**
-    `model.commit_operation`. Python видит partial=b"", но мутация применена —
-    retry задвоит её.
+    Сам по себе индикатор НЕДОСТАТОЧЕН для безопасного retry: Ruby-сторонний
+    `write_response` может закрыть сокет **уже после** `model.commit_operation`
+    (IO.select-таймаут 1 сек → reset_client). Даже partial == b"" не
+    гарантирует, что мутация не применена (см. Codex review на PR #1).
 
-    Поэтому retry ограничен whitelist'ом read-only tools (`_RETRY_SAFE_TOOLS`).
-    Для мутативных — поднимаем наверх как обычную транспортную ошибку.
+    Поэтому retry ограничен whitelist'ом side-effect-free tools
+    (`_RETRY_SAFE_TOOLS`) — их безопасно переспрашивать независимо от того,
+    успел ли peer обработать запрос. Для мутативных — поднимаем наверх как
+    транспортную ошибку с recovery-подсказкой (см. send_command).
+
+    Цена MR-1: обрыв посреди большого ответа (например ~43 MiB скриншота)
+    означает второй полный захват и передачу — безопасно, но дорого;
+    осознанная цена за автовосстановление read-only вызовов.
     """
 
 
@@ -327,15 +332,14 @@ class SketchUpConnection:
                 -32000, f"timeout after {self.timeout}s"
             ) from None
         except asyncio.IncompleteReadError as e:
+            # EOF до полного ответа — заголовок не пришёл вовсе (partial == b"")
+            # или оборван посреди фрейма. Различие partial-пустоты больше НЕ
+            # влияет на решение: безопасность retry целиком решает whitelist
+            # в send_command (read-only тулы безопасно переспросить, даже если
+            # Ruby успел выполнить хендлер; мутативные не ретраятся никогда).
+            # MR-1 из финального ревью батча 1.
             await self.disconnect()
-            if e.partial == b"":
-                # 0 байт прочитано = peer закрыл соединение ДО отправки заголовка.
-                # Гарантия: запрос не был обработан (иначе peer прислал бы
-                # минимум 4 байта length-prefix). Safe-to-retry.
-                raise _StaleSocketError(-32000, f"connection error: {e}") from e
-            # Partial read = peer уже начал отвечать → мутация могла произойти,
-            # retry небезопасен.
-            raise SketchUpError(-32000, f"connection error: {e}") from e
+            raise _StaleSocketError(-32000, f"connection error: {e}") from e
         except ConnectionError as e:
             # ECONNRESET / BrokenPipe = разрыв транспорта на любой фазе
             # (_send_frame, drain, _recv_frame). Помечаем как _StaleSocketError;

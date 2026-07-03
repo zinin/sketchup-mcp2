@@ -188,7 +188,8 @@ async def test_send_command_retries_on_zero_byte_eof_for_readonly(make_connectio
     send_command идёт в _send_frame → drain ok → _recv_frame → readexactly(4) →
     IncompleteReadError(partial=b"", expected=4). Для READ-ONLY tools повтор
     безопасен (даже если Ruby выполнил handler, повторное чтение модели
-    идемпотентно). Прозрачно retry'им.
+    идемпотентно). Прозрачно retry'им. После MR-1 то же верно и для
+    partial != b"" — см. test_send_command_retries_on_partial_read_for_readonly.
     """
     reader, _ = fake_streams
     conn = make_connection()
@@ -228,6 +229,42 @@ async def test_send_command_retries_on_zero_byte_eof_for_readonly(make_connectio
     assert sent_on_retry[0]["params"]["name"] == "get_model_info"
 
 
+async def test_send_command_retries_on_partial_read_for_readonly(make_connection, fake_streams):
+    """MR-1 (mesh-ревью батча 1): обрыв ПОСРЕДИ ответа (partial != b"") для
+    read-only тула теперь тоже ретраится. Побочных эффектов у whitelist-тулов
+    нет — повтор безопасен, даже если Ruby успел выполнить хендлер. До фикса
+    партиал давал голую SketchUpError без retry."""
+    reader, _ = fake_streams
+    conn = make_connection()
+    reader.feed_data(b"\x00\x00")  # 2 байта из 4-байтового length-префикса
+    reader.feed_eof()
+
+    new_reader = asyncio.StreamReader()
+    new_writer = MagicMock()
+    new_writer.buffer = bytearray()
+    new_writer.write = MagicMock(side_effect=lambda d: new_writer.buffer.extend(d))
+    new_writer.drain = AsyncMock()
+    new_writer.close = MagicMock()
+    new_writer.wait_closed = AsyncMock()
+    new_writer.is_closing = MagicMock(return_value=False)
+
+    async def fake_connect():
+        conn._reader = new_reader
+        conn._writer = new_writer
+
+    conn.connect = fake_connect
+    # _next_id инкрементнут первой попыткой до 2 — retry уйдёт с rid=2.
+    new_reader.feed_data(
+        encode_response({"jsonrpc": "2.0", "id": 2, "result": {"ok": True}})
+    )
+
+    result = await conn.send_command("get_model_info", {})
+    assert result == {"ok": True}
+    sent_on_retry = decode_writer_frames(bytes(new_writer.buffer))
+    assert len(sent_on_retry) == 1
+    assert sent_on_retry[0]["params"]["name"] == "get_model_info"
+
+
 async def test_send_command_no_retry_on_zero_byte_eof_for_mutating(make_connection, fake_streams):
     """Stale-socket для МУТАТИВНОГО tool — retry ЗАПРЕЩЁН (Codex review, PR #1).
 
@@ -252,12 +289,10 @@ async def test_send_command_no_retry_on_zero_byte_eof_for_mutating(make_connecti
 
 
 async def test_send_command_no_retry_on_partial_read(make_connection, fake_streams):
-    """Partial read = peer уже начал отвечать → НЕЛЬЗЯ retry (риск задвоения мутации).
-
-    Если Ruby успел прислать хотя бы один байт заголовка ответа, значит он уже
-    прошёл model.commit_operation. Перевыполнять — задвоить мутацию.
-    Регрессионный guard: при partial != b"" должна быть raise, БЕЗ retry.
-    """
+    """Partial read для МУТАТИВНОГО тула: retry по-прежнему запрещён — тул не
+    в _RETRY_SAFE_TOOLS (после MR-1 партиал-EOF маркируется _StaleSocketError,
+    и решение принимает whitelist, а не сама партиал-эвристика). Ошибка теперь
+    обогащается recovery-подсказкой, как и zero-byte случай."""
     reader, _ = fake_streams
     conn = make_connection()
     reader.feed_data(b"\x00\x00")  # 2 байта из 4 header'а
@@ -271,6 +306,9 @@ async def test_send_command_no_retry_on_partial_read(make_connection, fake_strea
     assert exc_info.value.code == -32000
     assert conn._writer is None
     conn.connect.assert_not_called()
+    err = exc_info.value
+    assert err.data.get("tool") == "mutate"
+    assert "do NOT retry" in err.message  # фактический текст recovery-подсказки connection.py
 
 
 async def test_send_command_stale_socket_eof_for_mutating_enriches_error(
