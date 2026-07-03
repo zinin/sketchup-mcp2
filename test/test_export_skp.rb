@@ -68,4 +68,40 @@ class TestExportSaveSkp < Minitest::Test
     assert_equal [[:save_copy, "/tmp/x.skp"]], model.calls,
       "titled model must use save_copy (save would re-point path + clear dirty = data loss)"
   end
+
+  def with_export_stubs(model)
+    v = MCPforSketchUp::Helpers::Validation
+    e = MCPforSketchUp::Helpers::Entities
+    orig_enum  = v.respond_to?(:require_enum)  ? v.method(:require_enum)  : nil
+    orig_model = e.respond_to?(:active_model!) ? e.method(:active_model!) : nil
+    v.define_singleton_method(:require_enum) { |params, key, _allowed| params[key] }
+    e.define_singleton_method(:active_model!) { model }
+    yield
+  ensure
+    if orig_enum
+      v.define_singleton_method(:require_enum, orig_enum)
+    else
+      v.singleton_class.send(:remove_method, :require_enum)
+    end
+    if orig_model
+      e.define_singleton_method(:active_model!, orig_model)
+    else
+      e.singleton_class.send(:remove_method, :active_model!)
+    end
+  end
+
+  def test_untitled_skp_export_carries_warning
+    model = FakeModel.new("")
+    result = with_export_stubs(model) { X.export({ "format" => "skp" }) }
+    assert_includes result.keys, "warning",
+      "T-27: save на untitled-модели привязывает документ к temp-пути — LLM обязан узнать"
+    assert_match(/untitled/i, result["warning"])
+    assert_match(/Ctrl\+S|next save/i, result["warning"])
+  end
+
+  def test_titled_skp_export_has_no_warning
+    model = FakeModel.new("/home/user/model.skp")
+    result = with_export_stubs(model) { X.export({ "format" => "skp" }) }
+    refute result.key?("warning")
+  end
 end
