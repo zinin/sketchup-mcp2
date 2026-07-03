@@ -165,6 +165,9 @@ module MCPforSketchUp
 
       def drain_one_client(state)
         return if state.closed?
+        # T-13.1: решение о закрытии принято (framing/parse-ошибка) — стрим
+        # рассинхронизирован, новые чтения бессмысленны до close-after-drain.
+        return if state.close_after_response
         iterations = 0
         loop do
           if iterations >= READ_MAX_ITERATIONS
@@ -181,9 +184,14 @@ module MCPforSketchUp
       rescue EOFError, Errno::ECONNRESET, Errno::EPIPE
         close_client(state, "client_disconnected")
       rescue StructuredError => e
-        # framing error (zero-length / oversize) — stream desynced.
+        # framing error (zero-length / oversize) — stream desynced. T-13.1:
+        # НЕ закрывать сразу — при занятом send-буфере error-envelope молча
+        # терялся. Глушим чтение (guard выше), закрываемся после полного
+        # дренажа буфера — механизм close_after_response, как у
+        # reject_handshake.
+        state.close_reason = "framing_error: #{e.message}"
+        state.close_after_response = true
         send_transport_error(state, e, nil)
-        close_client(state, "framing_error: #{e.message}")
       rescue StandardError => e
         # Defense-in-depth: any other unexpected exception (e.g. SystemCallError
         # from a bad fd, encoding error, etc.) must close the offending client
@@ -196,7 +204,7 @@ module MCPforSketchUp
       def process_frame_queue
         until @frame_queue.empty?
           state, body = @frame_queue.shift
-          next if state.closed?
+          next if state.closed? || state.close_after_response
 
           response = handle_frame(state, body)
           if response
@@ -223,9 +231,10 @@ module MCPforSketchUp
       rescue JSON::ParserError => e
         Logger.log_error("server.parse", e, client_label: state.label)
         # JSON-RPC §5.1: parse-error responses use id=null.
+        state.close_reason = "parse_error"
+        state.close_after_response = true
         send_transport_error(state,
           StructuredError.new(-32700, "parse error: #{e.message}"), nil)
-        close_client(state, "parse_error")
         nil
       rescue StandardError => e
         Logger.log_error("server.handler", e, client_label: state.label)
@@ -374,7 +383,7 @@ module MCPforSketchUp
           if state.pending_write_empty?
             state.pending_write_deadline_at = nil
             if state.close_after_response
-              close_client(state, "handshake_rejected")
+              close_client(state, state.close_reason || "handshake_rejected")
             end
             return
           end

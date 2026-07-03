@@ -4,7 +4,7 @@ module MCPforSketchUp
     class ClientState
       attr_reader   :id, :sock, :reader, :label, :pending_write_bytes
       attr_accessor :handshaked, :client_version, :close_after_response,
-                    :pending_write_deadline_at
+                    :pending_write_deadline_at, :close_reason
 
       def initialize(id, sock)
         @id                        = id
@@ -14,6 +14,7 @@ module MCPforSketchUp
         @handshaked                = false
         @client_version            = nil
         @close_after_response      = false
+        @close_reason              = nil
         @pending_write_bytes       = String.new(encoding: Encoding::ASCII_8BIT)
         @pending_write_deadline_at = nil
       end

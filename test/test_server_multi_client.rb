@@ -488,4 +488,58 @@ class TestServerMultiClient < Minitest::Test
     assert_operator state.pending_write_deadline_at, :>, original_deadline,
       "the deadline must be extended after forward progress (idle-timeout semantics)"
   end
+
+  # ---------- T-13.1: error-envelope переживает занятый send-буфер ----------
+
+  def oversize_header
+    [MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 1].pack("N")
+  end
+
+  def test_framing_error_envelope_survives_busy_write_buffer
+    # Клиент: hello + framing-ошибка (oversize header), при этом первый
+    # write_nonblock упирается в WaitWritable. Раньше close_client следовал
+    # сразу за send_transport_error — недоставленный envelope умирал вместе
+    # с сокетом. Теперь: чтение глушится, закрытие — ПОСЛЕ полного дренажа
+    # (механизм close_after_response).
+    #
+    # NB: hello успел декодироваться ДО ошибочного заголовка, но его ответ
+    # НЕ отправляется — process_frame_queue скипает фреймы клиента с
+    # close_after_response (стрим рассинхронизирован). Клиент получает
+    # ровно один фрейм: error-envelope.
+    sock = FakeSocket.new(read_chunks: [hello_frame, oversize_header])
+    sock.stub_write_pending(times: 1)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    refute sock.closed?,
+      "tick 1: клиент с недоставленным error-envelope не должен быть закрыт"
+
+    srv.send(:on_timer_tick)   # tick 2: буфер дренируется → закрытие
+    assert sock.closed?, "tick 2: после доставки envelope клиент закрывается"
+    frames = all_frames(sock.written)
+    assert_equal 1, frames.size, "ровно один фрейм — error-envelope"
+    assert_equal(-32600, frames[0]["error"]["code"])
+    assert_nil frames[0]["id"]
+  end
+
+  def test_parse_error_envelope_survives_busy_write_buffer
+    # Здесь оба фрейма ДЕКОДИРУЮТСЯ (framing цел), hello диспатчится до
+    # ошибки → его ответ тоже в буфере. Бюджет WaitWritable = 2: первый
+    # флаш hello-ответа и флаш error-envelope оба упираются в занятый
+    # буфер, tick 2 дренирует всё разом.
+    garbage = "not json at all"
+    bad_frame = [garbage.bytesize].pack("N") + garbage
+    sock = FakeSocket.new(read_chunks: [hello_frame, bad_frame])
+    sock.stub_write_pending(times: 2)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    refute sock.closed?, "tick 1: envelope ещё в буфере — не закрывать"
+    srv.send(:on_timer_tick)
+    assert sock.closed?
+    frames = all_frames(sock.written)
+    assert_equal 2, frames.size, "hello-ответ + parse-error envelope"
+    assert_equal 0, frames[0]["id"]
+    assert_equal(-32700, frames.last["error"]["code"])
+  end
 end
