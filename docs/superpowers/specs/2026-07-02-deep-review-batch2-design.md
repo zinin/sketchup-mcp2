@@ -38,7 +38,7 @@ CLAUDE.md уточнён; Gemfile сознательно не заводим).
 | T-14 | S | `msg_python_too_new` не предлагает переустановить уже установленную версию: указывать вперёд (новый .rbz) или назад (`uv pip install sketchup-mcp2==…`); обновить `test_compat.rb` | `core/compat.rb`, `test/test_compat.rb` |
 | T-15 | S | Ключ OBJ-экспортёра `double_sided_faces:` → официальный `:doublesided_faces`; заодно сверить все exporter-хеши с официальными таблицами опций | `handlers/export.rb` |
 | T-16 | S | `make_unique` перед мутацией definition-entities (покраска/резка одного экземпляра не должна менять все); эффект задокументировать в докстрингах (подхватит T-05) | `helpers/entities.rb`, call-sites (`materials.rb`, `joints.rb`) |
-| T-17 | S–M | Валидация параметров: `\|s\| > 1e-9` для scale (на SU2026 `Transformation#inverse` на необратимой кидает ArgumentError); угол dovetail (0,60]; `V.optional_bool/int_positive/number` в `model.rb` (`recursive`/`max_depth`/`name`) и joints-offsets; зеркальные pydantic-констрейнты | `handlers/geometry.rb`, `handlers/joints.rb`, `handlers/model.rb`, `tools.py` |
+| T-17 | S–M | Валидация параметров: `\|s\| > 1e-9` для scale (на SU2026 `Transformation#inverse` на необратимой кидает ArgumentError); угол dovetail (0,60]; `V.optional_bool/int_positive/number` в `model.rb` (`recursive`/`max_depth`/`name`) и joints-offsets; pydantic-констрейнты, зеркальные по ГРАНИЦАМ значений (не по строгости типов: коэрция pydantic оставлена намеренно — Python-схемы обслуживают LLM, числа строками — норма; строгая инстанция типов — Ruby-валидация; исключение — bool в EntityId, закрыт strict-веткой) | `handlers/geometry.rb`, `handlers/joints.rb`, `handlers/model.rb`, `tools.py` |
 | T-18 | S | `find_components`: case-insensitive substring (downcase обеих сторон) | `handlers/model.rb` |
 | T-19 | S | `defined?(Logger)` → `defined?(Core::Logger)` (паттерн уже есть в `client_state.rb`) | `core/config.rb` |
 | T-21 | S | Version-тест через `importlib.metadata.version("sketchup-mcp2") == __version__` вместо тавтологии; Ruby-guard тройки `package.rb VERSION == extension.json == Compat::SERVER_VERSION` | `tests/test_compat.py`, `test/` |
@@ -55,7 +55,7 @@ CLAUDE.md уточнён; Gemfile сознательно не заводим).
 | № | Размер | Суть | Файлы-мишени |
 |---|---|---|---|
 | MR-1 | S | Retry read-only тулов при partial-EOF: `IncompleteReadError` с partial≠b"" сейчас НАМЕРЕННО не ретраится — решение пересматриваем: для `_RETRY_SAFE_TOOLS` обрыв посреди фрейма безопасен. Поведенческий тест обязателен | `connection.py` |
-| MR-2 | S | Валидация минимальных dimensions: sub-tolerance радиус сферы сейчас может тихо дать дырявую сетку через last-resort rescue | `handlers/geometry.rb` |
+| MR-2 | S | Валидация минимальных dimensions: sub-tolerance радиус сферы сейчас может тихо дать дырявую сетку через last-resort rescue. Решение ревью батча 2 (P-13+C-13, выбор пользователя): floor per-type — box ≥ 0.1 мм (шпон/лист 0.5–0.8 мм легитимен), sphere/cylinder/cone ≥ 1.0 мм; polar-chord порог 0.04 мм (~1.6× merge-tolerance) | `handlers/geometry.rb` |
 | MR-3 | M | Rotated-board coverage для joints: юнит-фейк покрывает только translation, заявлены только translated-доски | `test/` |
 
 ### P3 UX-квиквины (живые находки этапа 2 аудита)
@@ -110,8 +110,10 @@ CLAUDE.md уточнён; Gemfile сознательно не заводим).
 - **T-29 — удалить группу**, не искать потребителя.
 - **T-25 — полная зачистка**, включая untracked `diff.patch` и `docs/session-transfer-*`,
   `.gemini/` в `.gitignore`. НЕ трогать: `.venv.broken-task8/` (экшн владельца после
-  рестарта живого MCP-сервера) и `docs/superpowers/plans/*prompt*.md` (уйдут вместе с
-  `git rm -r docs/superpowers/` перед PR).
+  рестарта живого MCP-сервера) и `docs/superpowers/plans/*prompt*.md` (untracked;
+  C-02 ревью: `git rm -r docs/superpowers/` перед PR снимает только tracked-файлы —
+  prompt-файлы останутся в рабочем дереве владельца, в PR-дифф они не попадают;
+  физически их не удаляем — это локальный архив владельца).
 - **T-13(5) — wire-протокол НЕ меняется:** pre-handshake дедлайн — чисто серверный таймер.
 
 ## 6. Тестирование и верификация

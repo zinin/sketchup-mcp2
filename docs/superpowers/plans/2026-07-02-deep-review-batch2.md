@@ -378,7 +378,7 @@ git commit -m "fix: catch UnicodeDecodeError and raw OSError in connection taxon
 
 **Interfaces:**
 - Produces: `IncompleteReadError` с ЛЮБЫМ `partial` теперь маркируется `_StaleSocketError`; решение о retry остаётся за whitelist'ом `_RETRY_SAFE_TOOLS` в `send_command` (код не меняется). Для мутативных тулов partial-EOF теперь даёт ОБОГАЩЁННОЕ сообщение («NOT auto-retried…») вместо голого `connection error`.
-- Consumes: `_RETRY_SAFE_TOOLS`, `_StaleSocketError` — существующие.
+- Consumes: `_RETRY_SAFE_TOOLS`, `_StaleSocketError` — существующие. P-14 (решение ревью): `get_viewport_screenshot` ОСТАЁТСЯ в whitelist — по данным ретрай идемпотентен (restore камеры в ensure отрабатывает до записи ответа), а скриншот — крупнейший ответ протокола и главный кандидат на обрыв посреди фрейма; редкое UX-мерцание документируется в докстринге тула (Task 15).
 
 **Контекст решения (одобрено в дизайне):** батч 1 намеренно НЕ ретраил partial-EOF (партиал = peer начал отвечать = хендлер, возможно, выполнен). Для read-only тулов это перестраховка: у них нет побочных эффектов, повторный вызов безопасен независимо от того, выполнился ли хендлер. Safety-инвариант переносится целиком на whitelist.
 
@@ -760,12 +760,21 @@ async def test_entity_id_schema_exposes_int_and_string():
     id_schema = tools["delete_component"].inputSchema["properties"]["id"]
     variants = {v.get("type") for v in id_schema.get("anyOf", [])}
     assert variants == {"integer", "string"}, f"unexpected id schema: {id_schema}"
+
+
+async def test_bool_id_rejected(dispatch_conn):
+    """P-05: bool — подкласс int; без strict-ветки True тихо коэрсился бы в
+    id "1". Зелёный и ДО правки (id пока строго str) — роль теста: пин
+    против bool-дыры ПОСЛЕ введения int-ветки."""
+    with pytest.raises(Exception):
+        await mcp.call_tool("delete_component", {"id": True})
+    dispatch_conn.send_command.assert_not_called()
 ```
 
 - [ ] **Step 2: Прогнать — RED**
 
 Run: `uv run pytest tests/test_tools.py -q`
-Expected: 4 новых FAIL (3 теста int-id ловят ValidationError на строгом `str`; schema-тест не находит anyOf — сейчас id-схема `{type: string, minLength: 1}`), `test_empty_string_id_still_rejected` — PASS (пин текущего поведения).
+Expected: 4 новых FAIL (3 теста int-id ловят ValidationError на строгом `str`; schema-тест не находит anyOf — сейчас id-схема `{type: string, minLength: 1}`); 2 новых PASS — `test_empty_string_id_still_rejected` и `test_bool_id_rejected` (пины поведения: второй охраняет от bool-дыры после введения int-ветки).
 
 - [ ] **Step 3: GREEN — правки tools.py**
 
@@ -777,7 +786,10 @@ Expected: 4 новых FAIL (3 теста int-id ловят ValidationError на
 # получала ValidationError (клиентская коэрция это часто маскирует, но
 # прямой call_tool — нет). Принимаем оба типа; на провод уходит str(id),
 # wire-формат неизменен (Ruby require_id парсит строку).
-EntityId = int | Annotated[str, Field(min_length=1)]
+# P-05: int-ветка СТРОГАЯ — bool является подклассом int, и без strict
+# True тихо коэрсился бы в id "1" (валидная операция над чужой сущностью
+# из мусорного вызова). Строка "3" при этом спокойно проходит str-веткой.
+EntityId = Annotated[int, Field(strict=True)] | Annotated[str, Field(min_length=1)]
 ```
 
 3b. Заменить типы и пробросы во всех 11 тулах (единый рецепт — тип `Annotated[str, Field(min_length=1)]` у id-полей меняется на `EntityId`, в пробросе `id=...` оборачивается `str(...)`):
@@ -823,7 +835,7 @@ async def delete_component(
 - [ ] **Step 4: Прогнать + commit**
 
 Run: `uv run pytest tests/ -q`
-Expected: **159 passed** (154 + 5). Существующая параметризация `test_tool_wrapper_calls_ruby_correctly` передаёт id строками — проходит без правок (str→str неизменен).
+Expected: **160 passed** (154 + 6). Существующая параметризация `test_tool_wrapper_calls_ruby_correctly` передаёт id строками — проходит без правок (str→str неизменен).
 
 ```bash
 git add src/sketchup_mcp/tools.py src/sketchup_mcp/prompts.py tests/test_tools.py
@@ -908,7 +920,7 @@ async def create_component(
 - [ ] **Step 3: Прогнать Python**
 
 Run: `uv run pytest tests/ -q`
-Expected: **163 passed** (159 + 4). Wire-pin строка create_component в `test_tool_wrapper_calls_ruby_correctly` передаёт dimensions явно — не задета.
+Expected: **164 passed** (160 + 4). Wire-pin строка create_component в `test_tool_wrapper_calls_ruby_correctly` передаёт dimensions явно — не задета.
 
 - [ ] **Step 4: RED — Ruby-тест name (в `test/test_geometry_builders.rb`)**
 
@@ -1058,7 +1070,7 @@ git commit -m "feat: optional name for create_component; visible default dimensi
 - Test: `test/test_model_pagination.rb` (новый), `tests/test_tools.py`
 
 **Interfaces:**
-- Produces: ответ `list_components`/`find_components` — `{"components": [...], "total": N, "offset": M, "truncated": bool}`; параметры `limit` (1..500, дефолт 50), `offset` (≥0, дефолт 0), `response_format` (`"concise"|"detailed"`, дефолт `"detailed"`; concise режет каждый элемент до `{id, name, type, depth}`). `V.optional_int_nonneg(params, key, default)`, `V.optional_enum(params, key, allowed, default)`, `V.optional_int_range(params, key, min:, max:, default:)`. `Model.find_component_by_id(entities, target_id, parent_t, depth:, max_depth:, seen:)` — DFS с ранним выходом, возвращает describe-хеш или nil.
+- Produces: ответ `list_components`/`find_components` — `{"components": [...], "total": N, "offset": M, "truncated": bool}`; параметры `limit` (1..500, дефолт 50), `offset` (≥0, дефолт 0), `response_format` (`"concise"|"detailed"`, дефолт `"detailed"`; concise режет каждый элемент до `{id, name, type, layer, depth}` — layer включён по C-03: фильтрация по слою — частый сценарий, поле дешёвое). `V.optional_int_nonneg(params, key, default)`, `V.optional_enum(params, key, allowed, default)`, `V.optional_int_range(params, key, min:, max:, default:)`. `Model.find_component_by_id(entities, target_id, parent_t, depth:, max_depth:, seen:)` — DFS с ранним выходом, возвращает describe-хеш или nil.
 - Consumes: `collect_components`/`describe_component` (существующие), `dispatch_conn` (Task 4).
 - ⚠ Смена формы ответа — существующие консюмеры: `examples/smoke_check.py` (синк в Task 17), докстринги (Task 15).
 
@@ -1222,7 +1234,7 @@ class TestModelPagination < Minitest::Test
     with_model_stub do
       page = M.list_components({ "limit" => 2, "response_format" => "concise" })
       entry = page["components"].first
-      assert_equal %w[depth id name type], entry.keys.sort
+      assert_equal %w[depth id layer name type], entry.keys.sort
       refute entry.key?("bbox_mm")
     end
   end
@@ -1322,6 +1334,12 @@ Run: `ruby test/test_model_pagination.rb` → RED: пагинационные т
       # T-07: единые параметры и форма пагинации для list/find. Без лимитов
       # рекурсивный обход тяжёлой модели выгружал мегабайты JSON прямо в
       # контекст модели (отказ только на 64 MiB фрейм-капе).
+      # P-03 (решение ревью): обход остаётся ПОЛНЫМ (collect + slice) —
+      # точный total иначе не получить, а обход всей модели был нормой
+      # этого хендлера и до пагинации; цель тикета — размер ОТВЕТА, и она
+      # достигнута. Материализация хешей вне страницы — не bottleneck для
+      # реальных SketchUp-моделей; traversal-аккумулятор отклонён как
+      # сложность без болевой точки.
       def self.pagination_params(params)
         [
           V.optional_int_range(params, "limit", min: 1, max: LIMIT_MAX, default: DEFAULT_LIMIT),
@@ -1333,7 +1351,7 @@ Run: `ruby test/test_model_pagination.rb` → RED: пагинационные т
       def self.paginate(components, limit, offset, response_format)
         page = components.slice(offset, limit) || []
         if response_format == "concise"
-          page = page.map { |c| c.slice("id", "name", "type", "depth") }
+          page = page.map { |c| c.slice("id", "name", "type", "layer", "depth") }
         end
         {
           "components" => page,
@@ -1455,8 +1473,9 @@ async def list_components(
 
     Returns {components: [...], total, offset, truncated}. Each component is
     {id, name, type, layer, depth, bbox_mm} (detailed) or {id, name, type,
-    depth} (concise). Bounds are in world coordinates. Set recursive=true to
-    descend into nested components (bounded by max_depth, default 3).
+    layer, depth} (concise). Bounds are in world coordinates. Set
+    recursive=true to descend into nested components (bounded by max_depth,
+    default 3).
     """
     return await _call(ctx, "list_components", recursive=recursive,
                        max_depth=max_depth, limit=limit, offset=offset,
@@ -1475,7 +1494,7 @@ async def list_components(
 - [ ] **Step 7: Прогнать + commit**
 
 Run: `uv run pytest tests/ -q`
-Expected: **166 passed** (163 + 3; правки таблицы счётчик не меняют).
+Expected: **167 passed** (164 + 3; правки таблицы счётчик не меняют).
 
 ```bash
 git add mcp_for_sketchup/mcp_for_sketchup/handlers/model.rb mcp_for_sketchup/mcp_for_sketchup/helpers/validation.rb src/sketchup_mcp/tools.py test/test_model_pagination.rb tests/test_tools.py
@@ -1758,7 +1777,7 @@ Run: `uv run pytest tests/test_screenshot.py -q` → RED: unpack `img, meta_json
 - [ ] **Step 3: Прогнать + commit**
 
 Run: `uv run pytest tests/ -q`
-Expected: **167 passed** (166 + 1).
+Expected: **168 passed** (167 + 1).
 
 ```bash
 git add src/sketchup_mcp/tools.py tests/test_screenshot.py
@@ -2047,6 +2066,10 @@ git commit -m "fix: cap frame dispatch per tick and add read backpressure (T-13.
 ```ruby
   # ---------- T-13.3: overflow-guard считает хвост, не head-фрейм ----------
 
+  # P-15 (решение ревью): временная подмена константы через remove_const/
+  # const_set принята ОСОЗНАННО — ensure выполняется и при упавшем ассерте
+  # (Minitest::Assertion — обычное исключение), пара remove+set не генерирует
+  # warning; альтернатива (аксессор в проде ради теста) отклонена.
   def with_pending_write_cap(bytes)
     srv_class = MCPforSketchUp::Core::Server
     original = srv_class::PENDING_WRITE_MAX_BYTES
@@ -2580,6 +2603,7 @@ git commit -m "feat: warn when skp export binds an untitled model to the temp pa
 - Produces: `E.mutable_entity_collection(entity)` — `make_unique` (если метод есть) + `entity_collection`. МУТИРУЮЩИЕ call-sites переключаются на него; read-only обходы (`model.rb:83`, `operations.rb` строка `cur_edges = ...` — читает уже-уникальный entity) остаются на `entity_collection`.
 - Consumes: `E.entity_collection` — без изменений.
 - ⚠ Поведенческое изменение: покраска/резьба/чамфер одного инстанса больше НЕ задевает другие инстансы той же definition. Докстринги обновит Task 15.
+- Граница скоупа (C-10, решение ревью): subtract-пути (`boolean_operation`, `place_mortise`/carve-цепочки) в make_unique НЕ нуждаются — `Group#subtract` не мутирует definition in-place, а ПОТРЕБЛЯЕТ входы и создаёт новую группу-результат; остальные инстансы шаренной definition не затрагиваются по построению. Это API-семантика SketchUp, юнит-фейками не проверяемая — пункт добавлен в ручной live-smoke владельца (см. «После плана»).
 
 - [ ] **Step 1: RED — новый файл `test/test_entities_unique.rb`**
 
@@ -2693,7 +2717,7 @@ Run: `ruby test/test_entities_unique.rb` → RED (`mutable_entity_collection` н
 ruby test/test_entities_unique.rb            # 3 runs, 0 failures
 ruby test/test_joints_frame_compensation.rb  # пины живы
 ruby test/run_all.rb                         # 0 failures
-uv run pytest tests/ -q                      # 165 passed (не задет)
+uv run pytest tests/ -q                      # 168 passed (не задет)
 git add mcp_for_sketchup/mcp_for_sketchup/helpers/entities.rb mcp_for_sketchup/mcp_for_sketchup/handlers/materials.rb mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb mcp_for_sketchup/mcp_for_sketchup/handlers/operations.rb test/test_entities_unique.rb
 git commit -m "fix: make instances unique before mutating shared definition entities (T-16)"
 ```
@@ -2711,7 +2735,7 @@ git commit -m "fix: make instances unique before mutating shared definition enti
 - Test: `test/test_geometry_builders.rb`, `test/test_joints_validation.rb` (новый), `test/test_model_pagination.rb`, `tests/test_tools.py`
 
 **Interfaces:**
-- Produces: `V.optional_number(params, key, default = 0.0)` (строгий Numeric,→ Float), `V.optional_string(params, key)` (nil-pass-through, иначе require_string); `Geometry::MIN_DIMENSION_MM = 1.0`, `Geometry.validate_min_dimensions!(dims_mm)`, `Geometry::MIN_POLAR_CHORD_MM = 0.03`; Python: элементы `dimensions` — `Field(ge=1.0)`, `scale` — `AfterValidator(_validate_scale_nonzero)`, dovetail `angle` — `Field(gt=0, le=60)`.
+- Produces: `V.optional_number(params, key, default = 0.0)` (строгий Numeric,→ Float), `V.optional_string(params, key)` (nil-pass-through, иначе require_string); `Geometry::MIN_DIMENSION_MM_BOX = 0.1`, `Geometry::MIN_DIMENSION_MM_CURVED = 1.0`, `Geometry.validate_min_dimensions!(dims_mm, type)` (per-type floor — решение P-13+C-13), `Geometry::MIN_POLAR_CHORD_MM = 0.04`; Python: элементы `dimensions` — `Field(ge=0.1)` (абсолютный floor; точный per-type — Ruby-инстанция), `scale` — `AfterValidator(_validate_scale_nonzero)`, dovetail `angle` — `Field(gt=0, le=60)`.
 - Consumes: `V.optional_bool`, `V.optional_int_positive`, `V.optional_enum` (Task 7), `dispatch_conn`.
 
 - [ ] **Step 1: Ruby V-хелперы (`helpers/validation.rb`, после `optional_bool`)**
@@ -2737,18 +2761,26 @@ git commit -m "fix: make instances unique before mutating shared definition enti
 2a. В `test/test_geometry_builders.rb` (в класс `TestGeometryBuilders`):
 
 ```ruby
-  # ---------- MR-2: минимальные размеры ----------
+  # ---------- MR-2: минимальные размеры (per-type — решение P-13+C-13) ----------
 
-  def test_validate_min_dimensions_rejects_submillimeter
+  def test_validate_min_dimensions_per_type_floors
+    # C-13: box пропускает легитимный шпон 0.5 мм; криволинейные держат 1.0.
+    assert_equal [0.5, 100.0, 100.0],
+      GEO.validate_min_dimensions!([0.5, 100.0, 100.0], "cube")
     err = assert_raises(MCPforSketchUp::Core::StructuredError) do
-      GEO.validate_min_dimensions!([0.5, 100.0, 100.0])
+      GEO.validate_min_dimensions!([0.5, 100.0, 100.0], "cylinder")
     end
     assert_equal(-32602, err.code)
     assert_match(/dimensions\[0\]/, err.message)
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.validate_min_dimensions!([0.05, 100.0, 100.0], "cube")
+    end
+    assert_equal(-32602, err.code)
   end
 
   def test_validate_min_dimensions_accepts_floor
-    assert_equal [1.0, 100.0, 100.0], GEO.validate_min_dimensions!([1.0, 100.0, 100.0])
+    assert_equal [1.0, 100.0, 100.0], GEO.validate_min_dimensions!([1.0, 100.0, 100.0], "sphere")
+    assert_equal [0.1, 100.0, 100.0], GEO.validate_min_dimensions!([0.1, 100.0, 100.0], "cube")
   end
 
   def test_sphere_rejects_subtolerance_polar_chord_at_default_segments
@@ -2899,21 +2931,24 @@ Run: `ruby test/test_geometry_builders.rb` (5 FAIL), `ruby test/test_joints_vali
 
 - [ ] **Step 3: GREEN — Ruby**
 
-3a. `handlers/geometry.rb::create_component` — после `dims_mm = V.require_dimensions3(params, "dimensions")` вставить `validate_min_dimensions!(dims_mm)`. Рядом с `default_segments_for` добавить:
+3a. `handlers/geometry.rb::create_component` — после `dims_mm = V.require_dimensions3(params, "dimensions")` вставить `validate_min_dimensions!(dims_mm, type)` (`type` к этому моменту уже прочитан require_enum'ом). Рядом с `default_segments_for` добавить:
 
 ```ruby
-      # MR-2 (финальное ревью батча 1): субмиллиметровая геометрия
-      # схлопывается merge-tolerance'ом SketchUp (0.001" = 0.0254 мм) — грани
-      # тихо выбрасываются last-resort rescue, сетка выходит дырявой. Floor
-      # 1.0 мм — 40× запас для рёбер куба; тесселированные полюса сфер
-      # дополнительно проверяет polar-chord формула в build_sphere.
-      MIN_DIMENSION_MM = 1.0
+      # MR-2 (финальное ревью батча 1) + P-13/C-13 (ревью батча 2): floor
+      # per-type. Box вырождается только у merge-tolerance SketchUp
+      # (0.001" = 0.0254 мм) — floor 0.1 мм (4× запас) пропускает
+      # легитимный шпон/лист 0.5–0.8 мм. Криволинейные (sphere/cylinder/
+      # cone) вырождаются раньше из-за тесселяции — floor 1.0 мм; полюса
+      # сфер дополнительно проверяет polar-chord формула в build_sphere.
+      MIN_DIMENSION_MM_BOX    = 0.1
+      MIN_DIMENSION_MM_CURVED = 1.0
 
-      def self.validate_min_dimensions!(dims_mm)
+      def self.validate_min_dimensions!(dims_mm, type)
+        floor = type == "cube" ? MIN_DIMENSION_MM_BOX : MIN_DIMENSION_MM_CURVED
         dims_mm.each_with_index do |d, i|
-          next if d >= MIN_DIMENSION_MM
+          next if d >= floor
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
-            "dimensions[#{i}] must be >= #{MIN_DIMENSION_MM} mm, got #{d} — " \
+            "dimensions[#{i}] must be >= #{floor} mm for type #{type}, got #{d} — " \
             "sub-millimeter geometry collapses into SketchUp's merge tolerance")
         end
         dims_mm
@@ -2936,14 +2971,14 @@ Run: `ruby test/test_geometry_builders.rb` (5 FAIL), `ruby test/test_joints_vali
 3c. `build_sphere` — после существующего `raise ... if segments < 3` и строки `radius = dims[0] / 2.0` вставить (константа — рядом с MIN_DIMENSION_MM):
 
 ```ruby
-      MIN_POLAR_CHORD_MM = 0.03  # ~1.2 × merge-tolerance (0.0254 мм)
+      MIN_POLAR_CHORD_MM = 0.04  # ~1.6 × merge-tolerance (0.0254 мм) — P-13
 ```
 
 ```ruby
         # MR-2: самое короткое ребро UV-сферы — хорда первого полярного
-        # кольца: 2·r·sin²(π/segments). Тоньше ~1.2× merge-tolerance —
-        # add_face молча склеит вершины, оболочка выйдет дырявой (одним
-        # floor'ом 1 мм это не ловится: d=10 мм при segments=96 вырожден).
+        # кольца: 2·r·sin²(π/segments). Тоньше MIN_POLAR_CHORD_MM (~1.6×
+        # merge-tolerance) — add_face молча склеит вершины, оболочка выйдет
+        # дырявой (floor'ом это не ловится: d=10 мм при segments=96 вырожден).
         polar_chord_mm = 2.0 * U.inch_to_mm(radius) * Math.sin(Math::PI / segments)**2
         if polar_chord_mm < MIN_POLAR_CHORD_MM
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
@@ -2991,14 +3026,19 @@ ruby test/run_all.rb                  # 0 failures
 
 - [ ] **Step 5: RED+GREEN — Python-зеркала**
 
+⚠ P-05 (решение ревью): «зеркальность» Python-констрейнтов — по ГРАНИЦАМ значений (ge/le/gt), НЕ по строгости типов. Коэрция pydantic ("3"→3, "false"→False) оставлена намеренно: Python-схемы обслуживают LLM (числа строками — норма), строгая инстанция типов — Ruby-валидация, которая ловит direct-TCP клиентов. Единственное типовое исключение — bool в EntityId (закрыт strict-веткой в Task 5).
+
 5a. RED-тесты в `tests/test_tools.py`:
 
 ```python
 # --- T-17 + MR-2: зеркальные констрейнты схем ---
 
-async def test_schema_rejects_submillimeter_dimension(dispatch_conn):
+async def test_schema_rejects_below_absolute_floor(dispatch_conn):
+    """Python держит АБСОЛЮТНЫЙ floor 0.1 мм; per-type floor (1.0 для
+    криволинейных) — Ruby-инстанция: кросс-полевая (type+dimensions)
+    валидация на pydantic-стороне неоправданно сложна (P-05/P-13)."""
     with pytest.raises(Exception) as exc_info:
-        await mcp.call_tool("create_component", {"dimensions": [0.5, 100.0, 100.0]})
+        await mcp.call_tool("create_component", {"dimensions": [0.05, 100.0, 100.0]})
     assert "dimensions" in str(exc_info.value)
     dispatch_conn.send_command.assert_not_called()
 
@@ -3034,7 +3074,7 @@ def _validate_scale_nonzero(v: list[float]) -> list[float]:
     return v
 ```
 
-- `create_component`: элемент dimensions `Annotated[float, Field(gt=0)]` → `Annotated[float, Field(ge=1.0)]` (+ строка в докстринг: минимум 1 мм — Task 15 отполирует);
+- `create_component`: элемент dimensions `Annotated[float, Field(gt=0)]` → `Annotated[float, Field(ge=0.1)]` (абсолютный floor box'а; per-type floor 1.0 мм для sphere/cylinder/cone проверяет Ruby; докстринг — Task 15);
 - `transform_component`: параметр `scale` →
 
 ```python
@@ -3050,7 +3090,7 @@ def _validate_scale_nonzero(v: list[float]) -> list[float]:
 - [ ] **Step 6: Прогнать + commit**
 
 Run: `uv run pytest tests/ -q`
-Expected: **170 passed** (167 + 3). ⚠ Wire-pin таблица не задета: строка create_component передаёт `[1, 1, 1]` — ровно на floor'е (≥ 1.0 ✓; int 1 проходит `Field(ge=1.0)` — pydantic v2 коэрсит int→float при числовом сравнении, M-05).
+Expected: **171 passed** (168 + 3). ⚠ Wire-pin таблица не задета: строка create_component передаёт `[1, 1, 1]` — выше floor'а (≥ 0.1 ✓; int 1 проходит `Field(ge=0.1)` — pydantic v2 коэрсит int→float при числовом сравнении, M-05).
 
 ```bash
 git add mcp_for_sketchup/mcp_for_sketchup/helpers/validation.rb mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb mcp_for_sketchup/mcp_for_sketchup/handlers/model.rb src/sketchup_mcp/tools.py test/test_geometry_builders.rb test/test_joints_validation.rb test/test_model_pagination.rb tests/test_tools.py
@@ -3644,7 +3684,9 @@ Run: `uv run pytest tests/test_tool_descriptions.py -q` → 5 FAIL (описан
 ```python
     """Create a primitive (cube / cylinder / cone / sphere) in SketchUp.
 
-    All linear values are millimeters (mm), minimum 1.0 mm. position is the
+    All linear values are millimeters (mm). Minimum size per dimension:
+    0.1 mm for cube (thin stock like veneer is fine), 1.0 mm for sphere /
+    cylinder / cone (tessellated types degenerate earlier). position is the
     bounding-box MIN corner (not the center); the same anchor is used by
     transform_component.position. Per-type dimensions: cube uses [x, y, z];
     cylinder and cone use [0]=diameter, [2]=height ([1] is ignored); sphere
@@ -3728,8 +3770,8 @@ Run: `uv run pytest tests/test_tool_descriptions.py -q` → 5 FAIL (описан
 
 - `list_components` / `find_components` — Returns-строка `{components[], total, offset, truncated}` + «if truncated, request the next page with offset += limit»; `find_components`: «name matching is case-insensitive substring».
 - `get_model_info`, `get_component_info`, `list_layers`, `create_layer`, `undo`, `get_selection`, `delete_component` — короткие докстринги + Returns из таблицы; у `get_component_info`/`delete_component` id-описание как выше.
-- `get_viewport_screenshot` — параметрам добавить description; докстринг уже переписан в Task 9.
-- `boolean_operation` — Returns + «difference = target minus tool»; `delete_originals` description: «erase the two source bodies after a successful operation».
+- `get_viewport_screenshot` — параметрам добавить description; докстринг уже переписан в Task 9. P-14: добавить фразу «if the connection drops mid-response the call is retried automatically; the viewport may briefly flicker in that rare case» (тул остаётся в retry-whitelist: restore камеры отрабатывает в ensure до записи ответа — повтор идемпотентен).
+- `boolean_operation` — Returns + «difference = target minus tool»; `delete_originals` description: «erase the two source bodies after a successful operation»; C-10: добавить фразу «operating on an instance of a shared definition consumes only that instance — the result is a new group, sibling instances are untouched».
 
 - [ ] **Step 3: prompts.py — синк**
 
@@ -3754,12 +3796,12 @@ Run: `uv run pytest tests/test_tool_descriptions.py -q` → 5 FAIL (описан
   shapes; see the tool docs.
 ```
 
-3c. §3: добавить пункты `- create_component minimum dimension is 1.0 mm; defaults are a 100 mm cube.` и (M-12) `- create_component accepts an optional name — set it so find_components can locate the part later.`
+3c. §3: добавить пункты `- create_component minimum dimension: 0.1 mm for cube, 1.0 mm for curved types; defaults are a 100 mm cube.` и (M-12) `- create_component accepts an optional name — set it so find_components can locate the part later.`
 
 - [ ] **Step 4: Прогнать + commit**
 
 Run: `uv run pytest tests/ -q`
-Expected: **175 passed** (170 + 5). ⚠ `tests/test_prompts.py` пинит фрагменты стратегии — если пины упали, обновить их под новый текст ОСОЗНАННО (в том же коммите). Wire-пины (`test_tool_wrapper_calls_ruby_correctly`) обязаны пройти без правок — поведение не менялось.
+Expected: **176 passed** (171 + 5). ⚠ `tests/test_prompts.py` пинит фрагменты стратегии — если пины упали, обновить их под новый текст ОСОЗНАННО (в том же коммите). Wire-пины (`test_tool_wrapper_calls_ruby_correctly`) обязаны пройти без правок — поведение не менялось.
 
 ```bash
 git add src/sketchup_mcp/tools.py src/sketchup_mcp/prompts.py tests/test_tool_descriptions.py tests/test_prompts.py
@@ -3843,7 +3885,7 @@ remedy: the release that ships them MUST bump both MIN floors.
 - [ ] **Step 9: Прогнать + commit (двумя коммитами)**
 
 ```bash
-uv run pytest tests/ -q     # 175 passed — pyproject-правка не ломает метаданных
+uv run pytest tests/ -q     # 176 passed — pyproject-правка не ломает метаданных
 ruby test/run_all.rb        # 0 failures (правки Ruby — только комментарии; но source-guard тесты прогнать обязательно)
 git add README.md CLAUDE.md docs/release.md .gitignore src/sketchup_mcp/server.py mcp_for_sketchup/mcp_for_sketchup/helpers/geometry.rb mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog.rb
 git commit -m "docs: fix phantom examples, stale server.py role, menu labels, dangling refs (T-25)"
@@ -3880,7 +3922,7 @@ git commit -m "build: drop unconsumed [project.entry-points.mcp] group (T-29)"
 
 ```bash
 ruby test/run_all.rb        # ориентир: ~413 runs (354 на старте + ~59 новых), 0 failures
-uv run pytest tests/ -q     # ориентир: 175 passed
+uv run pytest tests/ -q     # ориентир: 176 passed
 ```
 
 Записать ФАКТИЧЕСКИЕ числа из прогонов (не ориентиры!) в `CLAUDE.md:84-85`:
@@ -3910,8 +3952,8 @@ git commit -m "docs: refresh test counters, assert pagination envelope in smoke 
 ## После плана (вне задач — исполнителю и владельцу)
 
 1. **Финальное whole-branch mesh-ревью** (по образцу батча 1: `/claude-mesh:mesh-review default`) — диф двух батчей; per-task ревью уже несут основную нагрузку.
-2. **Перед PR:** `git rm -r docs/superpowers/ && git commit` (ветка трекает P1-план, 2 review-спеки, дизайн и план батча 2 — в PR-дифф не попадают, остаются в истории ветки). Затем единый PR `fix/deep-review-p2` → master, включающий ОБА батча. В описании PR напомнить владельцу 5 автономных решений батча 1 (см. ledger: пред-фикс `165f214`; commit message «3.10-3.13»; 136 vs «ровно 135»; deepseek принят REAL; спорный source-guard `5de1987`).
-3. **Живой DoD (владелец, вручную):** пересобрать `.rbz` (`cd mcp_for_sketchup && ruby package.rb --variant=warehouse`), установить в SketchUp 2026, прогнать `uv run python examples/smoke_check.py` — 25 шагов зелёные (для шага 22 включить eval в Settings или собрать `--variant=github`). Проверяет живьём T-07/T-16/T-54/T-55/T-27.
+2. **Перед PR:** `git rm -r docs/superpowers/ && git commit` (ветка трекает P1-план, 2 review-спеки, дизайн и план батча 2, а также merged/iter-файлы дизайн-ревью — в PR-дифф не попадают, остаются в истории ветки). ⚠ C-02: git rm снимает ТОЛЬКО tracked; untracked prompt-файлы в `docs/superpowers/plans/` останутся в рабочем дереве — осознанно, это локальный архив владельца, в PR они не попадают. Затем единый PR `fix/deep-review-p2` → master, включающий ОБА батча. В описании PR напомнить владельцу 5 автономных решений батча 1 (см. ledger: пред-фикс `165f214`; commit message «3.10-3.13»; 136 vs «ровно 135»; deepseek принят REAL; спорный source-guard `5de1987`).
+3. **Живой DoD (владелец, вручную):** пересобрать `.rbz` (`cd mcp_for_sketchup && ruby package.rb --variant=warehouse`), установить в SketchUp 2026, прогнать `uv run python examples/smoke_check.py` — 25 шагов зелёные (для шага 22 включить eval в Settings или собрать `--variant=github`). Проверяет живьём T-07/T-16/T-54/T-55/T-27. Дополнительно (C-10, руками один раз): скопировать группу (две копии шаренной definition), выполнить `boolean_operation` над одной — вторая обязана остаться нетронутой; это подтверждает границу T-16 «subtract не мутирует definition in-place».
 4. **Владелец:** рестарт живого MCP-сервера (нужен и для батча 2 — код Python-сервера изменился) → затем `rm -rf .venv.broken-task8/`.
 5. **При следующем релизе:** bump MIN-floor'ов ОБЯЗАТЕЛЕН — блок «Pending contract break» в `docs/release.md` дополнен батчем 2 (Task 16.8).
 6. **Остаток бэклога отчёта:** P3 (T-31…T-49, T-51…T-53) + продуктовое решение T-47 (физическое исключение eval.rb из warehouse-сборки — принять до сабмита в Extension Warehouse).
