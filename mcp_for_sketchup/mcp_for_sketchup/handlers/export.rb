@@ -70,7 +70,7 @@ module MCPforSketchUp
       def self.export_obj(model, path)
         model.export(path, {
           triangulated_faces:  true,
-          double_sided_faces:  true,
+          doublesided_faces:   true,   # T-15: официальное имя ключа (double_sided_faces молча игнорировался)
           edges:               false,
           texture_maps:        true
         })
