@@ -2,7 +2,8 @@
 module MCPforSketchUp
   module Core
     class ClientState
-      attr_reader   :id, :sock, :reader, :label, :pending_write_bytes
+      attr_reader   :id, :sock, :reader, :label, :pending_write_bytes,
+                    :head_frame_remaining
       attr_accessor :handshaked, :client_version, :close_after_response,
                     :pending_write_deadline_at, :close_reason
 
@@ -17,6 +18,7 @@ module MCPforSketchUp
         @close_reason              = nil
         @pending_write_bytes       = String.new(encoding: Encoding::ASCII_8BIT)
         @pending_write_deadline_at = nil
+        @head_frame_remaining      = 0
       end
 
       def closed?
@@ -26,8 +28,14 @@ module MCPforSketchUp
       # Append bytes to the pending-write buffer. Always coerced to ASCII_8BIT
       # so concatenation with other binary frames cannot trigger an encoding
       # error. Returns the new buffer size.
+      #
+      # T-13.3: фрейм, лёгший на ПУСТОЙ буфер, становится head'ом — его размер
+      # запоминается, чтобы overflow-guard сервера применял кап только к
+      # хвосту за ним (head уже ограничен framing-капом 64 MiB).
       def append_pending_write(bytes)
-        @pending_write_bytes << bytes.b
+        payload = bytes.b
+        @head_frame_remaining = payload.bytesize if @pending_write_bytes.bytesize == 0
+        @pending_write_bytes << payload
         @pending_write_bytes.bytesize
       end
 
@@ -36,6 +44,8 @@ module MCPforSketchUp
       # subsequent appends keep the binary encoding invariant.
       def consume_pending_write(n)
         return if n <= 0
+        consumed_from_head = [n, @head_frame_remaining].min
+        @head_frame_remaining -= consumed_from_head
         if n >= @pending_write_bytes.bytesize
           @pending_write_bytes = String.new(encoding: Encoding::ASCII_8BIT)
         else

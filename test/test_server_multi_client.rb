@@ -418,6 +418,7 @@ class TestServerMultiClient < Minitest::Test
 
     cap     = MCPforSketchUp::Core::Server::PENDING_WRITE_MAX_BYTES
     near    = "x" * (cap - 64)   # just below the cap; can't trigger overflow alone
+    state.append_pending_write("h" * 8)   # малый head (T-13.3) — near ниже становится ХВОСТОМ
     state.append_pending_write(near)
     state.pending_write_deadline_at = Time.now + 60   # don't deadline during test
 
@@ -613,5 +614,66 @@ class TestServerMultiClient < Minitest::Test
     answered_ids = all_frames(sock.written).map { |f| f["id"] }
     refute_includes queue_ids + answered_ids, 99_999,
       "marker-фрейм из второго chunk не должен быть прочитан: очередь насыщена первым"
+  end
+
+  # ---------- T-13.3: overflow-guard считает хвост, не head-фрейм ----------
+
+  # P-15 (решение ревью): временная подмена константы через remove_const/
+  # const_set принята ОСОЗНАННО — ensure выполняется и при упавшем ассерте
+  # (Minitest::Assertion — обычное исключение), пара remove+set не генерирует
+  # warning; альтернатива (аксессор в проде ради теста) отклонена.
+  def with_pending_write_cap(bytes)
+    srv_class = MCPforSketchUp::Core::Server
+    original = srv_class::PENDING_WRITE_MAX_BYTES
+    srv_class.send(:remove_const, :PENDING_WRITE_MAX_BYTES)
+    srv_class.const_set(:PENDING_WRITE_MAX_BYTES, bytes)
+    yield
+  ensure
+    srv_class.send(:remove_const, :PENDING_WRITE_MAX_BYTES)
+    srv_class.const_set(:PENDING_WRITE_MAX_BYTES, original)
+  end
+
+  def response_of_size(id, target_bytes)
+    pad = "x" * target_bytes
+    { "jsonrpc" => "2.0", "result" => { "pad" => pad }, "id" => id }
+  end
+
+  def test_overflow_guard_ignores_draining_head_frame
+    with_pending_write_cap(400) do
+      sock = FakeSocket.new
+      # Head-фрейм уйдёт в буфер целиком; дренаж — по 10 байт за вызов,
+      # бюджет 1 вызов на тик (дальше WaitWritable) → head «дренируется» долго.
+      sock.stub_partial_write(max_bytes_per_call: 10, calls: 1)
+      state = MCPforSketchUp::Core::ClientState.new(0, sock)
+      srv = MCPforSketchUp::Core::Server.new
+      srv.instance_variable_get(:@clients)[sock] = state
+
+      # 1) Большой head (≈600 байт > cap 400) допущен на ПУСТОЙ буфер.
+      srv.send(:write_response, state, response_of_size(1, 550))
+      refute sock.closed?, "head-фрейм на пустой буфер допускается всегда"
+
+      # 2) Малый фрейм при недодренированном head: раньше backlog>0 и
+      #    projected>cap закрывали клиента. Теперь хвост (без head) = 0+small.
+      srv.send(:write_response, state, response_of_size(2, 50))
+      refute sock.closed?,
+        "малый фрейм за большим head не должен приговаривать клиента (T-13.3)"
+
+      # 3) Патологическое накопление ХВОСТА за head'ом всё ещё режется капом.
+      srv.send(:write_response, state, response_of_size(3, 550))
+      assert sock.closed?, "хвост сверх капа — закрытие остаётся в силе"
+    end
+  end
+
+  def test_client_state_tracks_head_frame_remaining
+    sock = FakeSocket.new
+    state = MCPforSketchUp::Core::ClientState.new(0, sock)
+    state.append_pending_write("A" * 100)     # head на пустой буфер
+    assert_equal 100, state.head_frame_remaining
+    state.append_pending_write("B" * 40)      # хвост head не трогает
+    assert_equal 100, state.head_frame_remaining
+    state.consume_pending_write(60)
+    assert_equal 40, state.head_frame_remaining
+    state.consume_pending_write(60)           # head дожат (40) + 20 из хвоста
+    assert_equal 0, state.head_frame_remaining
   end
 end

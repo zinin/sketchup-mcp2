@@ -350,19 +350,18 @@ module MCPforSketchUp
           end
 
         # Append to the per-client buffer and try to drain immediately.
-        # Overflow guard: cap the cumulative pending bytes per client to
-        # protect against pathological accumulation when many handlers
-        # reply faster than the client can read. The cap applies to
-        # ACCUMULATION only — a single frame is already bounded by the framing
-        # layer (Config::MAX_MESSAGE_SIZE, 64 MiB), so it must always be allowed
-        # onto an EMPTY buffer; otherwise a legitimate large reply (e.g. a
-        # get_viewport_screenshot PNG, up to ~43 MiB base64) would be wrongly
-        # force-closed. Fire only when a backlog already exists.
-        backlog   = state.pending_write_bytes.bytesize
-        projected = backlog + frame.bytesize
+        # Overflow guard (T-13.3): кап применяется к ХВОСТУ за пределами ещё
+        # дренирующегося head-фрейма. Head, допущенный на пустой буфер, уже
+        # ограничен framing-капом (64 MiB) и не приговаривает клиента: раньше
+        # один легитимный >16 MiB ответ (например ~43 MiB скриншот) плюс ЛЮБОЙ
+        # следующий фрейм закрывали соединение. Патологическое накопление
+        # хвоста по-прежнему режется.
+        backlog      = state.pending_write_bytes.bytesize
+        tail_backlog = backlog - state.head_frame_remaining
+        projected    = tail_backlog + frame.bytesize
         if backlog > 0 && projected > PENDING_WRITE_MAX_BYTES
           Logger.log_tool("server", "pending_write_overflow",
-            "limit=#{PENDING_WRITE_MAX_BYTES} projected=#{projected} backlog=#{backlog}",
+            "limit=#{PENDING_WRITE_MAX_BYTES} projected_tail=#{projected} backlog=#{backlog}",
             client_label: state.label)
           close_client(state, "pending_write_overflow")
           return
