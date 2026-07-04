@@ -168,9 +168,22 @@ module MCPforSketchUp
       MIN_DIMENSION_MM_CURVED = 1.0
       MIN_POLAR_CHORD_MM = 0.04  # ~1.6 × merge-tolerance (0.0254 мм) — P-13
 
+      # Проверяются только индексы, которые билдер реально потребляет
+      # (контракт tools.py): cube — [x,y,z]; cylinder/cone — [0]=diameter,
+      # [2]=height ([1] игнорируется); sphere — только [0]=diameter.
+      # Игнорируемые индексы floor'ом не режем: [10, 0.5, 10] для цилиндра
+      # валиден по докстрингу.
+      CONSUMED_DIM_INDICES = {
+        "cube"     => [0, 1, 2],
+        "cylinder" => [0, 2],
+        "cone"     => [0, 2],
+        "sphere"   => [0],
+      }.freeze
+
       def self.validate_min_dimensions!(dims_mm, type)
         floor = type == "cube" ? MIN_DIMENSION_MM_BOX : MIN_DIMENSION_MM_CURVED
-        dims_mm.each_with_index do |d, i|
+        CONSUMED_DIM_INDICES.fetch(type, [0, 1, 2]).each do |i|
+          d = dims_mm[i]
           next if d >= floor
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
             "dimensions[#{i}] must be >= #{floor} mm for type #{type}, got #{d} — " \
@@ -184,6 +197,7 @@ module MCPforSketchUp
       end
 
       def self.build_cylinder(entities, pos, dims, segments)
+        raise MCPforSketchUp::Core::StructuredError.new(-32602, "segments must be >= 3 for cylinders") if segments < 3
         radius = dims[0] / 2.0
         height = dims[2]
         center = [pos[0] + radius, pos[1] + radius, pos[2]]
@@ -195,6 +209,7 @@ module MCPforSketchUp
       end
 
       def self.build_cone(entities, pos, dims, segments)
+        raise MCPforSketchUp::Core::StructuredError.new(-32602, "segments must be >= 3 for cones") if segments < 3
         radius = dims[0] / 2.0
         height = dims[2]
         center = [pos[0] + radius, pos[1] + radius, pos[2]]

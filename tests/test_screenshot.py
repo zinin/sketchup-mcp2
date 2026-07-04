@@ -124,6 +124,7 @@ async def test_screenshot_returns_image():
 
     assert isinstance(img, Image)
     assert img.data == _TINY_PNG_BYTES
+    # mimeType via to_image_content() — pins the PNG marker the MCP client will see, not just raw bytes.
     assert img.to_image_content().mimeType == "image/png"
     # T-28: метаданные захвата больше не выбрасываются.
     import json as _json

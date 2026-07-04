@@ -86,6 +86,19 @@ async def test_send_command_jsonrpc_error_propagates_data(make_connection, fake_
     assert exc_info.value.data == {"tool": "x", "params": {"id": "1"}}
 
 
+async def test_send_command_non_dict_error_envelope_disconnects(make_connection, fake_streams):
+    """Malformed peer: строка/список под "error" должны давать SketchUpError
+    -32603 + disconnect, а не AttributeError на err.get()."""
+    reader, _ = fake_streams
+    conn = make_connection()
+    reader.feed_data(encode_response({"jsonrpc": "2.0", "id": 1, "error": "boom"}))
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("x", {})
+    assert exc_info.value.code == -32603
+    assert "malformed JSON-RPC error envelope" in exc_info.value.message
+    assert conn._writer is None
+
+
 async def test_send_command_oversized_request_raises(make_connection, fake_streams):
     conn = make_connection()
     big = "x" * (config.MAX_MESSAGE_SIZE + 100)

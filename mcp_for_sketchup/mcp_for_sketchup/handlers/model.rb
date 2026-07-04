@@ -46,7 +46,7 @@ module MCPforSketchUp
 
       def self.list_components(params)
         recursive = V.optional_bool(params, "recursive", false)
-        max_depth = V.optional_int_positive(params, "max_depth", DEFAULT_MAX_DEPTH)
+        max_depth = V.optional_int_range(params, "max_depth", min: 1, max: 10, default: DEFAULT_MAX_DEPTH)
         limit, offset, response_format = pagination_params(params)
         m = E.active_model!
         identity = Geom::Transformation.new
@@ -233,7 +233,7 @@ module MCPforSketchUp
         name_substring = V.optional_string(params, "name")
         layer_name     = V.optional_string(params, "layer")
         type_filter    = V.optional_enum(params, "type", %w[group component])
-        max_depth      = V.optional_int_positive(params, "max_depth", DEFAULT_MAX_DEPTH)
+        max_depth      = V.optional_int_range(params, "max_depth", min: 1, max: 10, default: DEFAULT_MAX_DEPTH)
         limit, offset, response_format = pagination_params(params)
         m = E.active_model!
         identity = Geom::Transformation.new

@@ -244,7 +244,9 @@ async def set_material(
     turquoise, magenta, purple, white, black, brown, wood, orange, gray,
     grey — or a 6-digit hex string like "#a05030" (#rrggbb). Anything else
     fails with error -32602. Named colors are case-insensitive. Painting
-    affects only this instance (it is made unique first).
+    affects only this instance (it is made unique first). That applies to
+    groups/components; painting a raw face/edge id (obtainable via
+    get_selection) colors the shared definition — all instances show it.
 
     Returns: JSON {id, name, type, bbox_mm{min,max}|null}.
     """
@@ -491,7 +493,9 @@ async def chamfer_edge(
     By default ALL edges are chamfered. Unreliable on non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_chamfered,
-    stats{attempted, failed}} — check stats.failed == 0.
+    stats{attempted, skipped_no_match, subtract_failed, succeeded}} — check
+    stats.subtract_failed == 0 (failed cuts) and stats.skipped_no_match == 0
+    (edges consumed by earlier cuts).
     """
     return await _call(ctx, "chamfer_edges", entity_id=str(id), distance=distance)
 
@@ -515,7 +519,9 @@ async def fillet_edge(
     By default ALL edges are filleted. Unreliable on non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_filleted,
-    stats{attempted, failed}} — check stats.failed == 0.
+    stats{attempted, skipped_no_match, subtract_failed, succeeded}} — check
+    stats.subtract_failed == 0 (failed cuts) and stats.skipped_no_match == 0
+    (edges consumed by earlier cuts).
     """
     return await _call(
         ctx, "fillet_edges", entity_id=str(id), radius=radius, segments=segments
@@ -557,6 +563,8 @@ async def get_viewport_screenshot(
         Field(description="Restore the camera and rendering options after "
                           "the shot, leaving the user's viewport unchanged"),
     ] = True,
+    # NB: bare `list` on purpose — `list[Image | str]` crashes FastMCP tool
+    # registration on mcp 1.27.
 ) -> list:
     """Capture the current SketchUp viewport; returns the PNG image plus a JSON text block {width, height, preset_used, style_used}.
 
@@ -743,8 +751,9 @@ async def find_components(
     """Find components matching name substring, layer, and/or type.
 
     Name matching is case-insensitive substring; layer must match exactly.
-    Searches recursively (bounded by max_depth). At least one filter should
-    be supplied.
+    Searches recursively (bounded by max_depth). With no filters it returns
+    all components up to max_depth (paginated) — same traversal as
+    list_components.
 
     Returns: JSON {components[], total, offset, truncated} — if truncated,
     request the next page with offset += limit.

@@ -384,7 +384,11 @@ module MCPforSketchUp
         # ограничен framing-капом (64 MiB) и не приговаривает клиента: раньше
         # один легитимный >16 MiB ответ (например ~43 MiB скриншот) плюс ЛЮБОЙ
         # следующий фрейм закрывали соединение. Патологическое накопление
-        # хвоста по-прежнему режется.
+        # хвоста по-прежнему режется. Осознанный trade-off: фрейм крупнее
+        # PENDING_WRITE_MAX_BYTES при ЛЮБОМ непустом бэклоге (даже если head
+        # ещё дренируется) всё равно закрывает клиента — исключение только для
+        # head, допущенного на ПУСТОЙ буфер; конвейеризация двух >16 MiB
+        # ответов не поддерживается by design.
         backlog      = state.pending_write_bytes.bytesize
         tail_backlog = backlog - state.head_frame_remaining
         projected    = tail_backlog + frame.bytesize

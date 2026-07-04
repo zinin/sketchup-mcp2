@@ -85,7 +85,7 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 | **Joinery** | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
 | **Export** | `export_scene` — skp / obj / dae / stl / png / jpg |
 | **Introspection** | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
-| **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image`; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
+| **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image` + JSON metadata text block; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
 | **Lifecycle** | `undo` |
 | **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above. **Disabled by default in the warehouse build** — see [Distribution variants](#distribution-variants). |
 

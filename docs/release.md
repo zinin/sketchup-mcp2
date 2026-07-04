@@ -57,7 +57,8 @@ grep '"product_id"' mcp_for_sketchup/extension.json
 
 Batch 2 (branch `fix/deep-review-p2`) widens the same pending break: new tool
 parameters (`name`, `limit`/`offset`/`response_format`), stricter validation
-(min dimension 1 mm, dovetail angle ≤ 60°, non-zero scale), and changed
+(min dimensions 0.1 mm for cube / 1.0 mm for curved types, dovetail angle ≤ 60°,
+non-zero scale), and changed
 response shapes (`list/find_components` pagination envelope, `bbox_mm: null`
 for empty bounds, screenshot metadata block, `export` warning field). Same
 remedy: the release that ships them MUST bump both MIN floors.
@@ -260,10 +261,10 @@ Critical: moderators don't run a Python MCP client. Keep this 100% verifiable in
 Quick in-SketchUp test (no external client or Python needed):
 
 1. Install the .rbz: Window → Extension Manager → Install Extension; restart SketchUp.
-2. Menu: "Plugins → MCP Server" shows Start, Stop, Settings...
+2. Menu: "Plugins → MCP Server" shows Start Server, Stop Server, Restart Server, Settings..., Show Log.
 3. Settings: click Settings... — a dialog opens (Host=127.0.0.1, Port=9876, Log Level=WARN). Change Port to 9877 and Log Level to INFO, Save — closes without errors. Reopen: values persist.
 4. Start: "Plugins → MCP Server → Start Server". Ruby Console (Window → Ruby Console) shows a line ending "[MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9877". Repeated Start Server is idempotent.
-5. Stop: "Plugins → MCP Server → Stop". Stops cleanly.
+5. Stop: "Plugins → MCP Server → Stop Server". Stops cleanly.
 
 Local TCP server (loopback only — no firewall prompt) awaiting MCP-aware AI clients (e.g. Claude). Steps 1-5 cover the in-SketchUp surface; no external service or login required.
 
@@ -293,7 +294,7 @@ EW requires ≥1 screenshot. Recommended 940×470 px, `.jpg`/`.png`, max 3 MB, u
 For this backend-only extension (no own viewport), useful captures — all takeable inside SketchUp in <1 min each, no video recording needed:
 
 1. **Settings dialog** — `Plugins → MCP Server → Settings...` shows the only HTML UI surface (3 fields). Take with Snipping Tool / Cmd+Shift+4.
-2. **`Plugins → MCP Server` menu expanded** — shows Start / Stop / Settings menu items. Proves SketchUp integration.
+2. **`Plugins → MCP Server` menu expanded** — shows the Start Server / Stop Server / Restart Server / Settings... / Show Log menu items. Proves SketchUp integration.
 3. **Ruby Console after Start** — set Log Level to `INFO` in Settings first (the default is `WARN`, which suppresses the start line), then `Window → Ruby Console` and `Plugins → MCP Server → Start Server`. Capture the `[<UTC iso8601>] [MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9876` line.
 
 Optional 4th (marketing hero shot): Claude Code or Claude Desktop + SketchUp viewport in split-screen with a Claude-driven build visible. ~10–15 min to set up if Claude isn't already configured against the running server.

@@ -184,7 +184,7 @@ async def test_schema_rejects_wrong_position_length_in_transform(dispatch_conn):
 
 
 async def test_schema_accepts_valid_create_component(dispatch_conn):
-    """Happy-path сквозь реальный дispatcher: валидация пропускает, wire-вызов
+    """Happy-path сквозь реальный dispatcher: валидация пропускает, wire-вызов
     уходит с дефолтами. dimensions заданы явно, чтобы тест не зависел от
     смены дефолта в Task 6 (T-50)."""
     await mcp.call_tool("create_component", {"dimensions": [120.0, 60.0, 40.0]})

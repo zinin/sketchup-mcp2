@@ -47,6 +47,10 @@ async def test_returns_lines_pin_top_response_shapes():
         "boolean_operation": "bbox_mm",
         "create_mortise_tenon": "boolean_cuts",
         "list_components": "truncated",
+        # Реальная форма stats из operations.rb::run_edge_op — ключа "failed"
+        # не существует; дрейф докстринга от wire-формы ловится здесь.
+        "chamfer_edge": "stats{attempted, skipped_no_match, subtract_failed, succeeded}",
+        "fillet_edge": "stats{attempted, skipped_no_match, subtract_failed, succeeded}",
     }
     for name, frag in expected_fragments.items():
         desc = tools[name].description or ""

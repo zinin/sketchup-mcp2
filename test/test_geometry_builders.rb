@@ -136,6 +136,18 @@ class TestGeometryBuilders < Minitest::Test
     assert_equal(-32602, err.code)
   end
 
+  # Тот же guard для cylinder/cone: segments=2 доходил до add_face с двумя
+  # точками и падал непрозрачным -32603.
+  def test_cylinder_rejects_segments_below_three
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) { GEO.build_cylinder(FakeEntities.new, [0.0, 0.0, 0.0], [4.0, 4.0, 4.0], 2) }
+    assert_equal(-32602, err.code)
+  end
+
+  def test_cone_rejects_segments_below_three
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) { GEO.build_cone(FakeEntities.new, [0.0, 0.0, 0.0], [4.0, 4.0, 4.0], 2) }
+    assert_equal(-32602, err.code)
+  end
+
   # ---------- MR-2: минимальные размеры (per-type — решение P-13+C-13) ----------
 
   def test_validate_min_dimensions_per_type_floors
@@ -156,6 +168,20 @@ class TestGeometryBuilders < Minitest::Test
   def test_validate_min_dimensions_accepts_floor
     assert_equal [1.0, 100.0, 100.0], GEO.validate_min_dimensions!([1.0, 100.0, 100.0], "sphere")
     assert_equal [0.1, 100.0, 100.0], GEO.validate_min_dimensions!([0.1, 100.0, 100.0], "cube")
+  end
+
+  def test_validate_min_dimensions_checks_only_consumed_indices
+    # Контракт tools.py: cylinder/cone потребляют [0]=diameter и [2]=height
+    # ([1] игнорируется), sphere — только [0]. Игнорируемый индекс не режем.
+    assert_equal [10.0, 0.5, 10.0],
+      GEO.validate_min_dimensions!([10.0, 0.5, 10.0], "cylinder")
+    assert_equal [10.0, 0.5, 0.5],
+      GEO.validate_min_dimensions!([10.0, 0.5, 0.5], "sphere")
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.validate_min_dimensions!([10.0, 100.0, 0.5], "cone")
+    end
+    assert_equal(-32602, err.code)
+    assert_match(/dimensions\[2\]/, err.message)
   end
 
   def test_sphere_rejects_subtolerance_polar_chord_at_default_segments

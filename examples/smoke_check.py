@@ -191,8 +191,8 @@ async def main() -> int:
         step = 16; print(f"[{step}] list_components(max_depth=2)")
         lc = parse(await call(conn, "list_components", max_depth=2))
         ids = [c["id"] for c in lc["components"]]
-        # T-07: пагинационный конверт — total/truncated обязаны присутствовать;
-        # смоук-модель (< 50 entities) не должна усекаться дефолтным limit.
+        # T-07: pagination envelope — total/truncated must be present; the
+        # smoke model (< 50 entities) must not be truncated by the default limit.
         assert isinstance(lc["total"], int) and lc["total"] >= len(lc["components"])
         assert lc["truncated"] is False, f"unexpected truncation: {lc}"
         assert id_bool in ids, f"boolean result {id_bool} not in {ids}"

@@ -147,6 +147,39 @@ class TestModelPagination < Minitest::Test
     end
   end
 
+  # Ruby-сторона зеркалит Python-схему (Field le=10): direct-TCP клиент
+  # не должен обходить верхнюю границу max_depth.
+  def test_list_components_rejects_max_depth_out_of_range
+    with_model_stub do
+      err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+        M.list_components({ "max_depth" => 11 })
+      end
+      assert_equal(-32602, err.code)
+      assert_match(/1\.\.10/, err.message)
+      err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+        M.list_components({ "max_depth" => 0 })
+      end
+      assert_equal(-32602, err.code)
+    end
+  end
+
+  def test_list_components_accepts_max_depth_at_upper_bound
+    with_model_stub do
+      page = M.list_components({ "max_depth" => 10 })
+      assert_equal 7, page["total"]
+    end
+  end
+
+  def test_find_components_rejects_max_depth_out_of_range
+    with_model_stub do
+      err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+        M.find_components({ "max_depth" => 11 })
+      end
+      assert_equal(-32602, err.code)
+      assert_match(/1\.\.10/, err.message)
+    end
+  end
+
   def test_find_components_paginates_too
     with_model_stub do
       res = M.find_components({ "name" => "G", "limit" => 2, "offset" => 0 })

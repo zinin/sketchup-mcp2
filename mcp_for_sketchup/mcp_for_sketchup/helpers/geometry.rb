@@ -57,7 +57,9 @@ module MCPforSketchUp
       # T-55: пустой Geom::BoundingBox SketchUp — «инвертированный» сентинел
       # (min = +1e30 дюймов, max = −1e30 по каждой оси). Проверяем все оси:
       # частичная инверсия — тоже «пусто», одноосевая проверка кодировала бы
-      # частный вид сентинела.
+      # частный вид сентинела. Строгое `>` осознанно: вырожденный, но валидный
+      # bbox (min == max — точка/линия/плоскость) НЕ пуст; закреплено
+      # end-to-end в test_model_empty_bbox.rb (Task 14).
       def self.empty_bbox?(bb)
         bb.min.x > bb.max.x || bb.min.y > bb.max.y || bb.min.z > bb.max.z
       end

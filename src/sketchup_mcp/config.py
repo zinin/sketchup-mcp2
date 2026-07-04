@@ -43,7 +43,7 @@ def _env_log_level(name: str, default: str) -> str:
     if raw not in _VALID_LOG_LEVELS:
         logger.warning(
             "%s: unknown log level %r, falling back to INFO "
-            "(valid: DEBUG, INFO, WARN, ERROR)",
+            "(valid: DEBUG, INFO, WARN, WARNING, ERROR, CRITICAL)",
             name,
             raw,
         )

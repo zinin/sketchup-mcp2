@@ -171,6 +171,14 @@ module MCPforSketchUp
       end
 
       def self.closest_face(vector)
+        # Совпавшие центры досок дают нулевой вектор: normalize! на нём либо
+        # кидает, либо молча оставляет мусор, и «ближайшая грань» выбирается
+        # произвольно. Отклоняем до нормализации.
+        if vector.length < 1e-9
+          raise Core::StructuredError.new(-32602,
+            "cannot infer joint direction: board centers coincide — " \
+            "separate the boards or reposition them")
+        end
         v = vector.clone
         v.normalize!
         ax, ay, az = v.x.abs, v.y.abs, v.z.abs

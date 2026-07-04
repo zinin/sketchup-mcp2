@@ -81,11 +81,11 @@ cd mcp_for_sketchup && ruby package.rb --variant=warehouse && cd ..
 cd mcp_for_sketchup && ruby package.rb --variant=github && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip for the package test) — 415 runs / 1109 assertions
-uv run pytest tests/ -q        # Python (pytest) — 176 tests
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip for the package test) — 422 runs / 1134 assertions
+uv run pytest tests/ -q        # Python (pytest) — 177 tests
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 25-step end-to-end (covers all handlers)
+python examples/smoke_check.py # 25-step end-to-end (covers every tool category; 19 of 22 tools)
 ```
 
 Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load check).
@@ -160,7 +160,7 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
 | Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
 | Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
-| View | `get_viewport_screenshot` (returns MCP Image; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
+| View | `get_viewport_screenshot` (returns MCP Image + JSON metadata text block; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
 | Lifecycle | `undo` |
 | Scripting | `eval_ruby` |
 

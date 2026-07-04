@@ -67,10 +67,11 @@ module MCPforSketchUp
       # want nil-pass-through must check `value.nil?` themselves.
       def self.coerce_bool_pref(key, value, default:)
         return value if value == true || value == false
-        # Guard defined?(Logger) like warn_invalid_pref: this can run before
-        # core/logger is loaded (early boot) or in a unit test that requires
-        # only config.rb — a diagnostic log must never break the fallback.
-        # T-19: именно Core::Logger — голое defined?(Logger) находило stdlib ::Logger (паттерн client_state.rb).
+        # Guard defined?(Core::Logger) like warn_invalid_pref: this can run
+        # before core/logger is loaded (early boot) or in a unit test that
+        # requires only config.rb — a diagnostic log must never break the
+        # fallback. T-19: именно Core::Logger — голое defined?(Logger) находило
+        # stdlib ::Logger, загруженный пользовательским кодом (паттерн client_state.rb).
         if defined?(Core::Logger)
           Logger.log("WARN", "config: non-boolean #{key} pref value #{value.inspect}; falling back to #{default.inspect}")
         end

@@ -83,6 +83,9 @@ class TestPureHelpers < Minitest::Test
     def normalize!
       self  # closest_face сравнивает |компоненты| — нормализация не влияет
     end
+    def length
+      Math.sqrt(x * x + y * y + z * z)
+    end
   end
 
   def test_closest_face_picks_dominant_axis
@@ -97,5 +100,15 @@ class TestPureHelpers < Minitest::Test
   def test_closest_face_tie_prefers_x_then_y
     assert_equal :east, J.closest_face(FakeVec.new(1.0, 1.0, 1.0))
     assert_equal :north, J.closest_face(FakeVec.new(0.0, 1.0, 1.0))
+  end
+
+  def test_closest_face_zero_vector_raises_32602
+    # Совпавшие центры досок: направление стыка не выводится — точный
+    # -32602 вместо произвольно выбранной грани.
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      J.closest_face(FakeVec.new(0.0, 0.0, 0.0))
+    end
+    assert_equal(-32602, err.code)
+    assert_match(/centers coincide/, err.message)
   end
 end

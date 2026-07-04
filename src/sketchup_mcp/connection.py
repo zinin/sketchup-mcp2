@@ -393,6 +393,15 @@ class SketchUpConnection:
         # protocol moved to a single hello roundtrip on connect.
         if "error" in response:
             err = response["error"]
+            # Mirror the top-level non-dict guard above: a malformed peer can
+            # put a string/list under "error", and err.get() would surface as
+            # AttributeError instead of SketchUpError.
+            if not isinstance(err, dict):
+                await self.disconnect()
+                raise SketchUpError(
+                    -32603,
+                    f"malformed JSON-RPC error envelope (not a dict): {type(err).__name__}",
+                )
             # Promote Ruby-detected version mismatches from generic SketchUpError
             # to IncompatibleVersionError so callers can catch a single class
             # regardless of which side detected the mismatch.
