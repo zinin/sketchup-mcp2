@@ -5,7 +5,7 @@ module MCPforSketchUp
       attr_reader   :id, :sock, :reader, :label, :pending_write_bytes,
                     :head_frame_remaining, :connected_at
       attr_accessor :handshaked, :client_version, :close_after_response,
-                    :pending_write_deadline_at, :close_reason
+                    :pending_write_deadline_at, :close_reason, :queued_frames
 
       def initialize(id, sock)
         @id                        = id
@@ -21,6 +21,11 @@ module MCPforSketchUp
         @head_frame_remaining      = 0
         # T-13.5: монотонная отметка подключения — pre-handshake дедлайн.
         @connected_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        # Финальное ревью (композиция T-13.2×T-13.5): сколько фреймов этого
+        # клиента сейчас ждут в глобальной @frame_queue. Sweep «молчунов» по
+        # этому счётчику отличает клиента, чей hello уже декодирован и просто
+        # ждёт диспатч-капа за чужим флудом, от действительно молчащего.
+        @queued_frames = 0
       end
 
       def closed?

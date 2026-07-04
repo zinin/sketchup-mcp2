@@ -747,6 +747,37 @@ class TestServerMultiClient < Minitest::Test
     assert_equal(-32600, frames[0]["error"]["code"])
   end
 
+  def test_pre_handshake_sweep_spares_client_with_queued_hello
+    # Финальное ревью (композиция T-13.2×T-13.5): hello новичка уже
+    # декодирован в @frame_queue, но ещё не диспатчен — глобальный кап
+    # 50/тик разгребает чужой флуд. Sweep не должен закрывать такого
+    # клиента как «молчуна»: без queued_frames-проверки непрерывный флуд
+    # одного handshaked-клиента циклически убивал бы все новые подключения
+    # по pre-handshake дедлайну (handshaked ставится лишь при диспатче).
+    flood = (1..60).map { |i| gv_frame(i) }.join
+    flooder  = FakeSocket.new(read_chunks: [hello_frame + flood])
+    newcomer = FakeSocket.new(read_chunks: [hello_frame])
+    fs = FakeServer.new([flooder, newcomer])
+    srv = run_one_tick(fs)
+    # Тик 1: в очереди 62 фрейма, диспатчнуто 50 — hello новичка (62-й) ждёт.
+    state = srv.instance_variable_get(:@clients)[newcomer]
+    refute state.handshaked, "precondition: hello новичка ещё не диспатчен"
+    assert_operator state.queued_frames, :>, 0,
+      "precondition: hello новичка декодирован в очередь"
+
+    # Состариваем новичка за дедлайн — без фикса sweep закрыл бы его.
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)
+    refute newcomer.closed?,
+      "клиент с queued hello — не «молчун»; sweep обязан его пропустить"
+    assert state.handshaked, "hello дошёл до диспатча на следующем тике"
+    reply = all_frames(newcomer.written).first
+    assert_equal 0, reply["id"]
+    assert reply.key?("result"), "handshake-ответ доставлен: #{reply.inspect}"
+  end
+
   # ---------- T-23.1: глобальный FIFO — прямой spy на Dispatch.handle ----------
 
   def test_global_dispatch_order_is_decode_arrival_fifo

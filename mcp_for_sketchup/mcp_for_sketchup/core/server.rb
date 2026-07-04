@@ -20,6 +20,10 @@ module MCPforSketchUp
       # приостанавливается и TCP-окно передаёт backpressure клиенту.
       # Стоп чтения ГЛОБАЛЬНЫЙ (все сокеты) — осознанно: очередь одна,
       # FIFO-порядок важнее fairness чтения; kernel-буферы данные удержат.
+      # NB: строгая гарантия — на ВХОДЕ тика; на тике пересечения порога
+      # каждый последующий клиент успевает ещё ≤1 read_nonblock-чанк
+      # (mid-drain проверка стоит ПОСЛЕ чтения) — вход следующего тика
+      # запечатывает стоп полностью.
       DISPATCH_MAX_PER_TICK     = 50      # фреймов за тик; флуд мелких фреймов не должен морозить UI (T-13.2)
       FRAME_QUEUE_SOFT_MAX      = 256     # очередь насыщена — чтение приостанавливается (T-13.2, P-06)
       PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект без валидного hello закрывается (T-13.5)
@@ -179,6 +183,13 @@ module MCPforSketchUp
           # P-07: клиент с reject/error-envelope в буфере доживает до
           # доставки — его закроет close-after-drain (свой WRITE_DEADLINE_S).
           next if state.close_after_response
+          # Финальное ревью (композиция T-13.2×T-13.5): фрейм клиента (его
+          # hello) уже декодирован в @frame_queue и ждёт диспатч-капа за
+          # чужим флудом — это НЕ «молчун»; handshaked ставится только при
+          # диспатче hello, поэтому без этой проверки непрерывный флуд
+          # одного handshaked-клиента циклически убивал бы все новые
+          # подключения по pre-handshake дедлайну.
+          next if state.queued_frames > 0
           next if now - state.connected_at < PRE_HANDSHAKE_DEADLINE_S
           Logger.log_tool("server", "pre_handshake_timeout",
             client_label: state.label)
@@ -219,6 +230,7 @@ module MCPforSketchUp
           chunk = state.sock.read_nonblock(READ_CHUNK)
           state.reader.feed(chunk).each do |body|
             @frame_queue << [state, body]
+            state.queued_frames += 1
           end
           # P-06: стоп посреди дренажа, как только очередь насыщена; перелёт
           # ограничен фреймами ОДНОГО read_nonblock-куска (≤64 KiB), а не
@@ -255,6 +267,9 @@ module MCPforSketchUp
           # остаток обрабатывается следующим тиком, UI SketchUp дышит.
           return if dispatched >= DISPATCH_MAX_PER_TICK
           state, body = @frame_queue.shift
+          # Декремент безусловный (в т.ч. для скипаемых ниже фреймов):
+          # счётчик обязан отражать фактическое содержимое @frame_queue.
+          state.queued_frames -= 1
           next if state.closed? || state.close_after_response
 
           response = handle_frame(state, body)
