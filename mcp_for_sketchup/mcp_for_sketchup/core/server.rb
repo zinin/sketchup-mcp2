@@ -1,6 +1,7 @@
 # mcp_for_sketchup/mcp_for_sketchup/core/server.rb
 require "json"
 require "socket"
+require "io/wait"   # IO#wait_readable — проба сокета в socket_readable?
 
 module MCPforSketchUp
   module Core
@@ -101,9 +102,13 @@ module MCPforSketchUp
         @processing = true
         begin
           accept_pending_clients
-          close_pre_handshake_stragglers
           flush_pending_writes_all_clients
           drain_reads_all_clients
+          # PR #3 ревью (Codex P2): sweep — строго ПОСЛЕ drain. Иначе на
+          # тике выхода из насыщения очереди решение «закрыть молчуна»
+          # принималось ДО чтения, которое как раз декодировало бы его
+          # заждавшийся hello.
+          close_pre_handshake_stragglers
           process_frame_queue
         rescue StandardError => e
           # Server-level error — log only. Do NOT reset clients.
@@ -190,11 +195,34 @@ module MCPforSketchUp
           # одного handshaked-клиента циклически убивал бы все новые
           # подключения по pre-handshake дедлайну.
           next if state.queued_frames > 0
+          # PR #3 ревью (Codex P2) — второе плечо той же композиции: при
+          # очереди ≥ FRAME_QUEUE_SOFT_MAX drain_reads_all_clients не читает
+          # сокеты ВООБЩЕ — hello новичка может лежать непрочитанным в
+          # kernel-буфере дольше дедлайна (queued_frames при этом 0:
+          # декодирования не было). Читаемый сокет — «заморенный», не
+          # «молчун»: щадим, пока backpressure не отпустит. Вне насыщения
+          # проба НЕ применяется — иначе slow-loris (байт в тик) держал бы
+          # pre-handshake слот вечно, ровно та дыра, которую T-13.5
+          # закрывает. Настоящий молчун (байтов нет) закрывается по
+          # дедлайну и под флудом.
+          next if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX &&
+                  socket_readable?(state.sock)
           next if now - state.connected_at < PRE_HANDSHAKE_DEADLINE_S
           Logger.log_tool("server", "pre_handshake_timeout",
             client_label: state.label)
           close_client(state, "pre_handshake_timeout")
         end
+      end
+
+      # Неблокирующая проба «есть ли непрочитанные байты в сокете» (io/wait).
+      # Ошибка пробы трактуется как «не читаем» — консервативно для T-13.5:
+      # сломанный сокет не спасается от дедлайна.
+      def socket_readable?(sock)
+        !!sock.wait_readable(0)
+      rescue StandardError => e
+        Logger.log("DEBUG",
+          "Server.socket_readable?: probe raised: #{e.class}: #{e.message}")
+        false
       end
 
       # Global FIFO: `@clients` is a Hash, whose iteration order in Ruby 1.9+

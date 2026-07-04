@@ -116,6 +116,14 @@ class FakeSocket
     @closed
   end
 
+  # IO#wait_readable(timeout) probe (io/wait): truthy iff unread bytes (or a
+  # pending EOF) are available. Real IO#wait_readable raises IOError on a
+  # closed stream — mirror that so the server's rescue path is exercised.
+  def wait_readable(_timeout = nil)
+    raise IOError, "closed stream" if @closed
+    (@read_queue.any? || @eof) ? self : nil
+  end
+
   def peeraddr
     raise SocketError, "unconnected" if @closed
     @peer

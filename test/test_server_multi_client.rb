@@ -778,6 +778,72 @@ class TestServerMultiClient < Minitest::Test
     assert reply.key?("result"), "handshake-ответ доставлен: #{reply.inspect}"
   end
 
+  def test_pre_handshake_sweep_spares_starved_readable_newcomer_under_saturation
+    # PR #3 ревью (Codex P2): при очереди ≥ FRAME_QUEUE_SOFT_MAX чтение
+    # глобально приостановлено — hello новичка лежит НЕпрочитанным в
+    # kernel-буфере, queued_frames == 0 (экранирование по queued_frames не
+    # срабатывает: оно требует уже ДЕКОДИРОВАННОГО hello). Sweep обязан
+    # отличать заморенного backpressure'ом (сокет читаем) от молчуна и
+    # щадить его до разгрузки очереди. Хвост теста дополнительно пинит
+    # порядок «sweep ПОСЛЕ drain»: без него новичок гиб ровно на тике
+    # возобновления чтения — решение «закрыть» принималось до самого
+    # чтения, которое декодировало бы его hello.
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    cap      = MCPforSketchUp::Core::Server::DISPATCH_MAX_PER_TICK
+    flood = (1..(soft_max + 2 * cap + 5)).map { |i| gv_frame(i) }.join
+    flooder  = FakeSocket.new(read_chunks: [hello_frame + flood])
+    newcomer = FakeSocket.new   # hello придёт ПОСЛЕ тика 1
+    fs = FakeServer.new([flooder, newcomer])
+    srv = run_one_tick(fs)
+    # Тик 1: flooder декодирован целиком одним chunk'ом (362 фрейма),
+    # диспатчнуто 50 — на входе тиков 2–3 очередь ≥ soft_max: чтений нет.
+    newcomer.push_read(hello_frame)   # hello теперь ЖДЁТ в kernel-буфере
+    state = srv.instance_variable_get(:@clients)[newcomer]
+    assert_equal 0, state.queued_frames,
+      "precondition: hello новичка НЕ декодирован (чтение приостановлено)"
+
+    # Состариваем новичка за дедлайн — без фикса sweep закрыл бы его.
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)   # тик 2: очередь насыщена, чтения нет
+    refute newcomer.closed?,
+      "сокет с непрочитанным hello — заморен backpressure'ом, не «молчун»"
+    refute state.handshaked, "precondition: hello всё ещё не прочитан"
+
+    # Дожимаем флуд: новичок обязан дожить до возобновления чтения,
+    # прочитаться и хендшейкнуться.
+    12.times do
+      break if state.handshaked
+      srv.send(:on_timer_tick)
+    end
+    refute newcomer.closed?, "новичок пережил разгрузку очереди"
+    assert state.handshaked, "hello дошёл до диспатча после разгрузки"
+    reply = all_frames(newcomer.written).first
+    assert_equal 0, reply["id"]
+    assert reply.key?("result"), "handshake-ответ доставлен: #{reply.inspect}"
+  end
+
+  def test_pre_handshake_sweep_still_closes_silent_client_under_saturation
+    # Обратная сторона пробы читаемости: настоящий «молчун» (в сокете НЕТ
+    # байтов) не получает индульгенцию от насыщенной очереди — дедлайн
+    # T-13.5 действует и под флудом, иначе 64 молчаливых коннекта снова
+    # пинили бы слоты MAX_CLIENTS на всё время атаки.
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    flood = (1..(soft_max + 55)).map { |i| gv_frame(i) }.join
+    flooder = FakeSocket.new(read_chunks: [hello_frame + flood])
+    silent  = FakeSocket.new   # ни hello, ни байта
+    fs = FakeServer.new([flooder, silent])
+    srv = run_one_tick(fs)
+    state = srv.instance_variable_get(:@clients)[silent]
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)   # тик 2: очередь ≥ soft_max, но сокет пуст
+    assert silent.closed?, "молчун закрывается по дедлайну и при насыщении"
+    refute flooder.closed?, "flooder (handshaked) не задет свипом"
+  end
+
   # ---------- T-23.1: глобальный FIFO — прямой spy на Dispatch.handle ----------
 
   def test_global_dispatch_order_is_decode_arrival_fifo
