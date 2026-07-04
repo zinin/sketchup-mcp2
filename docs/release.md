@@ -53,15 +53,7 @@ grep '"product_id"' mcp_for_sketchup/extension.json
 * `test_max_ruby_matches_python_version` (Python) — Python's view of Ruby max must equal current `CLIENT_VERSION` at release time.
 * `test_max_python_matches_server_version` (Ruby) — Ruby's view of Python max must equal plugin `SERVER_VERSION` at release time.
 
-**Pending contract break (unreleased, 2026-07-02, branch `fix/deep-review-p1`):** `transform_component.position` switched from a relative offset to an absolute bbox-min target (`feat!`, commit `6b7d133`). The first release that ships it MUST bump `MIN_RUBY` (Python side) **and** `MIN_PYTHON` (Ruby side): an old/new client–server mix would pass the handshake but silently misplace geometry. Call out the new semantics in the GitHub release notes.
-
-Batch 2 (branch `fix/deep-review-p2`) widens the same pending break: new tool
-parameters (`name`, `limit`/`offset`/`response_format`), stricter validation
-(min dimensions 0.1 mm for cube / 1.0 mm for curved types, dovetail angle ≤ 60°,
-non-zero scale), and changed
-response shapes (`list/find_components` pagination envelope, `bbox_mm: null`
-for empty bounds, screenshot metadata block, `export` warning field). Same
-remedy: the release that ships them MUST bump both MIN floors.
+**Contract break — floors bumped in v0.3.0 (2026-07-02; batches 1+2, branch `fix/deep-review-p2`):** `transform_component.position` switched from a relative offset to an absolute bbox-min target (`feat!`, commit `6b7d133`): an old/new client–server mix would pass the handshake but silently misplace geometry. Batch 2 widened the same break — new tool parameters (`name`, `limit`/`offset`/`response_format`), stricter validation (min dimensions 0.1 mm for cube / 1.0 mm for curved types, dovetail angle ≤ 60°, non-zero scale), and changed response shapes (`list/find_components` pagination envelope, `bbox_mm: null` for empty bounds, screenshot metadata block, `export` warning field). v0.3.0 bumps **both MIN floors to `0.3.0`** (`MIN_RUBY` Python-side, `MIN_PYTHON` Ruby-side) — the handshake is now exact-match `0.3.0`↔`0.3.0`, so an incompatible mix is rejected at the handshake instead of silently misbehaving. Call out the new semantics in the GitHub release notes.
 
 Run `uv lock` to refresh `uv.lock` with the new project version (otherwise the next `uv` call updates it post-release and you end up with a stray `chore: sync uv.lock` commit). Commit (`chore: bump to vX.Y.Z`) and push.
 
