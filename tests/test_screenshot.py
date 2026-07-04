@@ -116,19 +116,21 @@ async def test_screenshot_style_invalid():
 
 
 async def test_screenshot_returns_image():
-    """On success, the wrapper returns a FastMCP Image with PNG bytes."""
+    """On success, the wrapper returns a FastMCP Image with PNG bytes
+    and the capture metadata as a JSON text block (T-28)."""
     with _mock_connection(_ruby_result_for(preset="iso", style="shaded")):
         from sketchup_mcp.tools import get_viewport_screenshot
-        img = await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
+        img, meta_json = await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
 
     assert isinstance(img, Image)
     assert img.data == _TINY_PNG_BYTES
-    # FastMCP's Image class doesn't expose `format` as a public attribute —
-    # only `_format` / `_mime_type` (private). Use `to_image_content()`,
-    # the public conversion method that yields a typed ImageContent with
-    # `mimeType`. MIME/format is additionally verified end-to-end via the
-    # dispatch path in `test_screenshot_via_mcp_dispatch`.
+    # mimeType via to_image_content() — pins the PNG marker the MCP client will see, not just raw bytes.
     assert img.to_image_content().mimeType == "image/png"
+    # T-28: метаданные захвата больше не выбрасываются.
+    import json as _json
+    meta = _json.loads(meta_json)
+    assert meta == {"width": 1, "height": 1,
+                    "preset_used": "iso", "style_used": "shaded"}
 
 
 async def test_screenshot_via_mcp_dispatch():
@@ -150,6 +152,26 @@ async def test_screenshot_via_mcp_dispatch():
     assert img_block.data, "image data is empty"
     # data is base64-encoded by ImageContent serializer.
     assert base64.b64decode(img_block.data).startswith(b"\x89PNG\r\n\x1a\n")
+
+
+async def test_screenshot_dispatch_includes_metadata_text():
+    """T-28: в MCP-конверте рядом с ImageContent едет TextContent с
+    width/height/preset_used/style_used — модель может проверить параметры
+    захвата, не гадая."""
+    import json as _json
+    from mcp.types import TextContent
+    with _mock_connection(_ruby_result_for(w=800, h=600, preset="iso", style="shaded")):
+        import sketchup_mcp.tools  # noqa: F401
+        result = await mcp.call_tool("get_viewport_screenshot",
+                                     {"view_preset": "iso", "style": "shaded"})
+    contents = list(result)
+    text_block = next((c for c in contents if isinstance(c, TextContent)), None)
+    assert text_block is not None, f"expected TextContent, got {contents!r}"
+    meta = _json.loads(text_block.text)
+    assert meta["width"] == 800
+    assert meta["height"] == 600
+    assert meta["preset_used"] == "iso"
+    assert meta["style_used"] == "shaded"
 
 
 async def test_screenshot_base64_decode_failure():

@@ -75,9 +75,10 @@ module MCPforSketchUp
       # and for the top-level result of boolean ops (all faces are direct
       # children), but callers applying a material to a hand-built complex
       # assembly should walk the children themselves.
+      # T-16: mutable_* — покраска одного инстанса не должна красить остальные копии.
       def self.apply_to_entity(entity, material)
         if entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
-          E.entity_collection(entity)
+          E.mutable_entity_collection(entity)
             .grep(Sketchup::Face)
             .each { |face| face.material = material }
         elsif entity.respond_to?(:material=)

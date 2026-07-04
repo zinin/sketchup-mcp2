@@ -86,6 +86,19 @@ async def test_send_command_jsonrpc_error_propagates_data(make_connection, fake_
     assert exc_info.value.data == {"tool": "x", "params": {"id": "1"}}
 
 
+async def test_send_command_non_dict_error_envelope_disconnects(make_connection, fake_streams):
+    """Malformed peer: строка/список под "error" должны давать SketchUpError
+    -32603 + disconnect, а не AttributeError на err.get()."""
+    reader, _ = fake_streams
+    conn = make_connection()
+    reader.feed_data(encode_response({"jsonrpc": "2.0", "id": 1, "error": "boom"}))
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("x", {})
+    assert exc_info.value.code == -32603
+    assert "malformed JSON-RPC error envelope" in exc_info.value.message
+    assert conn._writer is None
+
+
 async def test_send_command_oversized_request_raises(make_connection, fake_streams):
     conn = make_connection()
     big = "x" * (config.MAX_MESSAGE_SIZE + 100)
@@ -102,6 +115,38 @@ async def test_send_command_parse_error_disconnects(make_connection, fake_stream
     with pytest.raises(SketchUpError) as exc_info:
         await conn.send_command("x", {})
     assert exc_info.value.code == -32700
+    assert conn._writer is None
+
+
+async def test_send_command_non_utf8_frame_raises_parse_error(make_connection, fake_streams):
+    """T-11: не-UTF8 тело фрейма → -32700 + disconnect, а не голый
+    UnicodeDecodeError мимо `except json.JSONDecodeError` (PY-CONN-02)."""
+    reader, _ = fake_streams
+    conn = make_connection()
+    bad = b'{"jsonrpc": "2.0", "id": 1, "result": "\xff\xfe"}'
+    reader.feed_data(struct.pack(">I", len(bad)) + bad)
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("x", {})
+    assert exc_info.value.code == -32700
+    assert conn._writer is None
+
+
+async def test_send_command_raw_oserror_disconnects_and_wraps(make_connection, fake_streams):
+    """T-11: голый OSError (EHOSTUNREACH/ENETUNREACH — задокументированный
+    split-host сценарий; ETIMEDOUT на py3.10) должен войти в таксономию:
+    disconnect + SketchUpError(-32000), НЕ _StaleSocketError (нет гарантии,
+    что peer не обработал запрос) и НЕ голое исключение без disconnect
+    (PY-CONN-03). Выбран именно EHOSTUNREACH: OSError(errno, ...) для
+    ECONNRESET/EPIPE авто-инстанцирует подклассы ConnectionError — тест с
+    «привычным» errno молча перестал бы проверять голую OSError-ветку."""
+    import errno
+    _, writer = fake_streams
+    conn = make_connection()
+    writer.drain = AsyncMock(side_effect=OSError(errno.EHOSTUNREACH, "No route to host"))
+    with pytest.raises(SketchUpError) as exc_info:
+        await conn.send_command("get_model_info", {})
+    assert exc_info.value.code == -32000
+    assert "No route to host" in exc_info.value.message
     assert conn._writer is None
 
 
@@ -156,7 +201,8 @@ async def test_send_command_retries_on_zero_byte_eof_for_readonly(make_connectio
     send_command идёт в _send_frame → drain ok → _recv_frame → readexactly(4) →
     IncompleteReadError(partial=b"", expected=4). Для READ-ONLY tools повтор
     безопасен (даже если Ruby выполнил handler, повторное чтение модели
-    идемпотентно). Прозрачно retry'им.
+    идемпотентно). Прозрачно retry'им. После MR-1 то же верно и для
+    partial != b"" — см. test_send_command_retries_on_partial_read_for_readonly.
     """
     reader, _ = fake_streams
     conn = make_connection()
@@ -196,6 +242,42 @@ async def test_send_command_retries_on_zero_byte_eof_for_readonly(make_connectio
     assert sent_on_retry[0]["params"]["name"] == "get_model_info"
 
 
+async def test_send_command_retries_on_partial_read_for_readonly(make_connection, fake_streams):
+    """MR-1 (mesh-ревью батча 1): обрыв ПОСРЕДИ ответа (partial != b"") для
+    read-only тула теперь тоже ретраится. Побочных эффектов у whitelist-тулов
+    нет — повтор безопасен, даже если Ruby успел выполнить хендлер. До фикса
+    партиал давал голую SketchUpError без retry."""
+    reader, _ = fake_streams
+    conn = make_connection()
+    reader.feed_data(b"\x00\x00")  # 2 байта из 4-байтового length-префикса
+    reader.feed_eof()
+
+    new_reader = asyncio.StreamReader()
+    new_writer = MagicMock()
+    new_writer.buffer = bytearray()
+    new_writer.write = MagicMock(side_effect=lambda d: new_writer.buffer.extend(d))
+    new_writer.drain = AsyncMock()
+    new_writer.close = MagicMock()
+    new_writer.wait_closed = AsyncMock()
+    new_writer.is_closing = MagicMock(return_value=False)
+
+    async def fake_connect():
+        conn._reader = new_reader
+        conn._writer = new_writer
+
+    conn.connect = fake_connect
+    # _next_id инкрементнут первой попыткой до 2 — retry уйдёт с rid=2.
+    new_reader.feed_data(
+        encode_response({"jsonrpc": "2.0", "id": 2, "result": {"ok": True}})
+    )
+
+    result = await conn.send_command("get_model_info", {})
+    assert result == {"ok": True}
+    sent_on_retry = decode_writer_frames(bytes(new_writer.buffer))
+    assert len(sent_on_retry) == 1
+    assert sent_on_retry[0]["params"]["name"] == "get_model_info"
+
+
 async def test_send_command_no_retry_on_zero_byte_eof_for_mutating(make_connection, fake_streams):
     """Stale-socket для МУТАТИВНОГО tool — retry ЗАПРЕЩЁН (Codex review, PR #1).
 
@@ -220,12 +302,10 @@ async def test_send_command_no_retry_on_zero_byte_eof_for_mutating(make_connecti
 
 
 async def test_send_command_no_retry_on_partial_read(make_connection, fake_streams):
-    """Partial read = peer уже начал отвечать → НЕЛЬЗЯ retry (риск задвоения мутации).
-
-    Если Ruby успел прислать хотя бы один байт заголовка ответа, значит он уже
-    прошёл model.commit_operation. Перевыполнять — задвоить мутацию.
-    Регрессионный guard: при partial != b"" должна быть raise, БЕЗ retry.
-    """
+    """Partial read для МУТАТИВНОГО тула: retry по-прежнему запрещён — тул не
+    в _RETRY_SAFE_TOOLS (после MR-1 партиал-EOF маркируется _StaleSocketError,
+    и решение принимает whitelist, а не сама партиал-эвристика). Ошибка теперь
+    обогащается recovery-подсказкой, как и zero-byte случай."""
     reader, _ = fake_streams
     conn = make_connection()
     reader.feed_data(b"\x00\x00")  # 2 байта из 4 header'а
@@ -239,6 +319,9 @@ async def test_send_command_no_retry_on_partial_read(make_connection, fake_strea
     assert exc_info.value.code == -32000
     assert conn._writer is None
     conn.connect.assert_not_called()
+    err = exc_info.value
+    assert err.data.get("tool") == "mutate"
+    assert "do NOT retry" in err.message  # фактический текст recovery-подсказки connection.py
 
 
 async def test_send_command_stale_socket_eof_for_mutating_enriches_error(
@@ -318,7 +401,21 @@ async def test_send_command_lock_serializes_concurrent(make_connection, fake_str
     # Запускаем оба send_command. Первый "застрянет" в drain.
     task1 = asyncio.create_task(conn.send_command("a", {}))
     task2 = asyncio.create_task(conn.send_command("b", {}))
-    await asyncio.sleep(0)  # отдать управление, чтобы оба попали в _send_frame
+    # asyncio.wait_for spawns a child task on CPython <=3.11 (inline on 3.12+,
+    # gh-96764), so the number of event-loop iterations before task1's write()
+    # lands in the buffer is version-dependent — poll (bounded) instead of a
+    # single sleep(0). With a broken lock both frames land in the same
+    # iteration, so the `== 1` assertion below still detects interleaving.
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if writer.buffer:
+            break
+    else:
+        pytest.fail(
+            "task1 never wrote a frame after 100 poll iterations — "
+            "environment/regression issue upstream of the lock, "
+            "not a lock-serialization failure"
+        )
 
     # На этом этапе при работающем lock:
     #   - task1 в gated_drain, держит lock
@@ -378,19 +475,51 @@ async def test_send_command_reconnects_after_disconnect(make_connection, fake_st
     assert conn._writer is new_writer
 
 
-async def test_get_connection_raises_connection_error_when_refused(monkeypatch):
-    """get_connection should raise ConnectionError if open_connection refuses."""
+async def test_get_connection_does_not_open_socket(monkeypatch):
+    """T-08: get_connection только создаёт/возвращает singleton. Любой connect
+    живёт под conn._lock (ensure_connected / ленивый _send_once) — иначе
+    disconnect() параллельного send_command гонялся бы с ним за _reader/_writer."""
     from sketchup_mcp import connection as conn_module
 
-    # сбросить singleton, если оставлен предыдущим тестом
+    monkeypatch.setattr(conn_module, "_connection", None)
+    with patch(
+        "sketchup_mcp.connection.asyncio.open_connection",
+        side_effect=AssertionError("get_connection must not connect"),
+    ):
+        conn = await conn_module.get_connection()
+    assert conn._writer is None
     monkeypatch.setattr(conn_module, "_connection", None)
 
+
+async def test_ensure_connected_raises_connection_error_when_refused(monkeypatch):
+    """Отказ TCP теперь всплывает из ensure_connected (как раньше из get_connection)."""
+    from sketchup_mcp import connection as conn_module
+
+    monkeypatch.setattr(conn_module, "_connection", None)
+    with patch(
+        "sketchup_mcp.connection.asyncio.open_connection",
+        side_effect=ConnectionRefusedError("nope"),
+    ):
+        conn = await conn_module.get_connection()
+        with pytest.raises(ConnectionError) as exc_info:
+            await conn.ensure_connected()
+    assert "cannot connect" in str(exc_info.value)
+    monkeypatch.setattr(conn_module, "_connection", None)
+
+
+async def test_send_command_raises_connection_error_when_refused():
+    """T-08: источник ConnectionError для callers переехал из get_connection в
+    send_command — ленивый connect в _send_once (под conn._lock) остался
+    единственным авто-коннектором. _connect_or_raise переводит OSError-семейство
+    (refused, gaierror, …) в ConnectionError; callers (tools._call) ловят её
+    как раньше."""
+    conn = SketchUpConnection(host="127.0.0.1", port=1, timeout=1.0)
     with patch(
         "sketchup_mcp.connection.asyncio.open_connection",
         side_effect=ConnectionRefusedError("nope"),
     ):
         with pytest.raises(ConnectionError) as exc_info:
-            await conn_module.get_connection()
+            await conn.send_command("get_model_info", {})
     assert "cannot connect" in str(exc_info.value)
 
 
@@ -405,13 +534,15 @@ async def test_close_connection_resets_singleton(monkeypatch):
 
 
 async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch):
-    """Concurrent first-callers of get_connection() must not each create a connection.
+    """Cold start двухфазный (T-08): get_connection() + ensure_connected() — один сокет.
 
-    Без `_get_connection_lock` (connection.py:225) две параллельные холодные
-    точки могли бы обе увидеть `_connection is None`, инстанциировать свой
-    SketchUpConnection и вызвать open_connection дважды — один сокет осиротел
-    бы. Тест регрессионно фиксирует: один общий singleton, один реальный
-    open_connection.
+    get_connection() только создаёт/возвращает singleton (под модульным
+    `_get_connection_lock`); коннектит ensure_connected() под инстансным
+    conn._lock. Без модульного замка две параллельные холодные точки могли бы
+    обе увидеть `_connection is None` и инстанциировать СВОЙ SketchUpConnection;
+    без conn._lock оба caller'а прошли бы health-check в ensure_connected и
+    вызвали open_connection дважды — один сокет осиротел бы. Тест регрессионно
+    фиксирует: один общий singleton, один реальный open_connection.
     """
     from sketchup_mcp import connection as conn_module
 
@@ -444,7 +575,7 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
         writer.drain = AsyncMock()
         writer.close = MagicMock()
         writer.wait_closed = AsyncMock()
-        # is_closing() должен явно вернуть False, иначе второй get_connection
+        # is_closing() должен явно вернуть False, иначе второй ensure_connected
         # увидит «writer is closing» и инициирует второй connect() уже не
         # из-за cold-start race, а из-за реконнекта. Это замаскировало бы
         # настоящий cold-start race в проверяемом коде.
@@ -452,8 +583,13 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
         return reader, writer
 
     with patch("sketchup_mcp.connection.asyncio.open_connection", side_effect=slow_open):
-        t1 = asyncio.create_task(conn_module.get_connection())
-        t2 = asyncio.create_task(conn_module.get_connection())
+        async def cold_caller():
+            conn = await conn_module.get_connection()
+            await conn.ensure_connected()
+            return conn
+
+        t1 = asyncio.create_task(cold_caller())
+        t2 = asyncio.create_task(cold_caller())
         # Дать обеим coroutines дойти до lock'а.
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -467,6 +603,52 @@ async def test_get_connection_cold_start_race_creates_singleton_once(monkeypatch
 
     # Cleanup для последующих тестов.
     monkeypatch.setattr(conn_module, "_connection", None)
+
+
+async def test_aclose_cannot_clobber_concurrent_reconnect():
+    """Регрессия T-08. Старый код: disconnect() после await wait_closed
+    БЕЗУСЛОВНО нулил _reader/_writer и мог затереть свежую пару, открытую
+    параллельным connect'ом из-под другого замка. Теперь aclose() и
+    ensure_connected() сериализованы одним conn._lock: закрытие завершается
+    ДО реконнекта, свежая пара выживает."""
+    conn = SketchUpConnection(host="127.0.0.1", port=1, timeout=1.0)
+
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    old_writer = MagicMock()
+    old_writer.close = MagicMock()
+
+    async def slow_wait_closed():
+        started.set()   # сигнал: aclose взял conn._lock и дошёл до wait_closed
+        await gate.wait()
+
+    old_writer.wait_closed = slow_wait_closed
+    old_writer.is_closing = MagicMock(return_value=False)
+    conn._reader = asyncio.StreamReader()
+    conn._writer = old_writer
+
+    fresh_reader = asyncio.StreamReader()
+    fresh_writer = MagicMock()
+    fresh_writer.is_closing = MagicMock(return_value=False)
+
+    async def fake_connect():
+        conn._reader = fresh_reader
+        conn._writer = fresh_writer
+
+    conn.connect = fake_connect
+
+    close_task = asyncio.create_task(conn.aclose())
+    # Явная точка синхронизации вместо одиночного asyncio.sleep(0): порядок
+    # прохода одного yield — implementation detail планировщика CPython
+    # (флак на 3.13+/PyPy). started гарантирует: aclose УЖЕ держит lock.
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    reconnect_task = asyncio.create_task(conn.ensure_connected())
+    await asyncio.sleep(0)   # ensure_connected встал в очередь на conn._lock
+    gate.set()
+    await asyncio.gather(close_task, reconnect_task)
+
+    assert conn._writer is fresh_writer, "reconnect's fresh pair must survive aclose"
+    assert conn._reader is fresh_reader
 
 
 async def test_get_viewport_screenshot_is_retry_safe():
@@ -768,3 +950,16 @@ async def test_connect_timeout_when_open_connection_hangs():
     assert ei.value.code == -32000
     assert "connect timed out" in str(ei.value).lower()
     assert conn._writer is None  # no half-open socket left behind
+
+
+async def test_handshake_non_utf8_reply_raises_sketchup_error():
+    """T-11: не-UTF8 тело hello-ответа → SketchUpError(-32700). До фикса голый
+    UnicodeDecodeError пролетал сквозь lifespan-catch (ConnectionError,
+    SketchUpError) и валил старт сервера вместо degraded-режима."""
+    bad_body = b'{"jsonrpc": "2.0", "id": 0, "result": "\xff\xfe"}'
+    async with FakeServer([encode_frame(bad_body)]) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, timeout=2.0)
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+        assert ei.value.code == -32700
+        assert "handshake parse error" in ei.value.message

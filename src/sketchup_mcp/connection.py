@@ -4,8 +4,10 @@ This module owns the wire protocol: 4-byte big-endian length prefix + JSON body,
 ``asyncio.Lock`` serialisation, lazy reconnect, total per-request timeout.
 
 Public entry points are :func:`get_connection`/:func:`close_connection` for
-singleton management, and :class:`SketchUpConnection.send_command` for
-actual JSON-RPC traffic.
+singleton management, :meth:`SketchUpConnection.ensure_connected` /
+:meth:`SketchUpConnection.aclose` for explicit connect/close (all socket
+mutation is serialized under the instance lock), and
+:meth:`SketchUpConnection.send_command` for actual JSON-RPC traffic.
 """
 import asyncio
 import json
@@ -23,16 +25,21 @@ _DISCONNECT_TIMEOUT = 5.0  # секунд на graceful close сокета
 
 
 class _StaleSocketError(SketchUpError):
-    """Маркер «peer закрыл сокет до отправки хоть одного байта ответа».
+    """Маркер «транспорт умер посреди roundtrip'а» (EOF/RST до полного ответа).
 
-    Сам по себе индикатор НЕДОСТАТОЧЕН для безопасного retry: см. Codex review
-    на PR #1. Контр-пример — Ruby-сторонний `write_response`: `IO.select`
-    таймаутится за 1 сек, `reset_client` закрывает сокет **уже после**
-    `model.commit_operation`. Python видит partial=b"", но мутация применена —
-    retry задвоит её.
+    Сам по себе индикатор НЕДОСТАТОЧЕН для безопасного retry: Ruby-сторонний
+    `write_response` может закрыть сокет **уже после** `model.commit_operation`
+    (IO.select-таймаут 1 сек → reset_client). Даже partial == b"" не
+    гарантирует, что мутация не применена (см. Codex review на PR #1).
 
-    Поэтому retry ограничен whitelist'ом read-only tools (`_RETRY_SAFE_TOOLS`).
-    Для мутативных — поднимаем наверх как обычную транспортную ошибку.
+    Поэтому retry ограничен whitelist'ом side-effect-free tools
+    (`_RETRY_SAFE_TOOLS`) — их безопасно переспрашивать независимо от того,
+    успел ли peer обработать запрос. Для мутативных — поднимаем наверх как
+    транспортную ошибку с recovery-подсказкой (см. send_command).
+
+    Цена MR-1: обрыв посреди большого ответа (например ~43 MiB скриншота)
+    означает второй полный захват и передачу — безопасно, но дорого;
+    осознанная цена за автовосстановление read-only вызовов.
     """
 
 
@@ -87,6 +94,11 @@ class SketchUpConnection:
         ``asyncio.wait_for(..., timeout=self.timeout)`` — without it, a
         Ruby that accepted TCP but never replied would block this
         coroutine forever.
+
+        Low-level/internal: мутирует ``_reader``/``_writer`` БЕЗ замка. Вызывать
+        только из-под ``self._lock`` (ensure_connected / aclose / _send_once) или
+        в заведомо однозадачном контексте (examples/smoke_check.py). Внешний
+        API — ``ensure_connected()`` / ``aclose()``.
         """
         # CRITICAL: the TCP connect itself is wrapped in wait_for too, not just
         # the handshake below. A host that accepts the SYN but never finishes
@@ -153,7 +165,10 @@ class SketchUpConnection:
             ) from e
         try:
             response = json.loads(response_body)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError: json.loads(bytes) декодирует UTF-8 сам;
+            # не-UTF8 тело кидало голый UnicodeDecodeError мимо таксономии
+            # (валил lifespan вместо degraded-старта). T-11/PY-CONN-02.
             raise SketchUpError(-32700, f"handshake parse error: {e}") from e
         if not isinstance(response, dict):
             raise SketchUpError(
@@ -191,6 +206,13 @@ class SketchUpConnection:
         compat.check_ruby_version(server_version)
 
     async def disconnect(self) -> None:
+        """Close the socket and null the ``_reader``/``_writer`` pair.
+
+        Low-level/internal: мутирует ``_reader``/``_writer`` БЕЗ замка. Вызывать
+        только из-под ``self._lock`` (ensure_connected / aclose / _send_once) или
+        в заведомо однозадачном контексте (examples/smoke_check.py). Внешний
+        API — ``ensure_connected()`` / ``aclose()``.
+        """
         if self._writer is not None:
             try:
                 self._writer.close()
@@ -201,6 +223,31 @@ class SketchUpConnection:
                 logger.debug("disconnect: ignored error during close: %s", e)
         self._reader = None
         self._writer = None
+
+    async def ensure_connected(self) -> None:
+        """Открыть сокет (и выполнить handshake), если он ещё не открыт.
+
+        Берёт тот же ``self._lock``, что и ``send_command`` — ЕДИНСТВЕННЫЙ
+        замок, под которым мутируются ``_reader``/``_writer`` (T-08:
+        connect из get_connection под модульным замком гонялся с
+        ``disconnect()`` внутри in-flight ``send_command`` — терял свежую
+        пару сокетов или утекал соединением).
+
+        Raises ``ConnectionError`` при сетевом отказе (как раньше поднимал
+        ``get_connection``) — lifespan ловит и стартует degraded.
+        """
+        async with self._lock:
+            # Health-check намеренно продублирован с _send_once, а не вынесен
+            # в общий «проверь-и-коннекть» хелпер, берущий замок: asyncio.Lock
+            # нереентерабелен — вызов такого хелпера из-под уже взятого
+            # self._lock (как в _send_once) был бы дедлоком.
+            if self._writer is None or self._writer.is_closing():
+                await self._connect_or_raise()
+
+    async def aclose(self) -> None:
+        """Закрыть сокет под ``self._lock`` — дождавшись in-flight запроса."""
+        async with self._lock:
+            await self.disconnect()
 
     async def _send_frame(self, body: bytes) -> None:
         if self._writer is None:
@@ -253,6 +300,9 @@ class SketchUpConnection:
                 ) from e
 
     async def _send_once(self, name: str, args: dict[str, Any]) -> Any:
+        # Health-check продублирован с ensure_connected (не общий хелпер):
+        # asyncio.Lock нереентерабелен, а обе точки уже выполняются под
+        # self._lock — общий «проверь-и-коннекть» под замком дедлочился бы.
         if self._writer is None or self._writer.is_closing():
             await self._connect_or_raise()
         rid = self._next_id
@@ -282,15 +332,14 @@ class SketchUpConnection:
                 -32000, f"timeout after {self.timeout}s"
             ) from None
         except asyncio.IncompleteReadError as e:
+            # EOF до полного ответа — заголовок не пришёл вовсе (partial == b"")
+            # или оборван посреди фрейма. Различие partial-пустоты больше НЕ
+            # влияет на решение: безопасность retry целиком решает whitelist
+            # в send_command (read-only тулы безопасно переспросить, даже если
+            # Ruby успел выполнить хендлер; мутативные не ретраятся никогда).
+            # MR-1 из финального ревью батча 1.
             await self.disconnect()
-            if e.partial == b"":
-                # 0 байт прочитано = peer закрыл соединение ДО отправки заголовка.
-                # Гарантия: запрос не был обработан (иначе peer прислал бы
-                # минимум 4 байта length-prefix). Safe-to-retry.
-                raise _StaleSocketError(-32000, f"connection error: {e}") from e
-            # Partial read = peer уже начал отвечать → мутация могла произойти,
-            # retry небезопасен.
-            raise SketchUpError(-32000, f"connection error: {e}") from e
+            raise _StaleSocketError(-32000, f"connection error: {e}") from e
         except ConnectionError as e:
             # ECONNRESET / BrokenPipe = разрыв транспорта на любой фазе
             # (_send_frame, drain, _recv_frame). Помечаем как _StaleSocketError;
@@ -299,6 +348,14 @@ class SketchUpConnection:
             # _StaleSocketError будет проброшен наверх caller'у.
             await self.disconnect()
             raise _StaleSocketError(-32000, f"connection error: {e}") from e
+        except OSError as e:
+            # Голый OSError вне ConnectionError-подсемейства: EHOSTUNREACH /
+            # ENETUNREACH (split-host из README), ETIMEDOUT на py3.10. Порядок
+            # важен: ConnectionError ⊂ OSError, поэтому эта ветка стоит ПОСЛЕ.
+            # НЕ _StaleSocketError: это не «peer закрыл сокет», гарантий о
+            # необработанности запроса нет — retry не предлагаем. T-11.
+            await self.disconnect()
+            raise SketchUpError(-32000, f"connection error: {e}") from e
         except SketchUpError:
             # Транспортные ошибки (-32600 oversize/zero-length от _recv_frame).
             # Stream после них рассинхронизирован — обязательно disconnect.
@@ -313,7 +370,8 @@ class SketchUpConnection:
             raise
         try:
             response = json.loads(response_body)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            # См. _handshake: не-UTF8 тело = тот же parse-класс ошибок. T-11.
             await self.disconnect()
             raise SketchUpError(-32700, f"parse error: {e}") from e
         # Reject malformed non-dict top-level JSON before any .get() call.
@@ -335,6 +393,15 @@ class SketchUpConnection:
         # protocol moved to a single hello roundtrip on connect.
         if "error" in response:
             err = response["error"]
+            # Mirror the top-level non-dict guard above: a malformed peer can
+            # put a string/list under "error", and err.get() would surface as
+            # AttributeError instead of SketchUpError.
+            if not isinstance(err, dict):
+                await self.disconnect()
+                raise SketchUpError(
+                    -32603,
+                    f"malformed JSON-RPC error envelope (not a dict): {type(err).__name__}",
+                )
             # Promote Ruby-detected version mismatches from generic SketchUpError
             # to IncompatibleVersionError so callers can catch a single class
             # regardless of which side detected the mismatch.
@@ -357,7 +424,7 @@ class SketchUpConnection:
             await self.connect()
         except OSError as e:
             raise ConnectionError(
-                f"cannot reconnect to {self.host}:{self.port}: {e}"
+                f"cannot connect to {self.host}:{self.port}: {e}"
             ) from e
 
     async def _roundtrip(self, body: bytes) -> bytes:
@@ -379,15 +446,14 @@ _get_connection_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_connection() -> SketchUpConnection:
-    """Lazy singleton accessor — connects on first call or after disconnect.
+    """Singleton accessor — только создаёт/возвращает объект, НЕ коннектит.
 
-    Защищён `_get_connection_lock` от cold-start race: два параллельных
-    `get_connection()` на холодном старте без lock'а могли бы оба создать
-    `SketchUpConnection` и вызвать `connect()` на разных объектах, оставив
-    один сокет бесхозным.
-
-    Raises ``ConnectionError`` if connect to ``config.HOST:config.PORT`` fails;
-    callers (``_call`` in tools) translate this into a graceful tool-response.
+    Коннект выполняется исключительно под инстансным ``conn._lock``: лениво
+    в ``_send_once`` или явно через ``ensure_connected()`` (eager-connect в
+    lifespan). Раньше здесь жил health-check + connect под модульным
+    ``_get_connection_lock`` — он гонялся с ``disconnect()`` параллельного
+    ``send_command`` (T-08/PY-CONN-01): ложные «internal: reader is None»
+    и утечка сокетов при рестарте SketchUp.
     """
     global _connection
     async with _get_connection_lock:
@@ -395,19 +461,19 @@ async def get_connection() -> SketchUpConnection:
             _connection = SketchUpConnection(
                 host=config.HOST, port=config.PORT, timeout=config.TIMEOUT
             )
-        if _connection._writer is None or _connection._writer.is_closing():
-            try:
-                await _connection.connect()
-            except OSError as e:
-                raise ConnectionError(
-                    f"cannot connect to {config.HOST}:{config.PORT}: {e}"
-                ) from e
         return _connection
 
 
 async def close_connection() -> None:
-    """Close and forget the module singleton."""
+    """Close and forget the module singleton (ждёт in-flight запрос под conn._lock).
+
+    Тело — под ``_get_connection_lock``: без него параллельный
+    ``get_connection()`` может получить полузакрытый объект, а после
+    обнуления ``_connection`` создать ВТОРОЙ «singleton» с собственным
+    сокетом (регрессия инварианта одного соединения).
+    """
     global _connection
-    if _connection is not None:
-        await _connection.disconnect()
-        _connection = None
+    async with _get_connection_lock:
+        if _connection is not None:
+            await _connection.aclose()
+            _connection = None

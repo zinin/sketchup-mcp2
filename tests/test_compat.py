@@ -106,7 +106,11 @@ def test_max_ruby_matches_python_version():
     assert compat.parse(compat.MAX_RUBY) == compat.parse(compat.CLIENT_VERSION)
 
 
-def test_python_version_is_imported_from_init():
-    """compat.CLIENT_VERSION must mirror the package version."""
-    from sketchup_mcp import __version__
-    assert compat.CLIENT_VERSION == __version__
+def test_python_version_matches_installed_metadata():
+    """QUAL-03: старый тест сравнивал compat.CLIENT_VERSION с тем же атрибутом,
+    из которого он импортирован, — тавтология. Настоящий guard: __version__
+    (источник CLIENT_VERSION) обязан совпадать с версией из метаданных
+    установленного пакета (pyproject.toml), иначе релизный бамп одной из двух
+    точек тихо разъезжается."""
+    from importlib.metadata import version
+    assert compat.CLIENT_VERSION == version("sketchup-mcp2")

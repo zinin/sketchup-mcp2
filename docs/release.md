@@ -53,6 +53,8 @@ grep '"product_id"' mcp_for_sketchup/extension.json
 * `test_max_ruby_matches_python_version` (Python) — Python's view of Ruby max must equal current `CLIENT_VERSION` at release time.
 * `test_max_python_matches_server_version` (Ruby) — Ruby's view of Python max must equal plugin `SERVER_VERSION` at release time.
 
+**Contract break — floors bumped in v0.3.0 (2026-07-02; batches 1+2, branch `fix/deep-review-p2`):** `transform_component.position` switched from a relative offset to an absolute bbox-min target (`feat!`, commit `6b7d133`): an old/new client–server mix would pass the handshake but silently misplace geometry. Batch 2 widened the same break — new tool parameters (`name`, `limit`/`offset`/`response_format`), stricter validation (min dimensions 0.1 mm for cube / 1.0 mm for curved types, dovetail angle ≤ 60°, non-zero scale), and changed response shapes (`list/find_components` pagination envelope, `bbox_mm: null` for empty bounds, screenshot metadata block, `export` warning field). v0.3.0 bumps **both MIN floors to `0.3.0`** (`MIN_RUBY` Python-side, `MIN_PYTHON` Ruby-side) — the handshake is now exact-match `0.3.0`↔`0.3.0`, so an incompatible mix is rejected at the handshake instead of silently misbehaving. Call out the new semantics in the GitHub release notes.
+
 Run `uv lock` to refresh `uv.lock` with the new project version (otherwise the next `uv` call updates it post-release and you end up with a stray `chore: sync uv.lock` commit). Commit (`chore: bump to vX.Y.Z`) and push.
 
 ## 2. Pre-flight tests
@@ -219,7 +221,7 @@ This extension runs a local TCP server inside SketchUp that exposes the live mod
 ## Quickstart
 
 1. **Install this extension**: download the `.rbz`, install via `Window → Extension Manager → Install Extension`, restart SketchUp.
-2. **Start the server** inside SketchUp: `Plugins → MCP Server → Start`.
+2. **Start the server** inside SketchUp: `Plugins → MCP Server → Start Server`.
 3. **Run the Python MCP server**: `uvx sketchup-mcp2` (or `pip install sketchup-mcp2` + `python -m sketchup_mcp`).
 4. **Configure your MCP client** (Claude Desktop, Claude Code, etc.) to talk to `sketchup-mcp2`.
 
@@ -251,10 +253,10 @@ Critical: moderators don't run a Python MCP client. Keep this 100% verifiable in
 Quick in-SketchUp test (no external client or Python needed):
 
 1. Install the .rbz: Window → Extension Manager → Install Extension; restart SketchUp.
-2. Menu: "Plugins → MCP Server" shows Start, Stop, Settings...
+2. Menu: "Plugins → MCP Server" shows Start Server, Stop Server, Restart Server, Settings..., Show Log.
 3. Settings: click Settings... — a dialog opens (Host=127.0.0.1, Port=9876, Log Level=WARN). Change Port to 9877 and Log Level to INFO, Save — closes without errors. Reopen: values persist.
-4. Start: "Plugins → MCP Server → Start". Ruby Console (Window → Ruby Console) shows a line ending "[MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9877". Repeated Start is idempotent.
-5. Stop: "Plugins → MCP Server → Stop". Stops cleanly.
+4. Start: "Plugins → MCP Server → Start Server". Ruby Console (Window → Ruby Console) shows a line ending "[MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9877". Repeated Start Server is idempotent.
+5. Stop: "Plugins → MCP Server → Stop Server". Stops cleanly.
 
 Local TCP server (loopback only — no firewall prompt) awaiting MCP-aware AI clients (e.g. Claude). Steps 1-5 cover the in-SketchUp surface; no external service or login required.
 
@@ -284,8 +286,8 @@ EW requires ≥1 screenshot. Recommended 940×470 px, `.jpg`/`.png`, max 3 MB, u
 For this backend-only extension (no own viewport), useful captures — all takeable inside SketchUp in <1 min each, no video recording needed:
 
 1. **Settings dialog** — `Plugins → MCP Server → Settings...` shows the only HTML UI surface (3 fields). Take with Snipping Tool / Cmd+Shift+4.
-2. **`Plugins → MCP Server` menu expanded** — shows Start / Stop / Settings menu items. Proves SketchUp integration.
-3. **Ruby Console after Start** — set Log Level to `INFO` in Settings first (the default is `WARN`, which suppresses the start line), then `Window → Ruby Console` and `Plugins → MCP Server → Start`. Capture the `[<UTC iso8601>] [MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9876` line.
+2. **`Plugins → MCP Server` menu expanded** — shows the Start Server / Stop Server / Restart Server / Settings... / Show Log menu items. Proves SketchUp integration.
+3. **Ruby Console after Start** — set Log Level to `INFO` in Settings first (the default is `WARN`, which suppresses the start line), then `Window → Ruby Console` and `Plugins → MCP Server → Start Server`. Capture the `[<UTC iso8601>] [MCPforSU] [INFO] tool=application status=started host=127.0.0.1 port=9876` line.
 
 Optional 4th (marketing hero shot): Claude Code or Claude Desktop + SketchUp viewport in split-screen with a Claude-driven build visible. ~10–15 min to set up if Claude isn't already configured against the running server.
 

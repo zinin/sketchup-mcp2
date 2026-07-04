@@ -12,7 +12,8 @@ Follow this strategy to be effective and avoid common pitfalls.
 # 1. Pre-flight — ALWAYS start with
 - get_model_info() — units, model bbox, layer list, total entity count.
 - If the user references existing geometry: list_components or
-  find_components(name=...) to locate IDs.
+  find_components(name=...) to locate IDs (paginated: check "truncated"
+  and page with offset/limit).
 - For visual context after major changes:
   get_viewport_screenshot(view_preset="iso", zoom_extents=true).
 
@@ -32,16 +33,32 @@ Follow this strategy to be effective and avoid common pitfalls.
 - ALL linear dimensions are millimeters at the MCP boundary.
   SketchUp's Ruby API uses inches internally; the server converts.
 - ALL angles are degrees.
-- Entity IDs are integers but accept strings (server casts via .to_i).
+- transform_component.position is an ABSOLUTE target: the entity's
+  bbox-min corner lands exactly there (same anchor as
+  create_component.position), applied AFTER rotation/scale — the
+  bbox-min promise holds for combined calls too. rotation/scale are
+  relative, about the bbox center.
+- Entity IDs: pass them back exactly as returned — integer or string,
+  both are accepted by every id parameter.
 - New geometry lives inside SketchUp Groups so it can be moved/deleted
   as a unit.
+- create_component minimum dimension: 0.1 mm for cube, 1.0 mm for
+  curved types; defaults are a 100 mm cube.
+- create_component accepts an optional name — set it so
+  find_components can locate the part later.
 
 # 4. After every mutation — verify
-- Geometry, material, boolean, joinery, and edge tools that create or
-  modify a single entity return {id, name, type, bbox_mm}. When bbox_mm
-  is returned, read it to confirm the result matches the intent before
-  the next step (and to relocate the entity if its id becomes stale
-  after destructive operations like boolean_operation).
+- Geometry, material, boolean, and edge tools return
+  {id, name, type, bbox_mm} (edge tools add edges_*/stats). bbox_mm is null
+  when the entity ended up with no geometry (e.g. a boolean difference
+  consumed the whole body) — treat null as "inspect what happened", not as
+  an error. When bbox_mm is present, read it to confirm the result matches
+  the intent before the next step (and to relocate the entity if its id
+  becomes stale after destructive operations).
+- Joinery tools return ONE OBJECT PER BOARD — {mortise, tenon} /
+  {tail, pin} / {board1, board2}, each {id, name, type, bbox_mm} — plus
+  boolean_cuts {attempted, failed}: treat failed > 0 as a partial failure
+  and verify via bbox_mm.
 - Other tools — delete_component, create_layer, undo, list/find
   queries, get_model_info, get_selection — have their own response
   shapes; see the tool docs.

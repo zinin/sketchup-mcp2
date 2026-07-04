@@ -80,7 +80,7 @@ class TestCompat < Minitest::Test
     end
   end
 
-  def test_too_new_raises_with_reinstall_hint
+  def test_too_new_points_forward_and_backward
     with_range("0.1.0", "0.2.0") do
       err = assert_raises(MCPforSketchUp::Core::StructuredError) do
         MCPforSketchUp::Core::Compat.check_python_version("0.3.0")
@@ -89,6 +89,10 @@ class TestCompat < Minitest::Test
       assert_includes err.message, "0.3.0"
       assert_includes err.message, "newer"
       assert_includes err.message, ".rbz"
+      assert_includes err.message, "sketchup-mcp2==0.2.0",
+        "должен предлагать откат клиента на поддерживаемую версию"
+      assert_includes err.message, "newer plugin",
+        "должен указывать вперёд — на более новый .rbz, если он существует"
     end
   end
 

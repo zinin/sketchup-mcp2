@@ -1,6 +1,7 @@
 # mcp_for_sketchup/mcp_for_sketchup/core/server.rb
 require "json"
 require "socket"
+require "io/wait"   # IO#wait_readable — проба сокета в socket_readable?
 
 module MCPforSketchUp
   module Core
@@ -12,6 +13,21 @@ module MCPforSketchUp
       WRITE_DEADLINE_S          = 5.0     # idle (no-forward-progress) drain deadline
       PENDING_WRITE_MAX_BYTES   = 16 * 1024 * 1024  # 16 MiB per-client buffer cap
       MAX_CLIENTS               = 64      # refuse connections beyond this (review F3)
+      # T-13.2: связка капов (M-08 ревью). Чтение (READ_MAX_ITERATIONS=50
+      # НА КЛИЕНТА) может опережать глобальный диспатч (50 НА ТИК); при
+      # TIMER_INTERVAL 0.1 с потолок ~500 диспатчей/с — за глаза для
+      # односкетчаповых нагрузок. Разница поглощается очередью до
+      # FRAME_QUEUE_SOFT_MAX (~5 тиков разгрузки), дальше чтение
+      # приостанавливается и TCP-окно передаёт backpressure клиенту.
+      # Стоп чтения ГЛОБАЛЬНЫЙ (все сокеты) — осознанно: очередь одна,
+      # FIFO-порядок важнее fairness чтения; kernel-буферы данные удержат.
+      # NB: строгая гарантия — на ВХОДЕ тика; на тике пересечения порога
+      # каждый последующий клиент успевает ещё ≤1 read_nonblock-чанк
+      # (mid-drain проверка стоит ПОСЛЕ чтения) — вход следующего тика
+      # запечатывает стоп полностью.
+      DISPATCH_MAX_PER_TICK     = 50      # фреймов за тик; флуд мелких фреймов не должен морозить UI (T-13.2)
+      FRAME_QUEUE_SOFT_MAX      = 256     # очередь насыщена — чтение приостанавливается (T-13.2, P-06)
+      PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект без валидного hello закрывается (T-13.5)
 
       def initialize
         @server         = nil
@@ -63,6 +79,12 @@ module MCPforSketchUp
         LOOPBACK_HOSTS.include?(h) || h.start_with?("127.")
       end
 
+      # T-13.4: все дедлайны — на монотонных часах; wall-clock (Time.now)
+      # прыгает при NTP-коррекции и переводе времени.
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
       # Concise server-log echo of the UI's host-security warning. Emitted at
       # bind for any non-loopback host: such a bind exposes the unauthenticated
       # MCP server — including eval_ruby (arbitrary Ruby) — to the LAN.
@@ -82,6 +104,11 @@ module MCPforSketchUp
           accept_pending_clients
           flush_pending_writes_all_clients
           drain_reads_all_clients
+          # PR #3 ревью (Codex P2): sweep — строго ПОСЛЕ drain. Иначе на
+          # тике выхода из насыщения очереди решение «закрыть молчуна»
+          # принималось ДО чтения, которое как раз декодировало бы его
+          # заждавшийся hello.
+          close_pre_handshake_stragglers
           process_frame_queue
         rescue StandardError => e
           # Server-level error — log only. Do NOT reset clients.
@@ -147,6 +174,57 @@ module MCPforSketchUp
         end
       end
 
+      # T-13.5: коннект, не приславший валидный hello за
+      # PRE_HANDSHAKE_DEADLINE_S, закрывается. Без этого 64 молчаливых
+      # TCP-коннекта навсегда исчерпывают слоты MAX_CLIENTS (DoS при
+      # exposed-bind; до дедлайна слоты, естественно, заняты — 30 с и есть
+      # граница этой уязвимости). 30 с заведомо щедро: hello уходит первым
+      # же фреймом сразу после connect(), даже WAN-RTT на порядки меньше.
+      # Wire-протокол не меняется — это чисто серверный таймер.
+      def close_pre_handshake_stragglers
+        now = monotonic_now
+        @clients.values.each do |state|
+          next if state.handshaked
+          # P-07: клиент с reject/error-envelope в буфере доживает до
+          # доставки — его закроет close-after-drain (свой WRITE_DEADLINE_S).
+          next if state.close_after_response
+          # Финальное ревью (композиция T-13.2×T-13.5): фрейм клиента (его
+          # hello) уже декодирован в @frame_queue и ждёт диспатч-капа за
+          # чужим флудом — это НЕ «молчун»; handshaked ставится только при
+          # диспатче hello, поэтому без этой проверки непрерывный флуд
+          # одного handshaked-клиента циклически убивал бы все новые
+          # подключения по pre-handshake дедлайну.
+          next if state.queued_frames > 0
+          # PR #3 ревью (Codex P2) — второе плечо той же композиции: при
+          # очереди ≥ FRAME_QUEUE_SOFT_MAX drain_reads_all_clients не читает
+          # сокеты ВООБЩЕ — hello новичка может лежать непрочитанным в
+          # kernel-буфере дольше дедлайна (queued_frames при этом 0:
+          # декодирования не было). Читаемый сокет — «заморенный», не
+          # «молчун»: щадим, пока backpressure не отпустит. Вне насыщения
+          # проба НЕ применяется — иначе slow-loris (байт в тик) держал бы
+          # pre-handshake слот вечно, ровно та дыра, которую T-13.5
+          # закрывает. Настоящий молчун (байтов нет) закрывается по
+          # дедлайну и под флудом.
+          next if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX &&
+                  socket_readable?(state.sock)
+          next if now - state.connected_at < PRE_HANDSHAKE_DEADLINE_S
+          Logger.log_tool("server", "pre_handshake_timeout",
+            client_label: state.label)
+          close_client(state, "pre_handshake_timeout")
+        end
+      end
+
+      # Неблокирующая проба «есть ли непрочитанные байты в сокете» (io/wait).
+      # Ошибка пробы трактуется как «не читаем» — консервативно для T-13.5:
+      # сломанный сокет не спасается от дедлайна.
+      def socket_readable?(sock)
+        !!sock.wait_readable(0)
+      rescue StandardError => e
+        Logger.log("DEBUG",
+          "Server.socket_readable?: probe raised: #{e.class}: #{e.message}")
+        false
+      end
+
       # Global FIFO: `@clients` is a Hash, whose iteration order in Ruby 1.9+
       # is the *insertion order* (i.e. the order in which TCP accept assigned
       # each client). For each client we drain reads in that order, appending
@@ -156,6 +234,10 @@ module MCPforSketchUp
       # design §5.3 / §13.1 for the rationale (round-robin reads were
       # considered and explicitly rejected).
       def drain_reads_all_clients
+        # T-13.2: backpressure. Очередь и так забита — оставляем данные в
+        # kernel-буфере (TCP-окно заполнится, клиент притормозит сам). FIFO
+        # не страдает: недочитанное придёт в том же порядке следующим тиком.
+        return if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX
         # `Hash#values` returns a fresh array — iteration is safe even when
         # drain_one_client triggers close_client, which mutates @clients.
         @clients.values.each do |state|
@@ -165,6 +247,9 @@ module MCPforSketchUp
 
       def drain_one_client(state)
         return if state.closed?
+        # T-13.1: решение о закрытии принято (framing/parse-ошибка) — стрим
+        # рассинхронизирован, новые чтения бессмысленны до close-after-drain.
+        return if state.close_after_response
         iterations = 0
         loop do
           if iterations >= READ_MAX_ITERATIONS
@@ -173,7 +258,12 @@ module MCPforSketchUp
           chunk = state.sock.read_nonblock(READ_CHUNK)
           state.reader.feed(chunk).each do |body|
             @frame_queue << [state, body]
+            state.queued_frames += 1
           end
+          # P-06: стоп посреди дренажа, как только очередь насыщена; перелёт
+          # ограничен фреймами ОДНОГО read_nonblock-куска (≤64 KiB), а не
+          # всем бюджетом READ_MAX_ITERATIONS.
+          break if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX
           iterations += 1
         end
       rescue IO::WaitReadable
@@ -181,9 +271,14 @@ module MCPforSketchUp
       rescue EOFError, Errno::ECONNRESET, Errno::EPIPE
         close_client(state, "client_disconnected")
       rescue StructuredError => e
-        # framing error (zero-length / oversize) — stream desynced.
+        # framing error (zero-length / oversize) — stream desynced. T-13.1:
+        # НЕ закрывать сразу — при занятом send-буфере error-envelope молча
+        # терялся. Глушим чтение (guard выше), закрываемся после полного
+        # дренажа буфера — механизм close_after_response, как у
+        # reject_handshake.
+        state.close_reason = "framing_error: #{e.message}"
+        state.close_after_response = true
         send_transport_error(state, e, nil)
-        close_client(state, "framing_error: #{e.message}")
       rescue StandardError => e
         # Defense-in-depth: any other unexpected exception (e.g. SystemCallError
         # from a bad fd, encoding error, etc.) must close the offending client
@@ -194,14 +289,22 @@ module MCPforSketchUp
       end
 
       def process_frame_queue
+        dispatched = 0
         until @frame_queue.empty?
+          # T-13.2: кап на тик. shift с головы + return сохраняют FIFO —
+          # остаток обрабатывается следующим тиком, UI SketchUp дышит.
+          return if dispatched >= DISPATCH_MAX_PER_TICK
           state, body = @frame_queue.shift
-          next if state.closed?
+          # Декремент безусловный (в т.ч. для скипаемых ниже фреймов):
+          # счётчик обязан отражать фактическое содержимое @frame_queue.
+          state.queued_frames -= 1
+          next if state.closed? || state.close_after_response
 
           response = handle_frame(state, body)
           if response
             write_response(state, response)
           end
+          dispatched += 1
         end
       end
 
@@ -223,9 +326,10 @@ module MCPforSketchUp
       rescue JSON::ParserError => e
         Logger.log_error("server.parse", e, client_label: state.label)
         # JSON-RPC §5.1: parse-error responses use id=null.
+        state.close_reason = "parse_error"
+        state.close_after_response = true
         send_transport_error(state,
           StructuredError.new(-32700, "parse error: #{e.message}"), nil)
-        close_client(state, "parse_error")
         nil
       rescue StandardError => e
         Logger.log_error("server.handler", e, client_label: state.label)
@@ -318,26 +422,29 @@ module MCPforSketchUp
           end
 
         # Append to the per-client buffer and try to drain immediately.
-        # Overflow guard: cap the cumulative pending bytes per client to
-        # protect against pathological accumulation when many handlers
-        # reply faster than the client can read. The cap applies to
-        # ACCUMULATION only — a single frame is already bounded by the framing
-        # layer (Config::MAX_MESSAGE_SIZE, 64 MiB), so it must always be allowed
-        # onto an EMPTY buffer; otherwise a legitimate large reply (e.g. a
-        # get_viewport_screenshot PNG, up to ~43 MiB base64) would be wrongly
-        # force-closed. Fire only when a backlog already exists.
-        backlog   = state.pending_write_bytes.bytesize
-        projected = backlog + frame.bytesize
+        # Overflow guard (T-13.3): кап применяется к ХВОСТУ за пределами ещё
+        # дренирующегося head-фрейма. Head, допущенный на пустой буфер, уже
+        # ограничен framing-капом (64 MiB) и не приговаривает клиента: раньше
+        # один легитимный >16 MiB ответ (например ~43 MiB скриншот) плюс ЛЮБОЙ
+        # следующий фрейм закрывали соединение. Патологическое накопление
+        # хвоста по-прежнему режется. Осознанный trade-off: фрейм крупнее
+        # PENDING_WRITE_MAX_BYTES при ЛЮБОМ непустом бэклоге (даже если head
+        # ещё дренируется) всё равно закрывает клиента — исключение только для
+        # head, допущенного на ПУСТОЙ буфер; конвейеризация двух >16 MiB
+        # ответов не поддерживается by design.
+        backlog      = state.pending_write_bytes.bytesize
+        tail_backlog = backlog - state.head_frame_remaining
+        projected    = tail_backlog + frame.bytesize
         if backlog > 0 && projected > PENDING_WRITE_MAX_BYTES
           Logger.log_tool("server", "pending_write_overflow",
-            "limit=#{PENDING_WRITE_MAX_BYTES} projected=#{projected} backlog=#{backlog}",
+            "limit=#{PENDING_WRITE_MAX_BYTES} projected_tail=#{projected} backlog=#{backlog}",
             client_label: state.label)
           close_client(state, "pending_write_overflow")
           return
         end
         state.append_pending_write(frame)
         if state.pending_write_deadline_at.nil?
-          state.pending_write_deadline_at = Time.now + WRITE_DEADLINE_S
+          state.pending_write_deadline_at = monotonic_now + WRITE_DEADLINE_S
         end
         # Attempt to drain right now — avoids wasting one tick when the
         # kernel send-buffer is ready.
@@ -361,7 +468,7 @@ module MCPforSketchUp
         return if state.pending_write_empty?
 
         if state.pending_write_deadline_at &&
-           Time.now > state.pending_write_deadline_at
+           monotonic_now > state.pending_write_deadline_at
           Logger.log_tool("server", "write_timeout",
             client_label: state.label)
           close_client(state, "write_timeout")
@@ -374,7 +481,7 @@ module MCPforSketchUp
           if state.pending_write_empty?
             state.pending_write_deadline_at = nil
             if state.close_after_response
-              close_client(state, "handshake_rejected")
+              close_client(state, state.close_reason || "handshake_rejected")
             end
             return
           end
@@ -382,7 +489,7 @@ module MCPforSketchUp
           # Extend the idle deadline so a slow-but-moving transfer survives —
           # only a stall (no progress for WRITE_DEADLINE_S) trips the timeout.
           if n > 0
-            state.pending_write_deadline_at = Time.now + WRITE_DEADLINE_S
+            state.pending_write_deadline_at = monotonic_now + WRITE_DEADLINE_S
           else
             # Defensive: write_nonblock claimed success but wrote zero bytes.
             # Break out to avoid a tight loop; treat it like WaitWritable —

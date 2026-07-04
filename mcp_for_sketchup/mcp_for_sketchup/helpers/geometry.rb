@@ -6,8 +6,8 @@ module MCPforSketchUp
       # mm→inch conversion via Helpers::Units before invoking these.
 
       # Box in SketchUp internal coordinates (inches). Always extrudes UP by +Z
-      # regardless of the auto-selected face.normal direction. See CLAUDE.md
-      # «make_box» note for context.
+      # regardless of the auto-selected face.normal direction. See
+      # docs/sketchup-ruby-cookbook.md (make_box recipe) for context.
       def self.make_box(entities, x, y, z, w, d, h)
         grp = entities.add_group
         face = grp.entities.add_face(
@@ -52,6 +52,16 @@ module MCPforSketchUp
         end
         return model.bounds if bb.empty? || bb.diagonal.to_f <= 0.0
         bb
+      end
+
+      # T-55: пустой Geom::BoundingBox SketchUp — «инвертированный» сентинел
+      # (min = +1e30 дюймов, max = −1e30 по каждой оси). Проверяем все оси:
+      # частичная инверсия — тоже «пусто», одноосевая проверка кодировала бы
+      # частный вид сентинела. Строгое `>` осознанно: вырожденный, но валидный
+      # bbox (min == max — точка/линия/плоскость) НЕ пуст; закреплено
+      # end-to-end в test_model_empty_bbox.rb (Task 14).
+      def self.empty_bbox?(bb)
+        bb.min.x > bb.max.x || bb.min.y > bb.max.y || bb.min.z > bb.max.z
       end
     end
   end

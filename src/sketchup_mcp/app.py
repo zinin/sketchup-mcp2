@@ -27,7 +27,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     отработает на первом tool-call. Логируем warning, продолжаем.
     `SketchUpError` (its subclass `IncompatibleVersionError` for a Python↔Ruby
     handshake mismatch — review F6 — plus raw handshake faults from
-    get_connection(): timeout, malformed reply, zero-length frame) is also
+    conn.ensure_connected(): timeout, malformed reply, zero-length frame) is also
     caught: all mean "SketchUp side not ready", so we start degraded and let
     `get_version` and every tool surface the problem as a graceful error,
     instead of the server failing to load with no diagnostics in Claude Desktop.
@@ -36,7 +36,8 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     """
     setup_logging()
     try:
-        await get_connection()
+        conn = await get_connection()
+        await conn.ensure_connected()
     except (ConnectionError, SketchUpError) as e:
         logger.warning(f"Could not connect on startup: {e}")
     try:
@@ -51,9 +52,10 @@ mcp = FastMCP(
     lifespan=server_lifespan,
 )
 
-# Side-effect import: registers tool handlers on `mcp`. Must come AFTER `mcp`
-# is constructed (tools.py does `from sketchup_mcp.app import mcp`). Required
-# here so MCP hosts loading the published `[project.entry-points.mcp]` get a
-# FastMCP with tools registered, not an empty instance.
+# Side-effect imports: register tool/prompt handlers on `mcp`. Must come AFTER
+# `mcp` is constructed (both modules do `from sketchup_mcp.app import mcp`).
+# Without these imports a consumer of `sketchup_mcp.app.mcp` (the
+# `sketchup-mcp2` CLI, `python -m sketchup_mcp`) would serve an EMPTY tool
+# list — registration happens at import time.
 import sketchup_mcp.tools  # noqa: E402, F401
 import sketchup_mcp.prompts  # noqa: E402, F401

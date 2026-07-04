@@ -23,9 +23,14 @@ module MCPforSketchUp
         # mm → inches for SketchUp internal API
         pos_mm  = V.optional_coords3(params, "position") || [0, 0, 0]
         dims_mm = V.require_dimensions3(params, "dimensions")
+        validate_min_dimensions!(dims_mm, type)
         pos  = pos_mm.map  { |v| U.mm_to_inch(v) }
         dims = dims_mm.map { |v| U.mm_to_inch(v) }
         segments = V.optional_int_positive(params, "segments", default_segments_for(type))
+        # T-54: опциональное имя группы. Без него все созданные группы
+        # безымянны — find_components(name=...) бессилен, а модель не может
+        # назвать то, что строит, иначе как через eval_ruby.
+        name = params.key?("name") ? V.require_string(params, "name") : nil
 
         model = E.active_model!
         model.start_operation("Create Component (#{type.capitalize})", true)
@@ -36,6 +41,7 @@ module MCPforSketchUp
                   when "cone"     then build_cone(model.active_entities, pos, dims, segments)
                   when "sphere"   then build_sphere(model.active_entities, pos, dims, segments)
                   end
+          group.name = name if name
           model.commit_operation
           describe_entity(group)
         rescue StandardError
@@ -45,16 +51,24 @@ module MCPforSketchUp
       end
 
       # Returns {id, name, type, bbox_mm} so Claude can re-locate after destructive ops.
+      # bbox_mm == nil, если у entity пустые bounds (T-55: инвертированный
+      # сентинел SketchUp ±1e30" не должен утекать как ±2.54e31 мм).
       def self.describe_entity(entity)
         bb = entity.bounds
+        bbox_mm =
+          if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb)
+            nil
+          else
+            {
+              "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
+              "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
+            }
+          end
         {
           "id"   => entity.entityID,
           "name" => entity.name,
           "type" => entity.is_a?(Sketchup::Group) ? "group" : "component",
-          "bbox_mm" => {
-            "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
-            "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
-          }
+          "bbox_mm" => bbox_mm
         }
       end
 
@@ -77,28 +91,46 @@ module MCPforSketchUp
       # selected instance (its transformation matrix), not the underlying
       # ComponentDefinition. Other instances of the same definition are
       # unchanged. To modify the definition, use eval_ruby.
+      #
+      # `position` — АБСОЛЮТНАЯ цель (T-04, решение 2026-07-02): entity
+      # переносится так, чтобы минимальный угол его bbox оказался ровно в
+      # заданной точке (тот же якорь, что у create_component.position).
+      # rotation/scale остаются относительными, вокруг центра bbox.
+      # Порядок применения: rotation → scale → position (ПОСЛЕДНЕЙ, и он
+      # намеренно не совпадает с порядком аргументов) — дельта берётся от
+      # пост-трансформационного bounds.min, итоговый bbox-min равен цели
+      # даже в комбинированных вызовах (ревью iter-1, CRIT-5).
       def self.transform_component(params)
         id = V.require_id(params)
         # position/scale in mm (rotation in degrees — not a size)
         position_mm = V.optional_coords3(params, "position")
         rotation    = V.optional_coords3(params, "rotation")
         scale       = V.optional_coords3(params, "scale")
+        # T-17: |s| ≤ 1e-9 — сингулярная матрица, необратимая порча геометрии;
+        # на SU2026 Transformation#inverse на ней кидает ArgumentError.
+        # Fail-closed до старта operation.
+        scale&.each_with_index do |s, i|
+          next if s.abs > 1e-9
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "field scale[#{i}] must be non-zero (|s| > 1e-9), got #{s}")
+        end
         position    = position_mm&.map { |v| U.mm_to_inch(v) }
 
         model = E.active_model!
         model.start_operation("Transform Component", true)
         begin
           entity = E.find!(id)
-          if position
-            entity.transform!(Geom::Transformation.translation(
-              Geom::Point3d.new(position[0], position[1], position[2])))
-          end
           if rotation
             apply_rotation(entity, rotation)
           end
           if scale
             center = entity.bounds.center
             entity.transform!(Geom::Transformation.scaling(center, scale[0], scale[1], scale[2]))
+          end
+          if position
+            delta = position_delta(entity.bounds.min, position)
+            entity.transform!(Geom::Transformation.translation(
+              Geom::Point3d.new(delta[0], delta[1], delta[2])))
           end
           model.commit_operation
           describe_entity(entity)
@@ -110,6 +142,14 @@ module MCPforSketchUp
 
       # ----- private builders ----------------------------------------------
 
+      # Pure math (юнит-тестится без SketchUp): вектор переноса, доставляющий
+      # bbox-min `current_min` в точку `target`. Оба аргумента — в дюймах.
+      def self.position_delta(current_min, target)
+        [target[0] - current_min.x,
+         target[1] - current_min.y,
+         target[2] - current_min.z]
+      end
+
       def self.default_segments_for(type)
         case type
         when "cylinder", "cone" then 24
@@ -118,11 +158,46 @@ module MCPforSketchUp
         end
       end
 
+      # MR-2 (финальное ревью батча 1) + P-13/C-13 (ревью батча 2): floor
+      # per-type. Box вырождается только у merge-tolerance SketchUp
+      # (0.001" = 0.0254 мм) — floor 0.1 мм (4× запас) пропускает
+      # легитимный шпон/лист 0.5–0.8 мм. Криволинейные (sphere/cylinder/
+      # cone) вырождаются раньше из-за тесселяции — floor 1.0 мм; полюса
+      # сфер дополнительно проверяет polar-chord формула в build_sphere.
+      MIN_DIMENSION_MM_BOX    = 0.1
+      MIN_DIMENSION_MM_CURVED = 1.0
+      MIN_POLAR_CHORD_MM = 0.04  # ~1.6 × merge-tolerance (0.0254 мм) — P-13
+
+      # Проверяются только индексы, которые билдер реально потребляет
+      # (контракт tools.py): cube — [x,y,z]; cylinder/cone — [0]=diameter,
+      # [2]=height ([1] игнорируется); sphere — только [0]=diameter.
+      # Игнорируемые индексы floor'ом не режем: [10, 0.5, 10] для цилиндра
+      # валиден по докстрингу.
+      CONSUMED_DIM_INDICES = {
+        "cube"     => [0, 1, 2],
+        "cylinder" => [0, 2],
+        "cone"     => [0, 2],
+        "sphere"   => [0],
+      }.freeze
+
+      def self.validate_min_dimensions!(dims_mm, type)
+        floor = type == "cube" ? MIN_DIMENSION_MM_BOX : MIN_DIMENSION_MM_CURVED
+        CONSUMED_DIM_INDICES.fetch(type, [0, 1, 2]).each do |i|
+          d = dims_mm[i]
+          next if d >= floor
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "dimensions[#{i}] must be >= #{floor} mm for type #{type}, got #{d} — " \
+            "sub-millimeter geometry collapses into SketchUp's merge tolerance")
+        end
+        dims_mm
+      end
+
       def self.build_cube(entities, pos, dims)
         G.make_box(entities, pos[0], pos[1], pos[2], dims[0], dims[1], dims[2])
       end
 
       def self.build_cylinder(entities, pos, dims, segments)
+        raise MCPforSketchUp::Core::StructuredError.new(-32602, "segments must be >= 3 for cylinders") if segments < 3
         radius = dims[0] / 2.0
         height = dims[2]
         center = [pos[0] + radius, pos[1] + radius, pos[2]]
@@ -134,6 +209,7 @@ module MCPforSketchUp
       end
 
       def self.build_cone(entities, pos, dims, segments)
+        raise MCPforSketchUp::Core::StructuredError.new(-32602, "segments must be >= 3 for cones") if segments < 3
         radius = dims[0] / 2.0
         height = dims[2]
         center = [pos[0] + radius, pos[1] + radius, pos[2]]
@@ -149,7 +225,21 @@ module MCPforSketchUp
       end
 
       def self.build_sphere(entities, pos, dims, segments)
+        # segments 1-2 молча дают вырожденную геометрию (нет ни одного
+        # полноценного кольца) — отклоняем как invalid params.
+        raise MCPforSketchUp::Core::StructuredError.new(-32602, "segments must be >= 3 for spheres") if segments < 3
         radius = dims[0] / 2.0
+        # MR-2: самое короткое ребро UV-сферы — хорда первого полярного
+        # кольца: 2·r·sin²(π/segments). Тоньше MIN_POLAR_CHORD_MM (~1.6×
+        # merge-tolerance) — add_face молча склеит вершины, оболочка выйдет
+        # дырявой (floor'ом это не ловится: d=10 мм при segments=96 вырожден).
+        polar_chord_mm = 2.0 * U.inch_to_mm(radius) * Math.sin(Math::PI / segments)**2
+        if polar_chord_mm < MIN_POLAR_CHORD_MM
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "sphere too small for #{segments} segments: polar-ring chord " \
+            "#{polar_chord_mm.round(4)} mm < #{MIN_POLAR_CHORD_MM} mm — " \
+            "reduce segments or enlarge the sphere")
+        end
         center = [pos[0] + radius, pos[1] + radius, pos[2] + radius]
         group = entities.add_group
         # UV-sphere: latitude × longitude grid
@@ -172,8 +262,20 @@ module MCPforSketchUp
             i3 = i1 + segments + 1
             i4 = i3 + 1
             begin
-              group.entities.add_face(points[i1], points[i2], points[i4], points[i3])
+              if lat_i == 0
+                # Северная полярная полоса: p1 и p2 — обе копии полюса
+                # (sin 0 = 0) ⇒ квад вырожден. Явный треугольник
+                # полюс → две точки первого кольца. Deep-research T-02.
+                group.entities.add_face(points[i1], points[i4], points[i3])
+              elsif lat_i == segments - 1
+                # Южная полоса: p3/p4 — копии южного полюса (sin π ≈ 1e-16).
+                group.entities.add_face(points[i1], points[i2], points[i4])
+              else
+                group.entities.add_face(points[i1], points[i2], points[i4], points[i3])
+              end
             rescue StandardError => e
+              # Последний рубеж: не должен срабатывать для сфер — полюсные
+              # вырождения обработаны выше явными треугольниками.
               MCPforSketchUp::Core::Logger.log("DEBUG",
                 "build_sphere: skipped degenerate face at pole: #{e.class}: #{e.message}")
             end

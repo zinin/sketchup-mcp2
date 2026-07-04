@@ -1,0 +1,44 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ruby:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          # SketchUp 2024/2025 несут Ruby 3.2.x; для SU2026 то же семейство.
+          ruby-version: '3.2'
+      # test_package_default_variant.rb требует rubyzip (не stdlib);
+      # Gemfile в проекте нет намеренно (см. deep-research T-20).
+      # Пин мажора: локально верифицирован rubyzip 3.x; неожиданный мажорный
+      # релиз гема не должен красить CI без отношения к коду проекта.
+      - run: gem install rubyzip -v '~> 3'
+      - run: ruby test/run_all.rb
+
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 — заявленный requires-python floor: CI обязан тестировать минимум.
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      # --frozen: lock обязан соответствовать pyproject (задача 1 его регенерирует);
+      # рассинхрон = красный CI, а не тихая пересборка резолвером.
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest tests/ -q

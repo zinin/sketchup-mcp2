@@ -376,7 +376,7 @@ class TestServerMultiClient < Minitest::Test
       "deadline should be set after first append"
 
     # Push the deadline into the past — the next flush must close the client.
-    state.pending_write_deadline_at = Time.now - 1.0
+    state.pending_write_deadline_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1.0
     srv.send(:on_timer_tick)
 
     assert sock.closed?, "client should be closed after the deadline elapses"
@@ -418,8 +418,9 @@ class TestServerMultiClient < Minitest::Test
 
     cap     = MCPforSketchUp::Core::Server::PENDING_WRITE_MAX_BYTES
     near    = "x" * (cap - 64)   # just below the cap; can't trigger overflow alone
+    state.append_pending_write("h" * 8)   # малый head (T-13.3) — near ниже становится ХВОСТОМ
     state.append_pending_write(near)
-    state.pending_write_deadline_at = Time.now + 60   # don't deadline during test
+    state.pending_write_deadline_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60   # don't deadline during test
 
     # Crafting an overflow: ask write_response to encode a typical small
     # response — the projected buffer (~near + frame_bytes) overshoots cap.
@@ -476,7 +477,7 @@ class TestServerMultiClient < Minitest::Test
     # Buffer enough that an 8-byte/call partial write can't drain it in one go.
     state.append_pending_write("z" * 4096)
     # Set a near-future deadline (not yet expired) we can prove gets extended.
-    original_deadline = Time.now + 0.5
+    original_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
     state.pending_write_deadline_at = original_deadline
     # Each flush call writes 8 bytes then signals WaitWritable (calls: 1).
     sock.stub_partial_write(max_bytes_per_call: 8, calls: 1)
@@ -487,5 +488,413 @@ class TestServerMultiClient < Minitest::Test
     refute state.pending_write_empty?, "buffer should still hold the remainder"
     assert_operator state.pending_write_deadline_at, :>, original_deadline,
       "the deadline must be extended after forward progress (idle-timeout semantics)"
+  end
+
+  # ---------- T-13.1: error-envelope переживает занятый send-буфер ----------
+
+  def oversize_header
+    [MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 1].pack("N")
+  end
+
+  def test_framing_error_envelope_survives_busy_write_buffer
+    # Клиент: hello + framing-ошибка (oversize header), при этом первый
+    # write_nonblock упирается в WaitWritable. Раньше close_client следовал
+    # сразу за send_transport_error — недоставленный envelope умирал вместе
+    # с сокетом. Теперь: чтение глушится, закрытие — ПОСЛЕ полного дренажа
+    # (механизм close_after_response).
+    #
+    # NB: hello успел декодироваться ДО ошибочного заголовка, но его ответ
+    # НЕ отправляется — process_frame_queue скипает фреймы клиента с
+    # close_after_response (стрим рассинхронизирован). Клиент получает
+    # ровно один фрейм: error-envelope.
+    sock = FakeSocket.new(read_chunks: [hello_frame, oversize_header])
+    sock.stub_write_pending(times: 1)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    refute sock.closed?,
+      "tick 1: клиент с недоставленным error-envelope не должен быть закрыт"
+
+    srv.send(:on_timer_tick)   # tick 2: буфер дренируется → закрытие
+    assert sock.closed?, "tick 2: после доставки envelope клиент закрывается"
+    frames = all_frames(sock.written)
+    assert_equal 1, frames.size, "ровно один фрейм — error-envelope"
+    assert_equal(-32600, frames[0]["error"]["code"])
+    assert_nil frames[0]["id"]
+  end
+
+  def test_parse_error_envelope_survives_busy_write_buffer
+    # Здесь оба фрейма ДЕКОДИРУЮТСЯ (framing цел), hello диспатчится до
+    # ошибки → его ответ тоже в буфере. Бюджет WaitWritable = 2: первый
+    # флаш hello-ответа и флаш error-envelope оба упираются в занятый
+    # буфер, tick 2 дренирует всё разом.
+    garbage = "not json at all"
+    bad_frame = [garbage.bytesize].pack("N") + garbage
+    sock = FakeSocket.new(read_chunks: [hello_frame, bad_frame])
+    sock.stub_write_pending(times: 2)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    refute sock.closed?, "tick 1: envelope ещё в буфере — не закрывать"
+    srv.send(:on_timer_tick)
+    assert sock.closed?
+    frames = all_frames(sock.written)
+    assert_equal 2, frames.size, "hello-ответ + parse-error envelope"
+    assert_equal 0, frames[0]["id"]
+    assert_equal(-32700, frames.last["error"]["code"])
+  end
+
+  # ---------- T-13.2: кап диспатча/тик + backpressure ----------
+
+  def gv_frame(id)
+    fr("jsonrpc" => "2.0", "method" => "tools/call",
+       "params" => { "name" => "get_version", "arguments" => {} },
+       "id" => id)
+  end
+
+  def test_dispatch_capped_per_tick_preserving_fifo
+    # 1 hello + 60 запросов одним chunk'ом: раньше все 61 диспатчились за
+    # один тик (флуд мелких фреймов морозит UI SketchUp). Теперь — не больше
+    # DISPATCH_MAX_PER_TICK за тик, остаток уходит на следующий, FIFO цел.
+    payload = hello_frame + (1..60).map { |i| gv_frame(i) }.join
+    sock = FakeSocket.new(read_chunks: [payload])
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+
+    cap = MCPforSketchUp::Core::Server::DISPATCH_MAX_PER_TICK
+    tick1 = all_frames(sock.written)
+    assert_equal cap, tick1.size,
+      "tick 1 обязан диспатчить ровно DISPATCH_MAX_PER_TICK (#{cap}) фреймов"
+
+    srv.send(:on_timer_tick)
+    tick2 = all_frames(sock.written)
+    assert_equal 61, tick2.size, "tick 2 дорабатывает остаток"
+    assert_equal [0] + (1..60).to_a, tick2.map { |f| f["id"] }, "FIFO сохранён"
+  end
+
+  def test_read_backpressure_when_frame_queue_saturated
+    # Очередь фреймов забита (>= FRAME_QUEUE_SOFT_MAX) — новые чтения из
+    # сокетов откладываются (kernel-буфер удержит данные, TCP даст естественный
+    # backpressure). Раньше чтение продолжалось без ограничений.
+    sock = FakeSocket.new(read_chunks: [hello_frame])
+    fs = FakeServer.new([sock])
+    srv = MCPforSketchUp::Core::Server.new
+    srv.instance_variable_set(:@server, fs)
+    srv.instance_variable_set(:@running, true)
+
+    dead = FakeSocket.new
+    dead.close
+    dummy = MCPforSketchUp::Core::ClientState.new(999, dead)
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    srv.instance_variable_set(:@frame_queue, Array.new(soft_max) { [dummy, "{}"] })
+
+    srv.send(:on_timer_tick)
+    assert_equal "", sock.written.b,
+      "tick 1: при забитой очереди клиента читать нельзя — hello не должен быть обработан"
+
+    srv.send(:on_timer_tick)   # очередь освободилась (закрытые dummy-фреймы скипнуты)
+    frames = all_frames(sock.written)
+    assert_equal 1, frames.size, "tick 2: hello обработан после разгрузки очереди"
+    assert_equal 0, frames[0]["id"]
+  end
+
+  def test_flood_stops_reading_mid_drain_once_queue_saturated
+    # P-06 (ревью): guard только на ВХОДЕ в фазу чтения недостаточен — один
+    # клиент за один тик мог накачать очередь сильно выше SOFT_MAX. Чтение
+    # обязано останавливаться и ПОСРЕДИ дренажа: второй chunk не читается,
+    # когда первый уже насытил очередь.
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    flood = (1..(soft_max + 50)).map { |i| gv_frame(i) }.join
+    marker = gv_frame(99_999)
+    sock = FakeSocket.new(read_chunks: [hello_frame + flood, marker])
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    queue_ids = srv.instance_variable_get(:@frame_queue)
+                   .map { |_st, body| JSON.parse(body)["id"] }
+    answered_ids = all_frames(sock.written).map { |f| f["id"] }
+    refute_includes queue_ids + answered_ids, 99_999,
+      "marker-фрейм из второго chunk не должен быть прочитан: очередь насыщена первым"
+  end
+
+  # ---------- T-13.3: overflow-guard считает хвост, не head-фрейм ----------
+
+  # P-15 (решение ревью): временная подмена константы через remove_const/
+  # const_set принята ОСОЗНАННО — ensure выполняется и при упавшем ассерте
+  # (Minitest::Assertion — обычное исключение), пара remove+set не генерирует
+  # warning; альтернатива (аксессор в проде ради теста) отклонена.
+  def with_pending_write_cap(bytes)
+    srv_class = MCPforSketchUp::Core::Server
+    original = srv_class::PENDING_WRITE_MAX_BYTES
+    srv_class.send(:remove_const, :PENDING_WRITE_MAX_BYTES)
+    srv_class.const_set(:PENDING_WRITE_MAX_BYTES, bytes)
+    yield
+  ensure
+    srv_class.send(:remove_const, :PENDING_WRITE_MAX_BYTES)
+    srv_class.const_set(:PENDING_WRITE_MAX_BYTES, original)
+  end
+
+  def response_of_size(id, target_bytes)
+    pad = "x" * target_bytes
+    { "jsonrpc" => "2.0", "result" => { "pad" => pad }, "id" => id }
+  end
+
+  def test_overflow_guard_ignores_draining_head_frame
+    with_pending_write_cap(400) do
+      sock = FakeSocket.new
+      # Head-фрейм уйдёт в буфер целиком; дренаж — по 10 байт за вызов,
+      # бюджет 1 вызов на тик (дальше WaitWritable) → head «дренируется» долго.
+      sock.stub_partial_write(max_bytes_per_call: 10, calls: 1)
+      state = MCPforSketchUp::Core::ClientState.new(0, sock)
+      srv = MCPforSketchUp::Core::Server.new
+      srv.instance_variable_get(:@clients)[sock] = state
+
+      # 1) Большой head (≈600 байт > cap 400) допущен на ПУСТОЙ буфер.
+      srv.send(:write_response, state, response_of_size(1, 550))
+      refute sock.closed?, "head-фрейм на пустой буфер допускается всегда"
+
+      # 2) Малый фрейм при недодренированном head: раньше backlog>0 и
+      #    projected>cap закрывали клиента. Теперь хвост (без head) = 0+small.
+      srv.send(:write_response, state, response_of_size(2, 50))
+      refute sock.closed?,
+        "малый фрейм за большим head не должен приговаривать клиента (T-13.3)"
+
+      # 3) Патологическое накопление ХВОСТА за head'ом всё ещё режется капом.
+      srv.send(:write_response, state, response_of_size(3, 550))
+      assert sock.closed?, "хвост сверх капа — закрытие остаётся в силе"
+    end
+  end
+
+  def test_client_state_tracks_head_frame_remaining
+    sock = FakeSocket.new
+    state = MCPforSketchUp::Core::ClientState.new(0, sock)
+    state.append_pending_write("A" * 100)     # head на пустой буфер
+    assert_equal 100, state.head_frame_remaining
+    state.append_pending_write("B" * 40)      # хвост head не трогает
+    assert_equal 100, state.head_frame_remaining
+    state.consume_pending_write(60)
+    assert_equal 40, state.head_frame_remaining
+    state.consume_pending_write(60)           # head дожат (40) + 20 из хвоста
+    assert_equal 0, state.head_frame_remaining
+  end
+
+  # ---------- T-13.4: write-deadline на монотонных часах ----------
+
+  def test_write_deadline_uses_monotonic_clock
+    # Wall-clock Time.now прыгает (NTP-коррекция, перевод часов) — idle-дедлайн
+    # на нём ложно закрывает/вечно держит клиента. Монотонные секунды — Float.
+    sock = FakeSocket.new
+    sock.stub_write_pending(times: 1)
+    state = MCPforSketchUp::Core::ClientState.new(0, sock)
+    srv = MCPforSketchUp::Core::Server.new
+    srv.instance_variable_get(:@clients)[sock] = state
+    srv.send(:write_response, state, response_of_size(1, 10))
+    assert_kind_of Float, state.pending_write_deadline_at,
+      "deadline должен быть монотонным Float, а не Time"
+  end
+
+  # ---------- T-13.5: pre-handshake дедлайн ----------
+
+  def test_silent_pre_handshake_client_closed_after_deadline
+    # 64 молчаливых коннекта (без hello) навсегда исчерпывали MAX_CLIENTS —
+    # DoS на exposed-bind. Не завершившие handshake за PRE_HANDSHAKE_DEADLINE_S
+    # закрываются.
+    sock = FakeSocket.new   # молчит: ни hello, ни байта
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    state = srv.instance_variable_get(:@clients)[sock]
+    refute_nil state, "клиент зарегистрирован"
+    refute sock.closed?, "свежий клиент жив"
+
+    # Состариваем подключение за дедлайн.
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)
+    assert sock.closed?, "молчаливый pre-handshake клиент закрыт по дедлайну"
+    refute srv.instance_variable_get(:@clients).key?(sock)
+  end
+
+  def test_handshaked_client_not_touched_by_pre_handshake_deadline
+    sock = FakeSocket.new(read_chunks: [hello_frame])
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    state = srv.instance_variable_get(:@clients)[sock]
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)
+    refute sock.closed?, "handshake завершён — дедлайн не применяется"
+  end
+
+  def test_pre_handshake_sweep_spares_client_draining_reject_envelope
+    # P-07 (ревью): клиент с framing-error-envelope в pending-write
+    # (close_after_response, T-13.1) закрывается механизмом close-after-drain
+    # со СВОИМ дедлайном (WRITE_DEADLINE_S) — pre-handshake свип не должен
+    # убивать его раньше доставки envelope.
+    sock = FakeSocket.new(read_chunks: [oversize_header])
+    sock.stub_write_pending(times: 1)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)   # framing-ошибка → envelope в буфере, close_after_response
+    state = srv.instance_variable_get(:@clients)[sock]
+    refute_nil state, "клиент ещё жив: envelope не доставлен"
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)   # свип обязан пропустить; дренаж доставит envelope
+    frames = all_frames(sock.written)
+    assert_equal 1, frames.size,
+      "error-envelope обязан быть доставлен, а не срезан pre-handshake свипом"
+    assert_equal(-32600, frames[0]["error"]["code"])
+  end
+
+  def test_pre_handshake_sweep_spares_client_with_queued_hello
+    # Финальное ревью (композиция T-13.2×T-13.5): hello новичка уже
+    # декодирован в @frame_queue, но ещё не диспатчен — глобальный кап
+    # 50/тик разгребает чужой флуд. Sweep не должен закрывать такого
+    # клиента как «молчуна»: без queued_frames-проверки непрерывный флуд
+    # одного handshaked-клиента циклически убивал бы все новые подключения
+    # по pre-handshake дедлайну (handshaked ставится лишь при диспатче).
+    flood = (1..60).map { |i| gv_frame(i) }.join
+    flooder  = FakeSocket.new(read_chunks: [hello_frame + flood])
+    newcomer = FakeSocket.new(read_chunks: [hello_frame])
+    fs = FakeServer.new([flooder, newcomer])
+    srv = run_one_tick(fs)
+    # Тик 1: в очереди 62 фрейма, диспатчнуто 50 — hello новичка (62-й) ждёт.
+    state = srv.instance_variable_get(:@clients)[newcomer]
+    refute state.handshaked, "precondition: hello новичка ещё не диспатчен"
+    assert_operator state.queued_frames, :>, 0,
+      "precondition: hello новичка декодирован в очередь"
+
+    # Состариваем новичка за дедлайн — без фикса sweep закрыл бы его.
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)
+    refute newcomer.closed?,
+      "клиент с queued hello — не «молчун»; sweep обязан его пропустить"
+    assert state.handshaked, "hello дошёл до диспатча на следующем тике"
+    reply = all_frames(newcomer.written).first
+    assert_equal 0, reply["id"]
+    assert reply.key?("result"), "handshake-ответ доставлен: #{reply.inspect}"
+  end
+
+  def test_pre_handshake_sweep_spares_starved_readable_newcomer_under_saturation
+    # PR #3 ревью (Codex P2): при очереди ≥ FRAME_QUEUE_SOFT_MAX чтение
+    # глобально приостановлено — hello новичка лежит НЕпрочитанным в
+    # kernel-буфере, queued_frames == 0 (экранирование по queued_frames не
+    # срабатывает: оно требует уже ДЕКОДИРОВАННОГО hello). Sweep обязан
+    # отличать заморенного backpressure'ом (сокет читаем) от молчуна и
+    # щадить его до разгрузки очереди. Хвост теста дополнительно пинит
+    # порядок «sweep ПОСЛЕ drain»: без него новичок гиб ровно на тике
+    # возобновления чтения — решение «закрыть» принималось до самого
+    # чтения, которое декодировало бы его hello.
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    cap      = MCPforSketchUp::Core::Server::DISPATCH_MAX_PER_TICK
+    flood = (1..(soft_max + 2 * cap + 5)).map { |i| gv_frame(i) }.join
+    flooder  = FakeSocket.new(read_chunks: [hello_frame + flood])
+    newcomer = FakeSocket.new   # hello придёт ПОСЛЕ тика 1
+    fs = FakeServer.new([flooder, newcomer])
+    srv = run_one_tick(fs)
+    # Тик 1: flooder декодирован целиком одним chunk'ом (362 фрейма),
+    # диспатчнуто 50 — на входе тиков 2–3 очередь ≥ soft_max: чтений нет.
+    newcomer.push_read(hello_frame)   # hello теперь ЖДЁТ в kernel-буфере
+    state = srv.instance_variable_get(:@clients)[newcomer]
+    assert_equal 0, state.queued_frames,
+      "precondition: hello новичка НЕ декодирован (чтение приостановлено)"
+
+    # Состариваем новичка за дедлайн — без фикса sweep закрыл бы его.
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)   # тик 2: очередь насыщена, чтения нет
+    refute newcomer.closed?,
+      "сокет с непрочитанным hello — заморен backpressure'ом, не «молчун»"
+    refute state.handshaked, "precondition: hello всё ещё не прочитан"
+
+    # Дожимаем флуд: новичок обязан дожить до возобновления чтения,
+    # прочитаться и хендшейкнуться.
+    12.times do
+      break if state.handshaked
+      srv.send(:on_timer_tick)
+    end
+    refute newcomer.closed?, "новичок пережил разгрузку очереди"
+    assert state.handshaked, "hello дошёл до диспатча после разгрузки"
+    reply = all_frames(newcomer.written).first
+    assert_equal 0, reply["id"]
+    assert reply.key?("result"), "handshake-ответ доставлен: #{reply.inspect}"
+  end
+
+  def test_pre_handshake_sweep_still_closes_silent_client_under_saturation
+    # Обратная сторона пробы читаемости: настоящий «молчун» (в сокете НЕТ
+    # байтов) не получает индульгенцию от насыщенной очереди — дедлайн
+    # T-13.5 действует и под флудом, иначе 64 молчаливых коннекта снова
+    # пинили бы слоты MAX_CLIENTS на всё время атаки.
+    soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
+    flood = (1..(soft_max + 55)).map { |i| gv_frame(i) }.join
+    flooder = FakeSocket.new(read_chunks: [hello_frame + flood])
+    silent  = FakeSocket.new   # ни hello, ни байта
+    fs = FakeServer.new([flooder, silent])
+    srv = run_one_tick(fs)
+    state = srv.instance_variable_get(:@clients)[silent]
+    aged = state.connected_at -
+           MCPforSketchUp::Core::Server::PRE_HANDSHAKE_DEADLINE_S - 1.0
+    state.instance_variable_set(:@connected_at, aged)
+    srv.send(:on_timer_tick)   # тик 2: очередь ≥ soft_max, но сокет пуст
+    assert silent.closed?, "молчун закрывается по дедлайну и при насыщении"
+    refute flooder.closed?, "flooder (handshaked) не задет свипом"
+  end
+
+  # ---------- T-23.1: глобальный FIFO — прямой spy на Dispatch.handle ----------
+
+  def test_global_dispatch_order_is_decode_arrival_fifo
+    # Существующие FIFO-тесты смотрят на per-socket ответы — интерливинг
+    # МЕЖДУ клиентами они не поймают. Spy пишет глобальную последовательность
+    # request-id: клиент A дренируется целиком раньше B (accept-order), внутри
+    # клиента — decode-order. Ожидание: [1, 2, 101, 102].
+    dispatch_mod = MCPforSketchUp::Handlers::Dispatch
+    original = dispatch_mod.method(:handle)
+    seen_ids = []
+    dispatch_mod.define_singleton_method(:handle) do |request|
+      seen_ids << request["id"] if request.is_a?(Hash) && request["method"] == "tools/call"
+      original.call(request)
+    end
+    begin
+      a = FakeSocket.new(read_chunks: [hello_frame + gv_frame(1) + gv_frame(2)])
+      b = FakeSocket.new(read_chunks: [hello_frame + gv_frame(101) + gv_frame(102)])
+      fs = FakeServer.new([a, b])
+      run_one_tick(fs)
+      assert_equal [1, 2, 101, 102], seen_ids,
+        "FIFO по (accept-order, decode-order) нарушен"
+    ensure
+      dispatch_mod.define_singleton_method(:handle, original)
+    end
+  end
+
+  # ---------- T-23.2: READ_MAX_ITERATIONS ----------
+
+  class CountingSocket < FakeSocket
+    attr_reader :reads
+    def initialize(*args, **kwargs)
+      super
+      @reads = 0
+    end
+    def read_nonblock(n)
+      @reads += 1
+      super
+    end
+  end
+
+  def test_reads_per_client_capped_per_tick
+    cap = MCPforSketchUp::Core::Server::READ_MAX_ITERATIONS
+    # cap+5 чанков по одному мелкому фрейму: за тик — ровно cap чтений,
+    # остаток дочитывается следующим тиком (кап держит UI отзывчивым).
+    chunks = [hello_frame] + (1..(cap + 4)).map { |i| gv_frame(i) }
+    sock = CountingSocket.new(read_chunks: chunks)
+    fs = FakeServer.new([sock])
+    srv = run_one_tick(fs)
+    assert_equal cap, sock.reads,
+      "за тик допустимо ровно READ_MAX_ITERATIONS чтений"
+    srv.send(:on_timer_tick)
+    assert_operator sock.reads, :>, cap, "следующий тик дочитывает остаток"
   end
 end

@@ -19,9 +19,9 @@ module MCPforSketchUp
         width      = U.mm_to_inch(V.optional_positive(params, "width",  50.0))
         height     = U.mm_to_inch(V.optional_positive(params, "height", 25.0))
         depth      = U.mm_to_inch(V.optional_positive(params, "depth",  10.0))
-        ox = U.mm_to_inch((params["offset_x"] || 0.0).to_f)
-        oy = U.mm_to_inch((params["offset_y"] || 0.0).to_f)
-        oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
+        ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
+        oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
+        oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
 
         model = E.active_model!
         model.start_operation("Mortise and Tenon", true)
@@ -61,10 +61,16 @@ module MCPforSketchUp
         height   = U.mm_to_inch(V.optional_positive(params, "height", 50.0))
         depth    = U.mm_to_inch(V.optional_positive(params, "depth",  15.0))
         angle    = V.optional_positive(params, "angle", 15.0)  # degrees, не конвертим
+        # T-17: tan(angle) при angle→90° взрывается — «ласточкины хвосты»
+        # вырождаются в мусорную геометрию. Практичный предел — 60°.
+        if angle > 60.0
+          raise Core::StructuredError.new(-32602,
+            "field angle must be in (0, 60] degrees, got #{angle}")
+        end
         num_tails = V.optional_int_positive(params, "num_tails", 3)
-        ox = U.mm_to_inch((params["offset_x"] || 0.0).to_f)
-        oy = U.mm_to_inch((params["offset_y"] || 0.0).to_f)
-        oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
+        ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
+        oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
+        oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
 
         model = E.active_model!
         model.start_operation("Dovetail Joint", true)
@@ -100,9 +106,9 @@ module MCPforSketchUp
         height = U.mm_to_inch(V.optional_positive(params, "height", 25.0))
         depth  = U.mm_to_inch(V.optional_positive(params, "depth",  10.0))
         num_fingers = V.optional_int_positive(params, "num_fingers", 5)
-        ox = U.mm_to_inch((params["offset_x"] || 0.0).to_f)
-        oy = U.mm_to_inch((params["offset_y"] || 0.0).to_f)
-        oz = U.mm_to_inch((params["offset_z"] || 0.0).to_f)
+        ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
+        oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
+        oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
 
         model = E.active_model!
         model.start_operation("Finger Joint", true)
@@ -165,6 +171,14 @@ module MCPforSketchUp
       end
 
       def self.closest_face(vector)
+        # Совпавшие центры досок дают нулевой вектор: normalize! на нём либо
+        # кидает, либо молча оставляет мусор, и «ближайшая грань» выбирается
+        # произвольно. Отклоняем до нормализации.
+        if vector.length < 1e-9
+          raise Core::StructuredError.new(-32602,
+            "cannot infer joint direction: board centers coincide — " \
+            "separate the boards or reposition them")
+        end
         v = vector.clone
         v.normalize!
         ax, ay, az = v.x.abs, v.y.abs, v.z.abs
@@ -223,7 +237,7 @@ module MCPforSketchUp
         # `prot.transform!` accumulates T_inv into prot.transformation but does
         # NOT rewrite the geometry inside prot.definition. So we read back
         # prot.transformation (= T_inv) and pass it to add_instance.
-        entities = E.entity_collection(board)
+        entities = E.mutable_entity_collection(board)
         origin   = face_origin(face_dir, board.bounds, w, h, ox, oy, oz)
         prot     = MCPforSketchUp::Helpers::Entities.active_model!.active_entities.add_group
         begin
@@ -268,88 +282,117 @@ module MCPforSketchUp
         end
       end
 
+      # Строит геометрию в world-frame scratch-группе (координаты — от
+      # board.bounds, т.е. РОДИТЕЛЬСКИЙ фрейм) и подсаживает её в доску
+      # instance'ом с компенсацией board.transformation.inverse — геометрия
+      # оказывается там, где была построена, даже если доску двигали/вращали
+      # ПОСЛЕ создания. Паттерн и математика — см. подробный комментарий в
+      # place_tenon (T_inst = T_board⁻¹ ⇒ world = parent_t · geom).
+      # Deep-research T-03: старый путь рисовал parent-frame координаты прямо
+      # в board-ЛОКАЛЬНУЮ коллекцию — двойное смещение на |T_board|.
+      # Паттерн зеркалит place_tenon: меняешь один — синхронизируй второй.
+      # Side effect (намеренный): резьба оказывается внутри вложенного
+      # instance (board → instance → groups) — структура глубже, семантика та же.
+      def self.add_parent_frame_prototype(board)
+        prot = MCPforSketchUp::Helpers::Entities.active_model!.active_entities.add_group
+        begin
+          yield prot
+          prot.transform!(board.transformation.inverse)
+          if prot.valid?
+            E.mutable_entity_collection(board).add_instance(prot.definition, prot.transformation)
+          end
+        ensure
+          # NB: если add_instance бросит, erase! уничтожит и построенный
+          # прототип — внутри start_operation-транзакции это приемлемо
+          # (abort_operation откатит всё целиком).
+          prot.erase! if prot && prot.valid?
+        end
+      end
+
       def self.carve_tails(board, width, height, depth, angle_deg, num_tails, ox, oy, oz)
-        entities = E.entity_collection(board)
         c = board.bounds.center
         cx, cy, cz = c.x + ox, c.y + oy, c.z + oz
         tail_w = width / (2 * num_tails - 1)
         angle  = angle_deg * Math::PI / 180.0
         bottom_w = tail_w + 2 * depth * Math.tan(angle)
 
-        group = entities.add_group
-        num_tails.times do |i|
-          tx = cx - width/2 + tail_w * 2 * i
-          face = group.entities.add_face(
-            [tx - tail_w/2,    cy - height/2, cz],
-            [tx + tail_w/2,    cy - height/2, cz],
-            [tx + bottom_w/2,  cy - height/2, cz - depth],
-            [tx - bottom_w/2,  cy - height/2, cz - depth])
-          face.pushpull(height)
+        add_parent_frame_prototype(board) do |prot|
+          num_tails.times do |i|
+            tx = cx - width/2 + tail_w * 2 * i
+            face = prot.entities.add_face(
+              [tx - tail_w/2,    cy - height/2, cz],
+              [tx + tail_w/2,    cy - height/2, cz],
+              [tx + bottom_w/2,  cy - height/2, cz - depth],
+              [tx - bottom_w/2,  cy - height/2, cz - depth])
+            face.pushpull(height)
+          end
         end
       end
 
       def self.carve_pins(board, width, height, depth, angle_deg, num_tails, ox, oy, oz)
-        entities = E.entity_collection(board)
         c = board.bounds.center
         cx, cy, cz = c.x + ox, c.y + oy, c.z + oz
         tail_w = width / (2 * num_tails - 1)
         angle  = angle_deg * Math::PI / 180.0
         bottom_w = tail_w + 2 * depth * Math.tan(angle)
 
-        pin_group = entities.add_group
-        face = pin_group.entities.add_face(
-          [cx - width/2, cy - height/2, cz],
-          [cx + width/2, cy - height/2, cz],
-          [cx + width/2, cy + height/2, cz],
-          [cx - width/2, cy + height/2, cz])
-        face.pushpull(depth)
+        add_parent_frame_prototype(board) do |prot|
+          pin_group = prot.entities.add_group
+          face = pin_group.entities.add_face(
+            [cx - width/2, cy - height/2, cz],
+            [cx + width/2, cy - height/2, cz],
+            [cx + width/2, cy + height/2, cz],
+            [cx - width/2, cy + height/2, cz])
+          face.pushpull(depth)
 
-        num_tails.times do |i|
-          break unless pin_group.valid?  # if a previous subtract returned nil, stop
-          tx = cx - width/2 + tail_w * 2 * i
-          cutter = entities.add_group
-          cf = cutter.entities.add_face(
-            [tx - tail_w/2,    cy - height/2, cz],
-            [tx + tail_w/2,    cy - height/2, cz],
-            [tx + bottom_w/2,  cy - height/2, cz - depth],
-            [tx - bottom_w/2,  cy - height/2, cz - depth])
-          cf.pushpull(height)
-          # Group#subtract reversed semantics: cutter.subtract(pin_group) returns
-          # pin_group - cutter (= pin with tail slot carved). Both groups erased.
-          new_pin = subtract_tracked(cutter, pin_group)
-          pin_group = new_pin if new_pin
+          num_tails.times do |i|
+            break unless pin_group.valid?  # if a previous subtract returned nil, stop
+            tx = cx - width/2 + tail_w * 2 * i
+            cutter = prot.entities.add_group
+            cf = cutter.entities.add_face(
+              [tx - tail_w/2,    cy - height/2, cz],
+              [tx + tail_w/2,    cy - height/2, cz],
+              [tx + bottom_w/2,  cy - height/2, cz - depth],
+              [tx - bottom_w/2,  cy - height/2, cz - depth])
+            cf.pushpull(height)
+            # Group#subtract reversed semantics: cutter.subtract(pin_group) returns
+            # pin_group - cutter (= pin with tail slot carved). Both groups erased.
+            new_pin = subtract_tracked(cutter, pin_group)
+            pin_group = new_pin if new_pin
+          end
         end
       end
 
       def self.carve_board1_fingers(board, width, height, depth, num_fingers, ox, oy, oz)
-        entities = E.entity_collection(board)
         c = board.bounds.center
         cx, cy, cz = c.x + ox, c.y + oy, c.z + oz
         # Use float division — Integer / Integer would truncate at 0 for small inputs
         finger_w = width / num_fingers.to_f
 
-        group = entities.add_group
-        face = group.entities.add_face(
-          [cx - width/2, cy - height/2, cz],
-          [cx + width/2, cy - height/2, cz],
-          [cx + width/2, cy + height/2, cz],
-          [cx - width/2, cy + height/2, cz])
-        # Extrude FIRST: face reference would be invalidated by subsequent
-        # Group#subtract operations below, so push before the loop runs.
-        face.pushpull(depth)
-        (num_fingers / 2).times do |i|
-          break unless group.valid?
-          tx = cx - width/2 + finger_w * (2 * i + 1)
-          cutter = entities.add_group
-          cf = cutter.entities.add_face(
-            [tx - finger_w/2, cy - height/2, cz],
-            [tx + finger_w/2, cy - height/2, cz],
-            [tx + finger_w/2, cy + height/2, cz],
-            [tx - finger_w/2, cy + height/2, cz])
-          cf.pushpull(depth)
-          # cutter.subtract(group) returns group - cutter (board1 with finger slot).
-          new_group = subtract_tracked(cutter, group)
-          group = new_group if new_group
+        add_parent_frame_prototype(board) do |prot|
+          group = prot.entities.add_group
+          face = group.entities.add_face(
+            [cx - width/2, cy - height/2, cz],
+            [cx + width/2, cy - height/2, cz],
+            [cx + width/2, cy + height/2, cz],
+            [cx - width/2, cy + height/2, cz])
+          # Extrude FIRST: face reference would be invalidated by subsequent
+          # Group#subtract operations below, so push before the loop runs.
+          face.pushpull(depth)
+          (num_fingers / 2).times do |i|
+            break unless group.valid?
+            tx = cx - width/2 + finger_w * (2 * i + 1)
+            cutter = prot.entities.add_group
+            cf = cutter.entities.add_face(
+              [tx - finger_w/2, cy - height/2, cz],
+              [tx + finger_w/2, cy - height/2, cz],
+              [tx + finger_w/2, cy + height/2, cz],
+              [tx - finger_w/2, cy + height/2, cz])
+            cf.pushpull(depth)
+            # cutter.subtract(group) returns group - cutter (board1 with finger slot).
+            new_group = subtract_tracked(cutter, group)
+            group = new_group if new_group
+          end
         end
       end
 

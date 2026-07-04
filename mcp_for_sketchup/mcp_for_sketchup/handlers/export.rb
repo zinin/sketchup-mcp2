@@ -16,6 +16,11 @@ module MCPforSketchUp
         model = E.active_model!
 
         export_path = build_export_path(format)
+        # T-27: save на untitled-модели ПРИВЯЗЫВАЕТ живой документ к temp-пути
+        # (следующий Ctrl+S пользователя молча уйдёт туда). Сам выбор save
+        # задуман (см. save_skp) — но LLM обязан получить предупреждение
+        # и передать его пользователю.
+        skp_untitled = format == "skp" && model.path.to_s.empty?
         # Sketchup::Model#save / #save_copy / #export and View#write_image return
         # Boolean — false on failure (disk full, permission denied,
         # format-specific error). Without this guard the handler used to claim
@@ -40,7 +45,14 @@ module MCPforSketchUp
           raise Core::StructuredError.new(-32603,
             "export(#{format}) failed (no file written; check disk/permissions)")
         end
-        { "path" => export_path, "format" => format }
+        result = { "path" => export_path, "format" => format }
+        if skp_untitled
+          result["warning"] =
+            "model was untitled: SketchUp bound the live document to the export " \
+            "path (#{export_path}); the user's next save (Ctrl+S) will write there. " \
+            "Tell the user to Save As their intended location if that is not desired."
+        end
+        result
       end
 
       # Pick save vs save_copy for a .skp export by whether the live model has a
@@ -70,7 +82,7 @@ module MCPforSketchUp
       def self.export_obj(model, path)
         model.export(path, {
           triangulated_faces:  true,
-          double_sided_faces:  true,
+          doublesided_faces:   true,   # T-15: официальное имя ключа (double_sided_faces молча игнорировался)
           edges:               false,
           texture_maps:        true
         })

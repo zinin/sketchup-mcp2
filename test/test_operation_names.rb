@@ -91,4 +91,50 @@ class TestOperationNames < Minitest::Test
       end
     end
   end
+
+  # --- T-10: реверс Group#subtract — самый опасный инвариант проекта ---
+  # SketchUp: A.subtract(B) == B − A (проверено эмпирически на SU2026;
+  # официальные доки противоречат сами себе — описание метода говорит
+  # this − arg, описание параметра обратное). Флип на «очевидный» порядок
+  # сегодня прошёл бы всю сьюту — эти guard'ы делают его красным.
+  # NB: guard'ы — НАМЕРЕННЫЕ literal-пины исходника; переформатирование или
+  # переименование локальных переменных красит их. Это ожидаемо: обновляй
+  # пин осознанно вместе с семантической проверкой, не «чини» под форматтер.
+
+  def test_boolean_difference_receiver_is_tool_copy
+    src = source(HANDLERS, "operations.rb")
+    assert_match(/when "difference"\s+then tool_copy\.subtract\(target_copy\)/, src,
+      "difference MUST stay tool_copy.subtract(target_copy): SketchUp's " \
+      "Group#subtract is reversed (A.subtract(B) == B - A). Do NOT 'fix' " \
+      "the order to match the official docs — they are self-contradictory.")
+  end
+
+  def test_edge_ops_subtract_receiver_is_cutter
+    src = source(HANDLERS, "operations.rb")
+    assert_match(/result = cutter\.subtract\(entity\)/, src,
+      "run_edge_op must call cutter.subtract(entity) to get entity - cutter")
+  end
+
+  def test_joints_subtract_call_sites_keep_cutter_first
+    src = source(HANDLERS, "joints.rb")
+    [
+      /subtract_tracked\(cutter,\s*board\)/,
+      /subtract_tracked\(cutter,\s*pin_group\)/,
+      /subtract_tracked\(cutter,\s*group\)/,
+      /subtract_tracked\(cutter,\s*current\)/,
+    ].each do |pattern|
+      assert_match(pattern, src,
+        "joints must keep the CUTTER as subtract_tracked's first arg " \
+        "(receiver of the reversed Group#subtract): missing #{pattern.inspect}")
+    end
+  end
+
+  def test_subtract_tracked_body_receiver_is_cutter
+    # Call-site-guard'ы выше пинят аргументы вызовов; этот пинит receiver
+    # ВНУТРИ самого хелпера — флип там прошёл бы все остальные guard'ы.
+    src = source(HANDLERS, "joints.rb")
+    assert_match(/result = cutter\.subtract\(target\)/, src,
+      "subtract_tracked itself must call cutter.subtract(target): reversed " \
+      "Group#subtract makes that target - cutter")
+  end
 end

@@ -2,10 +2,11 @@
 """Live integration smoke-check Python ↔ Ruby.
 
 Pre-conditions:
-  1. SketchUp 2024+ is running with an empty model.
+  1. SketchUp 2026+ is running with an empty model (step 19 uses the
+     viewport-screenshot tool, verified on SketchUp 2026 only).
   2. Ruby SketchUp plugin is installed and started via Plugins → MCP Server →
      Start. The plugin version must satisfy the handshake range declared in
-     src/sketchup_mcp/compat.py (MIN_RUBY..MAX_RUBY); step 22 verifies this.
+     src/sketchup_mcp/compat.py (MIN_RUBY..MAX_RUBY); step 25 verifies this.
   3. Run with the same Python venv used by the MCP server.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
      When SketchUp runs remotely, step 18 (export_scene) degrades to asserting
@@ -24,6 +25,7 @@ import base64
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # Force UTF-8 on stdout/stderr so the script's unicode glyphs (→, ←, ✓)
@@ -122,8 +124,10 @@ async def main() -> int:
         bb = c1["bbox_mm"]
         assert abs((bb["max"][0] - bb["min"][0]) - 100) < 1.0, f"width: {bb}"
 
-        step = 6; print(f"[{step}] transform_component — move id1 to (200,0,0)")
-        await call(conn, "transform_component", id=id1, position=[200, 0, 0])
+        step = 6; print(f"[{step}] transform_component — move id1 to (200,0,0) [ABSOLUTE bbox-min]")
+        t1 = parse(await call(conn, "transform_component", id=id1, position=[200, 0, 0]))
+        assert abs(t1["bbox_mm"]["min"][0] - 200) < 0.5, \
+            f"absolute position semantics broken (T-04): {t1['bbox_mm']}"
 
         step = 7; print(f"[{step}] create_component cube id2 — 100×100×100mm at origin")
         c2 = parse(await call(conn, "create_component",
@@ -187,6 +191,10 @@ async def main() -> int:
         step = 16; print(f"[{step}] list_components(max_depth=2)")
         lc = parse(await call(conn, "list_components", max_depth=2))
         ids = [c["id"] for c in lc["components"]]
+        # T-07: pagination envelope — total/truncated must be present; the
+        # smoke model (< 50 entities) must not be truncated by the default limit.
+        assert isinstance(lc["total"], int) and lc["total"] >= len(lc["components"])
+        assert lc["truncated"] is False, f"unexpected truncation: {lc}"
         assert id_bool in ids, f"boolean result {id_bool} not in {ids}"
         assert b_mortise in ids and b_tenon in ids
 
@@ -228,23 +236,95 @@ async def main() -> int:
         assert len(png) > 1024, f"PNG suspiciously small: {len(png)} bytes"
         print(f"    PNG ok: {len(png)} bytes, {w}×{h}, preset={payload['preset_used']}")
 
-        # NB: cleanup must precede undo. `undo` rolls back the last undoable
-        # operation, which here is mortise_tenon (export bypasses the undo
-        # stack). Running undo first would invalidate b_mortise/b_tenon (the
-        # post-subtract IDs captured in step 14) and the cleanup loop would
-        # silently no-op on stale IDs while leaving the restored mortise board
-        # behind in the model.
-        step = 20; print(f"[{step}] cleanup: delete created components")
-        for cid in [id_bool, b_mortise, b_tenon]:
+        step = 20; print(f"[{step}] sphere d=100 — manifold poles + boolean union (T-02)")
+        sph = parse(await call(conn, "create_component",
+                               type="sphere", position=[400, 0, 0],
+                               dimensions=[100, 100, 100]))
+        id_sph = sph["id"]
+        zspan = sph["bbox_mm"]["max"][2] - sph["bbox_mm"]["min"][2]
+        assert abs(zspan - 100) < 0.5, (
+            f"sphere z-span {zspan}mm — poles cut off => non-manifold generator (T-02)")
+        cub = parse(await call(conn, "create_component",
+                               type="cube", position=[450, 50, 0],
+                               dimensions=[100, 100, 100]))
+        id_cub = cub["id"]
+        # До фикса T-02 этот union падал с -32603 "likely non-manifold".
+        uni = parse(await call(conn, "boolean_operation",
+                               target_id=id_sph, tool_id=id_cub, operation="union"))
+        id_sph_union = uni["id"]  # операнды копируются; originals живы
+
+        step = 21; print(f"[{step}] dovetail on a TRANSLATED board (T-03)")
+        b_tail = parse(await call(conn, "create_component",
+                                  type="cube", dimensions=[120, 100, 20]))["id"]
+        moved = parse(await call(conn, "transform_component",
+                                 id=b_tail, position=[800, 0, 0]))
+        assert abs(moved["bbox_mm"]["min"][0] - 800) < 0.5, f"move failed: {moved}"
+        # Идемпотентность absolute-семантики (T-04): повтор того же position
+        # не смещает доску (старый relative-баг дал бы суммарно 1600).
+        again = parse(await call(conn, "transform_component",
+                                 id=b_tail, position=[800, 0, 0]))
+        assert abs(again["bbox_mm"]["min"][0] - 800) < 0.5, \
+            f"absolute position must be idempotent (T-04): {again['bbox_mm']}"
+        b_pin = parse(await call(conn, "create_component",
+                                 type="cube", position=[800, 120, 0],
+                                 dimensions=[120, 100, 20]))["id"]
+        dv = parse(await call(conn, "create_dovetail",
+                              tail_id=b_tail, pin_id=b_pin,
+                              width=50, height=50, depth=15))
+        assert dv["boolean_cuts"]["failed"] == 0, f"dovetail cuts failed: {dv['boolean_cuts']}"
+        # До фикса T-03 хвосты улетали на величину сдвига (живьём: x до 1704
+        # при доске 800..920) — bbox обеих досок обязан остаться в объёме
+        # доски ± глубина соединения.
+        # DoD намеренно bbox-containment (ловит класс бага «улёт на |T|»);
+        # механический контакт досок (зазор 20 мм по Y) не ассертится.
+        for key in ("tail", "pin"):
+            bb = dv[key]["bbox_mm"]
+            assert bb["min"][0] >= 800 - 15 - 1 and bb["max"][0] <= 920 + 15 + 1, (
+                f"{key} board bbox {bb} escaped the board volume — "
+                f"frame-compensation regression (T-03)")
+        b_tail, b_pin = dv["tail"]["id"], dv["pin"]["id"]
+
+        step = 22; print(f"[{step}] eval_ruby syntax error — fast diagnostic, not a 60s hang (T-01)")
+        t0 = time.monotonic()
+        try:
+            raw = await _maybe_skip_eval(
+                "eval_ruby step 22 (syntax error)",
+                call(conn, "eval_ruby", code="def broken("),
+            )
+            if raw is None:
+                eval_skipped[0] += 1
+            else:
+                raise AssertionError(f"syntax error must raise an error, got: {raw}")
+        except SketchUpError as e:
+            elapsed = time.monotonic() - t0
+            assert e.code == -32603, f"expected -32603, got [{e.code}] {e.message}"
+            assert "SyntaxError" in e.message, f"no parser diagnostic in: {e.message}"
+            assert elapsed < 10, f"took {elapsed:.1f}s — looks like the old 60s hang (T-01)"
+            print(f"    ✓ SyntaxError surfaced in {elapsed:.2f}s")
+
+        # NB: cleanup must precede undo, and the undo step is NOT a rollback
+        # of the modeling steps: `delete_component` is itself an undoable
+        # operation, so after the loop below step 24's undo rolls back the
+        # LAST delete — resurrecting the most recently deleted ID — not the
+        # last modeling op (the step-21 dovetail). One resurrected group is expected to remain
+        # in the model after the run. Running undo before cleanup would
+        # instead revert the last modeling operation and stale-ify IDs held
+        # by the cleanup loop.
+        # id1/id2 (post-chamfer/post-fillet) are live here: boolean_operation
+        # copies its operands (delete_originals=false), so the step-11 union
+        # consumed copies, not the originals. Same for id_sph/id_cub in step 20.
+        step = 23; print(f"[{step}] cleanup: delete created components")
+        for cid in [id1, id2, id_bool, b_mortise, b_tenon,
+                    id_sph, id_cub, id_sph_union, b_tail, b_pin]:
             try:
                 await call(conn, "delete_component", id=cid)
             except Exception as e:
                 print(f"    (cleanup non-fatal: {e})")
 
-        step = 21; print(f"[{step}] undo — verify the tool runs without error")
+        step = 24; print(f"[{step}] undo — verify the tool runs without error")
         await call(conn, "undo")
 
-        step = 22; print(f"[{step}] version handshake — matched pair must report compatible=true")
+        step = 25; print(f"[{step}] version handshake — matched pair must report compatible=true")
         # smoke_check.py talks to Ruby directly (no FastMCP), so this returns
         # the raw handlers/system.rb output. Replicate the two-way verdict
         # that src/sketchup_mcp/tools.py::get_version computes.
@@ -263,14 +343,16 @@ async def main() -> int:
         print("    matched-pair: compatible=true")
 
         print("\nALL STEPS PASSED ✓")
-        print(f"Smoke complete: 22 steps total, {eval_skipped[0]} skipped (eval gate closed)")
+        skips = (f", {eval_skipped[0]} skipped (eval gate closed)"
+                 if eval_skipped[0] else "")
+        print(f"Smoke complete: 25 steps total{skips}")
         return 0
     except Exception as e:
         print(f"\nFAILED at step {step}: {e}", file=sys.stderr)
         # DEBUG: surface Ruby-side backtrace + tool/params from JSON-RPC error.data.
         # The Ruby plugin always sends data.backtrace (first 3 frames) regardless of
         # log level; smoke_check default printing only shows the message.
-        # Remove this block once chamfer/fillet debugging is complete.
+        # Kept permanently: smoke failures need the Ruby-side backtrace for diagnosis.
         if isinstance(e, SketchUpError):
             print(f"  code={e.code}", file=sys.stderr)
             print(f"  tool={e.data.get('tool')}", file=sys.stderr)

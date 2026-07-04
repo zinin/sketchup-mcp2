@@ -1,5 +1,7 @@
 # MCP Server for SketchUp
 
+[![test](https://github.com/zinin/sketchup-mcp2/actions/workflows/test.yml/badge.svg)](https://github.com/zinin/sketchup-mcp2/actions/workflows/test.yml)
+
 > Connect Claude (or any MCP-aware AI client) to SketchUp for prompt-driven 3D modeling.
 
 Two-process bridge:
@@ -43,7 +45,7 @@ In SketchUp: `Window → Extension Manager → Install Extension`, pick the `.rb
 
 ### 2. Start the server inside SketchUp
 
-`Plugins → MCP Server → Start` — by default listens on `127.0.0.1:9876`.
+`Plugins → MCP Server → Start Server` — by default listens on `127.0.0.1:9876`.
 
 ### 3. Configure your MCP client
 
@@ -76,14 +78,14 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 
 | Category | Tools |
 |---|---|
-| **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm** |
+| **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm**; `position` is an **absolute** bbox-min target |
 | **Materials** | `set_material` — named colors and hex `#rrggbb` |
 | **Booleans** | `boolean_operation` — union / difference / intersection |
 | **Edge ops** | `chamfer_edge`, `fillet_edge` — distance/radius in mm, segments configurable |
 | **Joinery** | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
 | **Export** | `export_scene` — skp / obj / dae / stl / png / jpg |
 | **Introspection** | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
-| **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image`; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
+| **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image` + JSON metadata text block; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
 | **Lifecycle** | `undo` |
 | **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above. **Disabled by default in the warehouse build** — see [Distribution variants](#distribution-variants). |
 
@@ -130,10 +132,8 @@ For richer Ruby recipes that drive the SketchUp API directly — framed walls, g
 
 Working examples and load tests live in [`examples/`](examples/):
 
-- `smoke_check.py` — 22-step end-to-end verification of every tool category.
+- `smoke_check.py` — 25-step end-to-end verification of every tool category.
 - `smoke_multi_client.py` — concurrent multi-client load test.
-- `arts_and_crafts_cabinet.py` — a non-trivial generative model via `eval_ruby`.
-- `simple_test.py`, `simple_ruby_eval.py`, `behavior_tester.py` — minimal scaffolds.
 
 ## Architecture
 
@@ -169,14 +169,14 @@ uvx sketchup-mcp2               # production-style (from PyPI)
 ### Tests
 
 ```bash
-ruby test/run_all.rb             # Ruby unit tests (minitest, stdlib only)
+ruby test/run_all.rb             # Ruby unit tests (minitest; stdlib + rubyzip for the package test)
 uv run pytest tests/ -q          # Python unit tests
 ```
 
 ### Live smoke (requires SketchUp running with the extension started)
 
 ```bash
-uv run python examples/smoke_check.py          # 22-step end-to-end
+uv run python examples/smoke_check.py          # 25-step end-to-end
 uv run python examples/smoke_multi_client.py   # concurrent multi-client
 ```
 
@@ -189,7 +189,7 @@ For a split-host setup (e.g. Linux dev box + Windows SketchUp), prefix with `SKE
 The Python MCP server connected to the configured host/port but found nothing listening. Either:
 
 - SketchUp isn't running, or
-- The extension is installed but not started — open `Plugins → MCP Server → Start`.
+- The extension is installed but not started — open `Plugins → MCP Server → Start Server`.
 
 The Python server stays alive after this error; the next tool-call retries the connect.
 

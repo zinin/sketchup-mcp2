@@ -100,8 +100,8 @@ module MCPforSketchUp
         # Eval transition off → on requires a blocking confirm with a security
         # warning. Two-phase flow (iter-1 CRITICAL-3): we MUST leave the
         # action_callback frame before showing ::UI.messagebox — on Windows
-        # a messagebox inside the callback hangs (same quirk handled at
-        # settings_dialog.rb:100 for host/port restart). Defer via
+        # a messagebox inside the callback hangs (same quirk handled by the
+        # host/port restart prompt in this file). Defer via
         # ::UI.start_timer(0, false), then either persist (Yes) or revert
         # UI to the previously-saved state (No).
         if normalized[:eval_enabled] && !previous_eval_enabled

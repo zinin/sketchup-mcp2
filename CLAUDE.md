@@ -58,6 +58,12 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   carry no `server_version` field. Compatibility ranges live in
   `src/sketchup_mcp/compat.py` and `mcp_for_sketchup/mcp_for_sketchup/core/compat.rb`.
   `get_version` remains a regular tool returning the verdict payload.
+- **Literal source-guard tests**: `test/test_operation_names.rb`,
+  `test/test_transform_absolute.rb`, `test/test_joints_frame_compensation.rb`
+  pin exact handler source text (down to indentation) to protect invariants
+  like the reversed `Group#subtract`. Never run an auto-formatter over
+  handlers or tests; when refactoring pinned code, update the pins
+  deliberately.
 
 ## Development Commands
 
@@ -75,14 +81,14 @@ cd mcp_for_sketchup && ruby package.rb --variant=warehouse && cd ..
 cd mcp_for_sketchup && ruby package.rb --variant=github && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest, stdlib only) — 327 runs / 844 assertions
-uv run pytest tests/ -q        # Python (pytest) — 132 tests
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip for the package test) — 425 runs / 1149 assertions
+uv run pytest tests/ -q        # Python (pytest) — 177 tests
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 22-step end-to-end (covers all handlers)
+python examples/smoke_check.py # 25-step end-to-end (covers every tool category; 19 of 22 tools)
 ```
 
-Other example scripts in `examples/`: `simple_test.py`, `simple_ruby_eval.py`, `arts_and_crafts_cabinet.py`, `behavior_tester.py`.
+Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load check).
 
 ## Configuration
 
@@ -126,7 +132,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | `connection.py` | Persistent TCP socket, length-prefix framing, `asyncio.Lock` |
 | `config.py` | ENV-driven config |
 | `errors.py` | `SketchUpError` parsed from JSON-RPC error envelopes |
-| `server.py` | Legacy connection helpers (kept for compat) |
+| `server.py` | CLI entry point (`[project.scripts]` → `sketchup-mcp2`) |
 | `compat.py` | Single source of truth for Python↔Ruby version compatibility (MIN_RUBY, MAX_RUBY, check_ruby_version) |
 
 `eval_ruby` is the escape hatch — passes arbitrary Ruby code straight through.
@@ -136,7 +142,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | Subtree | Role |
 |---|---|
 | `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
-| `core/` | `application.rb`, `server.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
+| `core/` | `application.rb`, `server.rb`, `client_state.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
 | `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb`, `system.rb` |
 | `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb` |
 | `ui/` | Settings dialog: `settings_dialog.rb`, `settings_validator.rb`, `settings.html` |
@@ -154,7 +160,7 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
 | Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
 | Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
-| View | `get_viewport_screenshot` (returns MCP Image; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
+| View | `get_viewport_screenshot` (returns MCP Image + JSON metadata text block; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
 | Lifecycle | `undo` |
 | Scripting | `eval_ruby` |
 
