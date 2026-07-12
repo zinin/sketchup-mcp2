@@ -9,6 +9,7 @@ dist/
 *.egg-info/
 .env
 .venv
+.venv.*
 env/
 venv/
 ENV/
