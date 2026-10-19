@@ -106,6 +106,19 @@ module MCPforSketchUp
       # NB: edges captured before destructive ops; specs live in target.parent
       # frame so cutter (sibling of target) and edge geometry share a frame.
 
+      # Seams of a tessellated curved surface (cylinder wall, cone, sphere):
+      # edges whose two faces meet at less than this angle. Cutting one makes
+      # Group#subtract return nil AND destroy the body, so chamfer/fillet never
+      # touch them. Measured in SketchUp 2026.1: default cylinder seams 15°,
+      # cone 13.4°, sphere 2.2°..22.4° (rims: 90° and 116.4°). A 12-sided
+      # prism's vertical edges meet at 30° and stay feature edges.
+      SEAM_MAX_DIHEDRAL_DEG = 25.0
+
+      # Consecutive segments of a polygonized curve turn by more than this at
+      # their shared vertex; up to it they are collinear pieces of one straight
+      # edge.
+      COLLINEAR_MAX_TURN_DEG = 0.5
+
       def self.chamfer_edges(params)
         entity_id = V.require_id(params, "entity_id")
         distance_in = U.mm_to_inch(V.require_positive(params, "distance"))
@@ -436,6 +449,66 @@ module MCPforSketchUp
 
       def self.filter_edges(edges, indices)
         edges.select.with_index { |_, i| indices.include?(i) }
+      end
+
+      # ----- feature-edge selection --------------------------------------------
+      # Pure functions over the edge objects, no model state. Neighbours are
+      # found through shared Vertex objects rather than Vertex#edges, so tests
+      # can use duck-typed edges without back-references.
+
+      # Vector3d#angle_between returns radians.
+      def self.angle_deg(v1, v2)
+        v1.angle_between(v2) * 180.0 / Math::PI
+      end
+
+      # True for an edge between two facets of a tessellated curved surface:
+      # exactly two faces whose normals differ by less than SEAM_MAX_DIHEDRAL_DEG.
+      # Boundary, loose and non-manifold edges (faces.length != 2) are not seams.
+      def self.seam_edge?(edge)
+        faces = edge.faces
+        return false unless faces.length == 2
+        angle_deg(faces[0].normal, faces[1].normal) < SEAM_MAX_DIHEDRAL_DEG
+      end
+
+      # Segments of a polygonized curve, e.g. a cylinder rim: edges of `edges`
+      # that share a vertex and a face with another edge of `edges` where the
+      # path turns by more than COLLINEAR_MAX_TURN_DEG (not just a straight edge
+      # split in two) and less than SEAM_MAX_DIHEDRAL_DEG (not a real corner).
+      # Neighbours are looked up in `edges` only, so the rule applies to the
+      # chosen set. Returns them in input order.
+      def self.curved_rim_edges(edges)
+        by_vertex = Hash.new { |h, vertex| h[vertex] = [] }
+        faces_of = {}.compare_by_identity
+        edges.each do |edge|
+          faces_of[edge] = edge.faces
+          edge.vertices.each { |vertex| by_vertex[vertex] << edge }
+        end
+
+        curved = {}.compare_by_identity
+        by_vertex.each do |vertex, incident|
+          incident.combination(2) do |e1, e2|
+            next if (faces_of[e1] & faces_of[e2]).empty?
+            # Turn at the shared vertex: a -> vertex along e1, vertex -> b along e2.
+            turn = angle_deg(vertex.position - e1.other_vertex(vertex).position,
+                             e2.other_vertex(vertex).position - vertex.position)
+            next unless turn > COLLINEAR_MAX_TURN_DEG && turn < SEAM_MAX_DIHEDRAL_DEG
+            curved[e1] = true
+            curved[e2] = true
+          end
+        end
+        edges.select { |edge| curved[edge] }
+      end
+
+      # Splits `edges` into what a chamfer/fillet may cut and what it leaves
+      # alone: seams always go; with skip_curved (fillet) so do the curved rims
+      # of the remaining edges. Kept edges stay in input order. The counts feed
+      # the skipped_seam / skipped_curved stats.
+      def self.select_feature_edges(edges, skip_curved:)
+        non_seam = edges.reject { |edge| seam_edge?(edge) }
+        curved = skip_curved ? curved_rim_edges(non_seam) : []
+        { edges: non_seam - curved,
+          skipped_seam: edges.length - non_seam.length,
+          skipped_curved: curved.length }
       end
     end
   end
