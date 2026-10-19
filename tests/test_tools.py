@@ -344,6 +344,58 @@ async def test_schema_rejects_dovetail_angle_above_60(dispatch_conn):
     dispatch_conn.send_command.assert_not_called()
 
 
+# --- M-07: верхние границы счётчиков (зеркало Ruby optional_int_range) ---
+
+async def test_schema_rejects_fillet_segments_above_32(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("fillet_edge", {"id": "1", "segments": 33})
+    assert "segments" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_rejects_fillet_segments_below_1(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("fillet_edge", {"id": "1", "segments": 0})
+    assert "segments" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_accepts_fillet_segments_32(dispatch_conn):
+    await mcp.call_tool("fillet_edge", {"id": "1", "segments": 32})
+    dispatch_conn.send_command.assert_called_once_with(
+        "fillet_edges", {"entity_id": "1", "radius": 5.0, "segments": 32})
+
+
+async def test_schema_rejects_dovetail_num_tails_above_25(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_dovetail",
+                            {"tail_id": "1", "pin_id": "2", "num_tails": 26})
+    assert "num_tails" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_accepts_dovetail_num_tails_25(dispatch_conn):
+    await mcp.call_tool("create_dovetail",
+                        {"tail_id": "1", "pin_id": "2", "num_tails": 25})
+    wire_args = dispatch_conn.send_command.call_args.args[1]
+    assert wire_args["num_tails"] == 25
+
+
+async def test_schema_rejects_finger_joint_num_fingers_above_50(dispatch_conn):
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_finger_joint",
+                            {"board1_id": "1", "board2_id": "2", "num_fingers": 51})
+    assert "num_fingers" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_accepts_finger_joint_num_fingers_50(dispatch_conn):
+    await mcp.call_tool("create_finger_joint",
+                        {"board1_id": "1", "board2_id": "2", "num_fingers": 50})
+    wire_args = dispatch_conn.send_command.call_args.args[1]
+    assert wire_args["num_fingers"] == 50
+
+
 @pytest.mark.parametrize(
     "tool_name, kwargs, expected_ruby_name, expected_ruby_kwargs",
     [

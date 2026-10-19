@@ -137,7 +137,9 @@ module MCPforSketchUp
       def self.fillet_edges(params)
         entity_id = V.require_id(params, "entity_id")
         radius_in = U.mm_to_inch(V.require_positive(params, "radius"))
-        segments  = V.optional_int_positive(params, "segments", 8)
+        # M-07: upper bound on the work of one call, mirrored by Field(ge=1, le=32)
+        # in tools.py (a direct TCP client bypasses the schema).
+        segments  = V.optional_int_range(params, "segments", min: 1, max: 32, default: 8)
         edge_indices = params["edge_indices"]
         run_edge_op(entity_id, edge_indices, "Fillet Edges", radius_in * 2,
                     skip_curved: true) do |cutter_entities, spec|

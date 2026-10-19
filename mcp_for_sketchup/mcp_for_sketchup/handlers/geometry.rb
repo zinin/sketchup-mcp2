@@ -26,7 +26,9 @@ module MCPforSketchUp
         validate_min_dimensions!(dims_mm, type)
         pos  = pos_mm.map  { |v| U.mm_to_inch(v) }
         dims = dims_mm.map { |v| U.mm_to_inch(v) }
-        segments = V.optional_int_positive(params, "segments", default_segments_for(type))
+        # M-07: 3..128. В схеме tools.py этого параметра нет — граница держится
+        # только здесь, для прямых TCP-клиентов; сфера строит segments² граней.
+        segments = V.optional_int_range(params, "segments", min: 3, max: 128, default: default_segments_for(type))
         # T-54: опциональное имя группы. Без него все созданные группы
         # безымянны — find_components(name=...) бессилен, а модель не может
         # назвать то, что строит, иначе как через eval_ruby.

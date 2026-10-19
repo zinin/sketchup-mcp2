@@ -67,7 +67,9 @@ module MCPforSketchUp
           raise Core::StructuredError.new(-32602,
             "field angle must be in (0, 60] degrees, got #{angle}")
         end
-        num_tails = V.optional_int_positive(params, "num_tails", 3)
+        # M-07: верхняя граница объёма работы одного вызова, зеркало
+        # Field(gt=0, le=25) в tools.py (прямой TCP-клиент обходит схему).
+        num_tails = V.optional_int_range(params, "num_tails", min: 1, max: 25, default: 3)
         ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
         oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
         oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
@@ -105,7 +107,9 @@ module MCPforSketchUp
         width  = U.mm_to_inch(V.optional_positive(params, "width",  50.0))
         height = U.mm_to_inch(V.optional_positive(params, "height", 25.0))
         depth  = U.mm_to_inch(V.optional_positive(params, "depth",  10.0))
-        num_fingers = V.optional_int_positive(params, "num_fingers", 5)
+        # M-07: верхняя граница объёма работы одного вызова, зеркало
+        # Field(gt=0, le=50) в tools.py (прямой TCP-клиент обходит схему).
+        num_fingers = V.optional_int_range(params, "num_fingers", min: 1, max: 50, default: 5)
         ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
         oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
         oz = U.mm_to_inch(V.optional_number(params, "offset_z"))

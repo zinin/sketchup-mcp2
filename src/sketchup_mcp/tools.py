@@ -329,7 +329,8 @@ async def create_dovetail(
     angle: Annotated[float, Field(
         gt=0, le=60,
         description="Dovetail flare angle in degrees, 0 < angle <= 60")] = 15.0,
-    num_tails: Annotated[int, Field(gt=0, description="Number of tails")] = 3,
+    num_tails: Annotated[int, Field(
+        gt=0, le=25, description="Number of tails, 1–25")] = 3,
     offset_x: Annotated[float, Field(
         description="Joint offset from the board face's center along X, mm")] = 0.0,
     offset_y: Annotated[float, Field(
@@ -372,7 +373,8 @@ async def create_finger_joint(
     width: Annotated[float, Field(gt=0, description="Joint width in mm")] = 50.0,
     height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 25.0,
     depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 10.0,
-    num_fingers: Annotated[int, Field(gt=0, description="Number of fingers")] = 5,
+    num_fingers: Annotated[int, Field(
+        gt=0, le=50, description="Number of fingers, 1–50")] = 5,
     offset_x: Annotated[float, Field(
         description="Joint offset from the board face's center along X, mm")] = 0.0,
     offset_y: Annotated[float, Field(
@@ -516,7 +518,7 @@ async def fillet_edge(
         float, Field(gt=0, description="Fillet radius in mm"),
     ] = 5.0,
     segments: Annotated[
-        int, Field(gt=0, description="Arc segments per rounded edge"),
+        int, Field(ge=1, le=32, description="Arc segments per rounded edge, 1–32"),
     ] = 8,
 ) -> str:
     """Round (fillet) every straight feature edge of a group/component by
