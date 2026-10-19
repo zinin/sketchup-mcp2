@@ -42,3 +42,20 @@ jobs:
       # --frozen молча поставил бы устаревший lock.
       - run: uv sync --locked --extra dev
       - run: uv run --locked pytest tests/ -q
+
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked pytest tests/test_contract_wire.py -q
+        env:
+          SKETCHUP_MCP_CONTRACT: '1'
