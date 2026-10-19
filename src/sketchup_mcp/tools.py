@@ -162,7 +162,8 @@ async def delete_component(
     ctx: Context,
     id: EntityId,
 ) -> str:
-    """Delete a group or component by entity ID.
+    """Delete a group or component instance by entity ID. Raw faces, edges and
+    other entities fail with -32602.
 
     Returns: JSON {ok: true}.
     """
@@ -191,6 +192,8 @@ async def transform_component(
     ] = None,
 ) -> str:
     """Move, rotate and/or scale a group or component (mm / degrees).
+
+    Groups and component instances only; other entities fail with -32602.
 
     - position: ABSOLUTE target for the entity's bounding-box MIN corner,
       in mm — the same anchor create_component uses. Applied LAST (after
