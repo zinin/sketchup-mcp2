@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # mcp 2.x breaks the import surface; the migration is a separate ticket.
+      - dependency-name: mcp
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

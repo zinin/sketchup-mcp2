@@ -19,9 +19,13 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    # <2: mcp v2 ships breaking changes to the import surface. Floor 1.27 =
-    # фактическая версия из uv.lock. Миграция на v2 — отдельный тикет.
-    "mcp[cli]>=1.27,<2"
+    # Floor 1.30 = новейший 1.x и первый, против которого тестирует CI.
+    # <2: mcp 2.x ломает import surface; миграция на 2.x — отдельный тикет.
+    # Extra [cli] убран: typer/rich нигде не импортируются.
+    "mcp>=1.30,<2",
+    # tools.py импортирует pydantic напрямую. 2.11 — собственный floor mcp 1.30
+    # для Python < 3.14 (на 3.14 mcp сам требует 2.12, резолвер это учитывает).
+    "pydantic>=2.11",
 ]
 
 [project.optional-dependencies]

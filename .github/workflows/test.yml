@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      # --frozen: lock обязан соответствовать pyproject (задача 1 его регенерирует);
-      # рассинхрон = красный CI, а не тихая пересборка резолвером.
-      - run: uv sync --frozen --extra dev
-      - run: uv run pytest tests/ -q
+      # --locked падает, если uv.lock рассинхронизирован с pyproject.toml;
+      # --frozen молча поставил бы устаревший lock.
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked pytest tests/ -q
