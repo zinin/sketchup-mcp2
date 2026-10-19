@@ -489,14 +489,19 @@ async def chamfer_edge(
         float, Field(gt=0, description="Chamfer distance in mm"),
     ] = 5.0,
 ) -> str:
-    """Chamfer (bevel) edges of a group/component by ``distance`` mm.
+    """Chamfer (bevel) every feature edge of a group/component by ``distance`` mm.
 
-    By default ALL edges are chamfered. Unreliable on non-manifold geometry.
+    Seams of curved surfaces — edges whose two faces meet at less than 25°, such
+    as a cylinder's vertical facet edges or every edge of a sphere — are skipped;
+    the rims of curved surfaces are chamfered segment by segment. A body with no
+    feature edges fails with -32602. One call runs at most 30 s inside SketchUp;
+    past that it rolls back and changes nothing. Unreliable on non-manifold
+    geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_chamfered,
-    stats{attempted, skipped_no_match, subtract_failed, succeeded}} — check
-    stats.subtract_failed == 0 (failed cuts) and stats.skipped_no_match == 0
-    (edges consumed by earlier cuts).
+    stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
+    skipped_curved}} — check stats.subtract_failed == 0 (failed cuts) and
+    stats.skipped_no_match == 0 (edges consumed by earlier cuts).
     """
     return await _call(ctx, "chamfer_edges", entity_id=str(id), distance=distance)
 
@@ -514,15 +519,20 @@ async def fillet_edge(
         int, Field(gt=0, description="Arc segments per rounded edge"),
     ] = 8,
 ) -> str:
-    """Round (fillet) edges of a group/component by ``radius`` mm with
-    ``segments`` arc segments.
+    """Round (fillet) every straight feature edge of a group/component by
+    ``radius`` mm with ``segments`` arc segments.
 
-    By default ALL edges are filleted. Unreliable on non-manifold geometry.
+    Skips seams of curved surfaces (faces meeting at less than 25°) and the rims
+    of curved surfaces, such as a cylinder's top and bottom circles: fillet cannot
+    round a tessellated curve. A body with no straight feature edges (cylinder,
+    cone, sphere) fails with -32602. One call runs at most 30 s inside SketchUp;
+    past that it rolls back and changes nothing. Unreliable on non-manifold
+    geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_filleted,
-    stats{attempted, skipped_no_match, subtract_failed, succeeded}} — check
-    stats.subtract_failed == 0 (failed cuts) and stats.skipped_no_match == 0
-    (edges consumed by earlier cuts).
+    stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
+    skipped_curved}} — check stats.subtract_failed == 0 (failed cuts) and
+    stats.skipped_no_match == 0 (edges consumed by earlier cuts).
     """
     return await _call(
         ctx, "fillet_edges", entity_id=str(id), radius=radius, segments=segments

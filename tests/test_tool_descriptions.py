@@ -49,11 +49,15 @@ async def test_returns_lines_pin_top_response_shapes():
         "list_components": "truncated",
         # Реальная форма stats из operations.rb::run_edge_op — ключа "failed"
         # не существует; дрейф докстринга от wire-формы ловится здесь.
-        "chamfer_edge": "stats{attempted, skipped_no_match, subtract_failed, succeeded}",
-        "fillet_edge": "stats{attempted, skipped_no_match, subtract_failed, succeeded}",
+        "chamfer_edge": "stats{attempted, succeeded, subtract_failed, "
+                        "skipped_no_match, skipped_seam, skipped_curved}",
+        "fillet_edge": "stats{attempted, succeeded, subtract_failed, "
+                       "skipped_no_match, skipped_seam, skipped_curved}",
     }
     for name, frag in expected_fragments.items():
-        desc = tools[name].description or ""
+        # Пробелы схлопываются: перенос строки внутри фрагмента (stats{...}
+        # у chamfer_edge/fillet_edge занимает две строки) пин не ломает.
+        desc = " ".join((tools[name].description or "").split())
         assert frag in desc, f"{name}: Returns-пин «{frag}» не найден в докстринге"
 
 

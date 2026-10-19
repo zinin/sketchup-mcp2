@@ -119,6 +119,12 @@ module MCPforSketchUp
       # edge.
       COLLINEAR_MAX_TURN_DEG = 0.5
 
+      # Time budget of one chamfer/fillet call, counted from the start of the
+      # cut loop and checked before each cut. It stays under the client's
+      # default 60 s timeout, so the client never gives up on a call that
+      # later commits. Past it the whole call rolls back.
+      EDGE_OP_BUDGET_S = 30.0
+
       def self.chamfer_edges(params)
         entity_id = V.require_id(params, "entity_id")
         distance_in = U.mm_to_inch(V.require_positive(params, "distance"))
@@ -133,7 +139,8 @@ module MCPforSketchUp
         radius_in = U.mm_to_inch(V.require_positive(params, "radius"))
         segments  = V.optional_int_positive(params, "segments", 8)
         edge_indices = params["edge_indices"]
-        run_edge_op(entity_id, edge_indices, "Fillet Edges", radius_in * 2) do |cutter_entities, spec|
+        run_edge_op(entity_id, edge_indices, "Fillet Edges", radius_in * 2,
+                    skip_curved: true) do |cutter_entities, spec|
           build_fillet_profile(cutter_entities, spec, radius_in, segments)
         end.merge("edges_filleted" => last_edges_done, "stats" => last_stats)
       end
@@ -151,7 +158,12 @@ module MCPforSketchUp
       # produces a prism that misaligns with the current solid → subtract nil.
       # Re-collect uses the LIVE edge for the cutter; original snapshot serves
       # only as identity-by-direction-and-line for matching.
-      def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in)
+      #
+      # Only feature edges are cut (select_feature_edges): never the seams of
+      # a curved surface, and with skip_curved (fillet) not its curved rims
+      # either. A body the subtract destroyed and a breach of EDGE_OP_BUDGET_S
+      # raise like any other failure, so the whole call rolls back.
+      def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in, skip_curved: false)
         # Type-guard edge_indices BEFORE start_operation: a non-Array (String/
         # Integer/Hash from a direct/malformed TCP client that bypasses the
         # FastMCP schema) would reach filter_edges -> indices.include?(i) and
@@ -165,7 +177,8 @@ module MCPforSketchUp
         model.start_operation(op_name, true)
         @_last_edges_done = 0
         @_last_stats = { "attempted" => 0, "skipped_no_match" => 0,
-                         "subtract_failed" => 0, "succeeded" => 0 }
+                         "subtract_failed" => 0, "succeeded" => 0,
+                         "skipped_seam" => 0, "skipped_curved" => 0 }
         begin
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
@@ -178,9 +191,21 @@ module MCPforSketchUp
               "(check edge_indices or geometry)")
           end
 
+          # Drop the edges a cut must not touch before the snapshot: seams (a
+          # subtract on one returns nil AND destroys the body) and, with
+          # skip_curved, curved rims (a per-segment fillet cannot cut them).
+          selection = select_feature_edges(edges, skip_curved: skip_curved)
+          @_last_stats["skipped_seam"] = selection[:skipped_seam]
+          @_last_stats["skipped_curved"] = selection[:skipped_curved]
+          if selection[:edges].empty?
+            raise no_feature_edges_error(op_name, entity_id, edges.length, skip_curved)
+          end
+          edges = selection[:edges]
+
           # Snapshot original specs (parent-frame) BEFORE any destructive op.
           original_specs = edges.map { |e| edge_spec(e, entity.transformation) }
           @_last_stats["attempted"] = original_specs.length
+          total = original_specs.length
 
           # Track the most-recent successful subtract result by ID. Group#subtract
           # may return a proxy that becomes silently stale after subsequent
@@ -188,7 +213,20 @@ module MCPforSketchUp
           # lets us re-resolve a fresh proxy via model.find_entity_by_id below.
           last_result_id = nil
 
-          original_specs.each do |orig|
+          started_at = monotonic_now
+          original_specs.each_with_index do |orig, i|
+            # A body that is already gone would raise TypeError ("reference to
+            # deleted Group") on the first touch below.
+            unless entity.valid?
+              raise destroyed_body_error(op_name, "before edge #{i + 1}", total)
+            end
+            if monotonic_now - started_at > EDGE_OP_BUDGET_S
+              raise Core::StructuredError.new(-32603,
+                "#{op_name}: stopped after #{i} of #{total} edges — exceeded the " \
+                "#{EDGE_OP_BUDGET_S.to_i} s budget; the operation was rolled back, " \
+                "the model is unchanged")
+            end
+
             # Find the live edge succeeding the original spec in the current
             # (possibly already-modified) entity.
             live_spec = find_current_edge_spec(entity, orig, match_tolerance_in)
@@ -206,6 +244,12 @@ module MCPforSketchUp
             # cutter.subtract(entity). See verbose comment in boolean_operation.
             result = cutter.subtract(entity)
             if result.nil?
+              # nil AND the body gone: SketchUp erased it together with the
+              # cutter (seen live on a cylinder seam). Every later step would
+              # touch the deleted group, so stop here.
+              unless entity.valid?
+                raise destroyed_body_error(op_name, "on edge #{i + 1}", total)
+              end
               # Subtract failed for this edge — clean up the orphan cutter
               # and continue with the remaining edges rather than aborting.
               @_last_stats["subtract_failed"] += 1
@@ -256,7 +300,37 @@ module MCPforSketchUp
 
       def self.last_stats
         @_last_stats || { "attempted" => 0, "skipped_no_match" => 0,
-                          "subtract_failed" => 0, "succeeded" => 0 }
+                          "subtract_failed" => 0, "succeeded" => 0,
+                          "skipped_seam" => 0, "skipped_curved" => 0 }
+      end
+
+      # Monotonic seconds for EDGE_OP_BUDGET_S: unlike Time.now it does not
+      # jump with the system clock. The budget tests stub it.
+      def self.monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # -32602 for a target whose edges are all seams (with skip_curved: seams
+      # or curved rims). `count` is the number of edges before the selection.
+      def self.no_feature_edges_error(op_name, entity_id, count, skip_curved)
+        verb = op_name.split.first.downcase
+        message =
+          if skip_curved
+            "no straight feature edges to #{verb} on target_id=#{entity_id} " \
+            "(all #{count} edges are surface seams or curved rims)"
+          else
+            "no feature edges to #{verb} on target_id=#{entity_id} " \
+            "(all #{count} edges are surface seams)"
+          end
+        Core::StructuredError.new(-32602, message)
+      end
+
+      # -32603 for a body SketchUp's subtract destroyed. `where` is
+      # "on edge k" (the cut that failed) or "before edge k" (found gone).
+      def self.destroyed_body_error(op_name, where, total)
+        Core::StructuredError.new(-32603,
+          "#{op_name}: SketchUp's subtract failed #{where} of #{total} and destroyed " \
+          "the body; the operation was rolled back, the model is unchanged")
       end
 
       # Find the current edge in `entity` that succeeds `orig_spec`. Match
