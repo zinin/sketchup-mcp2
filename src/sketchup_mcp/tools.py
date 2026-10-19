@@ -273,10 +273,10 @@ async def export_scene(
     Formats: skp (native), obj / dae / stl (geometry), png / jpg (viewport
     render, default 1920×1080). The file is written on the machine running
     SketchUp — on a split-host setup the path is not directly readable here.
+    An untitled model cannot be exported to skp (-32602) — the user must save
+    it first; other formats work.
 
-    Returns: JSON {path, format} plus a "warning" field when exporting skp
-    from a never-saved model (SketchUp binds the live document to the export
-    path — relay the warning to the user).
+    Returns: JSON {path, format}.
     """
     return await _call(ctx, "export", format=format)
 
