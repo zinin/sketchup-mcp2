@@ -87,7 +87,7 @@ All dimensions in **millimeters**; angles in **degrees**. Every entity-returning
 |---|---|---|
 | `SKETCHUP_MCP_HOST` | `127.0.0.1` | Where to connect to the SketchUp extension |
 | `SKETCHUP_MCP_PORT` | `9876` | TCP port |
-| `SKETCHUP_MCP_TIMEOUT` | `60` | Per-tool-call timeout (seconds) |
+| `SKETCHUP_MCP_TIMEOUT` | `60` | Per-tool-call timeout (seconds); keep it at 30 or more — chamfer/fillet stop themselves after 30 s inside SketchUp |
 | `SKETCHUP_MCP_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
 
 ### Ruby side (Settings dialog inside SketchUp)

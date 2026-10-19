@@ -328,9 +328,20 @@ class SketchUpConnection:
             # write — `disconnect()` форсирует свежий TCP-сокет. НЕ retry:
             # peer мог успеть commit мутацию, второй вызов задвоил бы её.
             await self.disconnect()
-            raise SketchUpError(
-                -32000, f"timeout after {self.timeout}s"
-            ) from None
+            message = f"timeout after {self.timeout}s"
+            if name not in _RETRY_SAFE_TOOLS:
+                # M-07: SketchUp не знает про наш таймаут и дорабатывает запрос
+                # до конца — мутация может закоммититься уже после ошибки, а
+                # слепой повтор задвоит её (двойная фаска). Говорим об этом
+                # прямо, как и в stale-socket ветке `send_command`. Read-only
+                # tools из whitelist'а повторять безопасно — их сообщение
+                # остаётся прежним.
+                message += (
+                    f" — SketchUp may still finish and commit '{name}'; "
+                    f"check the model (get_component_info / list_components) "
+                    f"before retrying"
+                )
+            raise SketchUpError(-32000, message) from None
         except asyncio.IncompleteReadError as e:
             # EOF до полного ответа — заголовок не пришёл вовсе (partial == b"")
             # или оборван посреди фрейма. Различие partial-пустоты больше НЕ

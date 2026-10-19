@@ -179,6 +179,33 @@ async def test_send_command_timeout_disconnects(make_connection, fake_streams):
     assert conn._writer is None
 
 
+async def test_timeout_on_mutating_tool_warns_it_may_commit(make_connection):
+    """M-07: SketchUp продолжает работу после клиентского таймаута и может ещё
+    закоммитить мутацию — слепой повтор задвоил бы её (двойная фаска). Для
+    не-whitelist'ного tool'а таймаут говорит об этом прямо и называет, как
+    проверить модель. Код остаётся -32000, сокет по-прежнему сбрасывается."""
+    conn = make_connection(timeout=0.05)  # the reader never answers
+    with pytest.raises(SketchUpError) as ei:
+        await conn.send_command("chamfer_edges", {})
+    assert ei.value.code == -32000
+    assert ei.value.message == (
+        "timeout after 0.05s — SketchUp may still finish and commit 'chamfer_edges'; "
+        "check the model (get_component_info / list_components) before retrying"
+    )
+    assert conn._writer is None
+
+
+async def test_timeout_on_read_only_tool_keeps_bare_message(make_connection):
+    """Read-only tool (∈ _RETRY_SAFE_TOOLS): повтор безопасен, предупреждать
+    не о чем — сообщение остаётся прежним, без хвоста про commit."""
+    conn = make_connection(timeout=0.05)  # the reader never answers
+    with pytest.raises(SketchUpError) as ei:
+        await conn.send_command("get_model_info", {})
+    assert ei.value.code == -32000
+    assert ei.value.message == "timeout after 0.05s"
+    assert conn._writer is None
+
+
 async def test_send_command_incomplete_read_disconnects(make_connection, fake_streams):
     reader, _ = fake_streams
     conn = make_connection()
