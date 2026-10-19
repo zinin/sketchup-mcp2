@@ -221,7 +221,10 @@ class TestCreateComponentName < Minitest::Test
   FakePoint = Struct.new(:x, :y, :z)
   FakeBounds = Struct.new(:min, :max)
 
-  class NamedGroup
+  # describe_entity различает group/component по классу и зовёт typename
+  # только для остальных сущностей: фейк обязан быть Sketchup::Group, как
+  # настоящий add_group.
+  class NamedGroup < Sketchup::Group
     attr_reader :entities
     attr_accessor :name
     def initialize

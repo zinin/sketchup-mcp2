@@ -53,6 +53,8 @@ module MCPforSketchUp
       end
 
       # Returns {id, name, type, bbox_mm} so Claude can re-locate after destructive ops.
+      # A face or an edge (set_material paints them) has no #name: its type is
+      # its typename in lower case ("face", "edge") and its name is nil.
       # bbox_mm == nil, если у entity пустые bounds (T-55: инвертированный
       # сентинел SketchUp ±1e30" не должен утекать как ±2.54e31 мм).
       def self.describe_entity(entity)
@@ -66,10 +68,16 @@ module MCPforSketchUp
               "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
             }
           end
+        type, name =
+          case entity
+          when Sketchup::Group             then ["group", entity.name]
+          when Sketchup::ComponentInstance then ["component", entity.name]
+          else [entity.typename.downcase, nil]
+          end
         {
           "id"   => entity.entityID,
-          "name" => entity.name,
-          "type" => entity.is_a?(Sketchup::Group) ? "group" : "component",
+          "name" => name,
+          "type" => type,
           "bbox_mm" => bbox_mm
         }
       end

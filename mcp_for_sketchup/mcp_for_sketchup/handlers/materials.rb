@@ -32,22 +32,65 @@ module MCPforSketchUp
         model.start_operation("Set Material (#{name.capitalize})", true)
         begin
           entity = E.find!(id)
+          require_paintable!(entity, id)
           material = ensure_material(model, name)
           apply_to_entity(entity, material)
+          # Describe BEFORE the commit: a failure here must roll the paint
+          # back, not leave it in the model behind an error the client will
+          # answer with a retry or an undo.
+          description = MCPforSketchUp::Handlers::Geometry.describe_entity(entity)
           model.commit_operation
-          MCPforSketchUp::Handlers::Geometry.describe_entity(entity)
+          description
         rescue StandardError
           MCPforSketchUp::Handlers::Geometry.safe_abort(model)
           raise
         end
       end
 
+      # What set_material can paint. The Sketchup constants are resolved at
+      # call time, so loading this file does not need them.
+      def self.paintable?(entity)
+        entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance) ||
+          entity.is_a?(Sketchup::Face) || entity.is_a?(Sketchup::Edge)
+      end
+
+      # Refuse what takes no paint (a ComponentDefinition, say) instead of
+      # committing nothing and reporting a success.
+      def self.require_paintable!(entity, id)
+        return entity if paintable?(entity)
+        raise Core::StructuredError.new(-32602,
+          "set_material needs a group, component instance, face or edge; " \
+          "entity #{id} is a #{entity.typename}")
+      end
+
+      # How a material spec resolves, in this order:
+      #   1. a material of the model with exactly this name, used as is;
+      #   2. a named color or "#rrggbb" in any case, found or created under
+      #      its lower-case name, so "Red" and "red" are one material;
+      #   3. anything else raises -32602 before a material is created.
       def self.ensure_material(model, name)
         existing = model.materials[name]
         return existing if existing
-        material = model.materials.add(name)
-        material.color = pick_color(name)
+
+        canonical = canonical_material_name(name)
+        unless canonical
+          raise Core::StructuredError.new(-32602,
+            "invalid color: #{name.inspect} " \
+            "(expected an existing material name, a named color or '#rrggbb')")
+        end
+        existing = model.materials[canonical]
+        return existing if existing
+
+        material = model.materials.add(canonical)
+        material.color = pick_color(canonical)
         material
+      end
+
+      # The name a color spec is stored under: its lower-case form when it is
+      # a named color or a 6-digit hex, else nil.
+      def self.canonical_material_name(name)
+        lowered = name.downcase
+        lowered if NAMED_COLORS.key?(lowered) || HEX_COLOR_RE.match?(lowered)
       end
 
       # Resolve a color spec to a Sketchup::Color. Accepts:

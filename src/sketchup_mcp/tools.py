@@ -238,17 +238,19 @@ async def set_material(
               description="Named color or 6-digit hex string like #a05030"),
     ],
 ) -> str:
-    """Assign a material (color) to a group or component.
+    """Assign a material (color) to a group, component instance, face or edge.
 
-    material accepts a named color — red, green, blue, yellow, cyan,
-    turquoise, magenta, purple, white, black, brown, wood, orange, gray,
-    grey — or a 6-digit hex string like "#a05030" (#rrggbb). Anything else
-    fails with error -32602. Named colors are case-insensitive. Painting
-    affects only this instance (it is made unique first). That applies to
-    groups/components; painting a raw face/edge id (obtainable via
-    get_selection) colors the shared definition — all instances show it.
+    material: the exact name of a material already in the model, a named color —
+    red, green, blue, yellow, cyan, turquoise, magenta, purple, white, black,
+    brown, wood, orange, gray, grey — or a 6-digit hex string like "#a05030" (#rrggbb).
+    Named colors and hex are case-insensitive and map to one lower-case material
+    ("Red" and "red" are the same). Anything else fails with -32602. Painting a
+    group/component affects only this instance (it is made unique first);
+    painting a raw face/edge id (obtainable via get_selection) colors the shared
+    definition — all instances show it.
 
-    Returns: JSON {id, name, type, bbox_mm{min,max}|null}.
+    Returns: JSON {id, name, type, bbox_mm{min,max}|null}. For a face or edge,
+    type is "face" or "edge" and name is null.
     """
     return await _call(ctx, "set_material", id=str(id), material=material)
 
