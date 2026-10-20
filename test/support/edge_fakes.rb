@@ -149,8 +149,9 @@ module EdgeFakes
       loops.each_with_index do |loop, k|
         counterclockwise = EdgeFakes.vector_area(loop).dot(normal) > 0
         next if counterclockwise == k.zero?
-        raise ArgumentError, "loop #{k} of a face with normal #{normal.to_a} is wound the wrong " \
-                             "way: the outer loop runs counterclockwise around the normal, a hole clockwise"
+        raise ArgumentError, "loop #{k} of a face with normal #{normal.to_a} is wound the " \
+                             "wrong way: the outer loop runs counterclockwise around the " \
+                             "normal, a hole clockwise"
       end
     end
 

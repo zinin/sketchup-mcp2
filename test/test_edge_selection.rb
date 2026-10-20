@@ -112,12 +112,20 @@ class TestEdgeSelection < Minitest::Test
     FakeFace.new(UP, [path + [pt(path.last.x, 100), pt(path.first.x, 100)]])
   end
 
-  # The face hanging 100 below the edge from vertex `from` to `to`, facing
-  # away from a top that spreads from the edge to +y; wound like that top, it
-  # runs the edge from `to` back to `from`.
-  def front_below(from, to)
-    down = FakeVec.new(0.0, 0.0, -100.0)
-    EdgeFakes.facet([to.position, from.position, from.position.offset(down), to.position.offset(down)])
+  # The face beside the edge from vertex `from` to `to`, on the side away
+  # from a top that spreads from the edge to +y, leaving the edge `deg`
+  # degrees above the top's plane: -90 hangs straight down (a box's front),
+  # 10 rises gently (a valley), 90 stands straight up (a wall). Wound like
+  # that top, it runs the edge from `to` back to `from`.
+  def side_face(from, to, deg)
+    a = from.position
+    b = to.position
+    along = b - a
+    away = FakeVec.new(along.y, -along.x, 0.0)
+    away.length = 1.0
+    rad = deg * Math::PI / 180.0
+    leave = FakeVec.new(away.x * Math.cos(rad), away.y * Math.cos(rad), Math.sin(rad))
+    EdgeFakes.facet([b, a, a.offset(leave, 100.0), b.offset(leave, 100.0)])
   end
 
   # Two edges meeting at a vertex; the second leaves it turned by `turn_deg`.
@@ -132,10 +140,31 @@ class TestEdgeSelection < Minitest::Test
     b = FakeVertex.new(FakePt.new(50.0 + 50.0 * Math.cos(rad), 50.0 * Math.sin(rad), 0.0))
     if same_faces
       top = top_beside(a, v, b)
-      [FakeEdge.new(a, v, [top, front_below(a, v)]), FakeEdge.new(v, b, [top, front_below(v, b)])]
+      [FakeEdge.new(a, v, [top, side_face(a, v, -90)]),
+       FakeEdge.new(v, b, [top, side_face(v, b, -90)])]
     else
-      [FakeEdge.new(a, v, [top_beside(a, v), front_below(a, v)]),
-       FakeEdge.new(v, b, [top_beside(v, b), front_below(v, b)])]
+      [FakeEdge.new(a, v, [top_beside(a, v), side_face(a, v, -90)]),
+       FakeEdge.new(v, b, [top_beside(v, b), side_face(v, b, -90)])]
+    end
+  end
+
+  # Five edges along the front of a flat top (normal UP, spreading to +y),
+  # the path turning left by 10 degrees at each vertex, so any two neighbours
+  # on it would make a curved rim. Each edge has the top as faces[0] and a
+  # face of its own beyond it (see side_face):
+  #   0, 2, 3  a front hanging down: convex feature edges
+  #   1        a face rising 10 degrees: a seam, concave as well
+  #   4        a wall standing up: a concave edge
+  def skip_order_rim
+    corners = [FakeVertex.new(pt(0, 0))]
+    5.times do |k|
+      heading = k * 10 * Math::PI / 180.0
+      step = FakeVec.new(Math.cos(heading), Math.sin(heading), 0.0)
+      corners << FakeVertex.new(corners.last.position.offset(step, 50.0))
+    end
+    top = top_beside(*corners)
+    [-90, 10, -90, -90, 90].each_with_index.map do |deg, k|
+      FakeEdge.new(corners[k], corners[k + 1], [top, side_face(corners[k], corners[k + 1], deg)])
     end
   end
 
@@ -273,7 +302,8 @@ class TestEdgeSelection < Minitest::Test
     # edges, normals 2.2 .. 22.4 degrees apart.
     edges = EdgeFakes.sphere
     assert_equal 496, edges.size
-    assert_equal [2.2, 22.4], edges.map { |edge| normals_apart(edge) }.minmax.map { |deg| deg.round(1) }
+    angles = edges.map { |edge| normals_apart(edge) }
+    assert_equal [2.2, 22.4], angles.minmax.map { |deg| deg.round(1) }
     [false, true].each do |skip_curved|
       sel = OPS.select_feature_edges(edges, skip_curved: skip_curved)
       assert_equal [0, 496, 0, 0], counts(sel), "skip_curved: #{skip_curved}"
@@ -311,6 +341,25 @@ class TestEdgeSelection < Minitest::Test
       assert_equal kept.sort, kept,
                    "kept edges stay in the order given (skip_curved: #{skip_curved})"
     end
+  end
+
+  def test_each_skipped_edge_counts_under_the_first_rule_that_drops_it
+    # Seams go first, then the concave edges among the rest, then (fillet)
+    # the curved rims among what remains. So edge 1 counts as a seam only,
+    # edge 4 as concave only, and edge 0 is kept: its one neighbour on a
+    # curved turn is the seam, already gone.
+    edges = skip_order_rim
+    assert OPS.seam_edge?(edges[1]), "edge 1 is a seam"
+    assert_equal [1, 4], edges.each_index.select { |k| OPS.concave_edge?(edges[k]) }, "concave edges"
+    assert_equal 5, OPS.curved_rim_edges(edges).size, "every edge on a curved turn"
+
+    chamfer = OPS.select_feature_edges(edges, skip_curved: false)
+    assert_equal [3, 1, 1, 0], counts(chamfer)
+    assert_equal [0, 2, 3], positions(edges, chamfer[:edges])
+
+    fillet = OPS.select_feature_edges(edges, skip_curved: true)
+    assert_equal [1, 1, 1, 2], counts(fillet), "edges 2 and 3 are a curved rim"
+    assert_equal [0], positions(edges, fillet[:edges])
   end
 
   # ---------- curved rims ----------
@@ -428,7 +477,8 @@ class TestEdgeSelection < Minitest::Test
     }.each do |name, (edges, volume)|
       assert_in_delta volume, OPS.signed_volume(faces_of(edges)), 1e-6, name
     end
-    { "cylinder" => EdgeFakes.prism(24), "cone" => EdgeFakes.cone, "sphere" => EdgeFakes.sphere }.each do |name, edges|
+    { "cylinder" => EdgeFakes.prism(24), "cone" => EdgeFakes.cone,
+      "sphere" => EdgeFakes.sphere }.each do |name, edges|
       assert_operator OPS.signed_volume(faces_of(edges)), :>, 0, name
     end
   end

@@ -5,6 +5,11 @@
 # unbounded on SketchUp's UI thread. (create_dovetail num_tails and
 # create_finger_joint num_fingers: test_joints_validation.rb.)
 #
+# What a handler uses when the caller leaves such a parameter out is pinned
+# here as well: fillet_edges segments 8, create_dovetail num_tails 3,
+# create_finger_joint num_fingers 5, and create_component segments by type
+# (default_segments_for).
+#
 # Validation runs before any model access. Entities.active_model! is stubbed
 # to raise a marker: a call that gets past validation fails with it, a refused
 # one raises -32602 first. The original method goes back in teardown; one that
@@ -24,10 +29,13 @@ end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints"
 
 class TestParamBounds < Minitest::Test
   OPS = MCPforSketchUp::Handlers::Operations
   GEO = MCPforSketchUp::Handlers::Geometry
+  J   = MCPforSketchUp::Handlers::Joints
+  V   = MCPforSketchUp::Helpers::Validation
   EH  = MCPforSketchUp::Helpers::Entities
   StructuredError = MCPforSketchUp::Core::StructuredError
 
@@ -105,5 +113,58 @@ class TestParamBounds < Minitest::Test
     assert_passes_validation do
       GEO.create_component("type" => "cube", "dimensions" => [100.0, 100.0, 100.0])
     end
+  end
+
+  # ---------- defaults when a parameter is left out ----------
+
+  # The value the handler called in the block gets for `key`: a spy on
+  # Validation.optional_int_range records what it returns for each key, and
+  # the active_model! marker stops the call right after validation. The
+  # original method goes back before this returns.
+  def value_used_for(key)
+    original = V.method(:optional_int_range)
+    seen = {}
+    V.singleton_class.send(:remove_method, :optional_int_range)
+    V.define_singleton_method(:optional_int_range) do |params, name, **bounds|
+      seen[name] = original.call(params, name, **bounds)
+    end
+    assert_passes_validation { yield }
+    assert seen.key?(key), "#{key} was never read"
+    seen[key]
+  ensure
+    V.singleton_class.send(:remove_method, :optional_int_range)
+    V.define_singleton_method(:optional_int_range, original)
+  end
+
+  def test_fillet_segments_default_to_8
+    assert_equal 8, value_used_for("segments") { OPS.fillet_edges("entity_id" => 1, "radius" => 5.0) }
+  end
+
+  def test_dovetail_num_tails_default_to_3
+    assert_equal 3, value_used_for("num_tails") { J.create_dovetail("tail_id" => 1, "pin_id" => 2) }
+  end
+
+  def test_finger_joint_num_fingers_default_to_5
+    used = value_used_for("num_fingers") do
+      J.create_finger_joint("board1_id" => 1, "board2_id" => 2)
+    end
+    assert_equal 5, used
+  end
+
+  # The segments create_component uses for a `type` built without them.
+  def segments_used_by(type)
+    value_used_for("segments") do
+      GEO.create_component("type" => type, "dimensions" => [100.0, 100.0, 100.0])
+    end
+  end
+
+  def test_create_component_segments_default_by_type
+    { "cylinder" => 24, "cone" => 24, "sphere" => 16 }.each do |type, segments|
+      assert_equal segments, GEO.default_segments_for(type), type
+      assert_equal segments, segments_used_by(type), type
+    end
+    # A cube has no segments, so nothing to default to.
+    assert_nil GEO.default_segments_for("cube")
+    assert_nil segments_used_by("cube")
   end
 end
