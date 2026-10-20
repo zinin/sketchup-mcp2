@@ -228,7 +228,14 @@ module MCPforSketchUp
         apex   = [center[0], center[1], center[2] + height]
         group = entities.add_group
         circle = G.circle_points(center, radius, segments)
-        group.entities.add_face(circle)
+        base = group.entities.add_face(circle)
+        # Основание должно смотреть наружу, то есть вниз, и это нужно сделать ДО
+        # боковых граней: SketchUp ориентирует новую грань как соседей. Круг на
+        # z = 0 он разворачивает вниз сам, выше — оставляет нормаль по порядку
+        # вершин (вверх, внутрь конуса), и боковые грани повторяли бы её: конус
+        # выходил вывернутым (live, SketchUp 2026.1: на z = 50 ни одна из 25
+        # граней не смотрела наружу).
+        base.reverse! if base.normal.z > 0
         (0...segments).each do |i|
           j = (i + 1) % segments
           group.entities.add_face(circle[i], circle[j], apex)
@@ -292,6 +299,19 @@ module MCPforSketchUp
                 "build_sphere: skipped degenerate face at pole: #{e.class}: #{e.message}")
             end
           end
+        end
+        # Оболочка выходит вывернутой (live, SketchUp 2026.1: 0 из 256 граней
+        # наружу): первая грань, северный полярный треугольник, берёт нормаль по
+        # порядку вершин — внутрь, а остальные ориентируются как соседи. Грани
+        # согласованы между собой, поэтому решение одно на всю оболочку: если
+        # первая смотрит к центру сферы, а не от него, разворачиваем все.
+        faces = group.entities.grep(Sketchup::Face)
+        unless faces.empty?
+          normal = faces.first.normal
+          mid    = faces.first.bounds.center
+          outward = normal.x * (mid.x - center[0]) + normal.y * (mid.y - center[1]) +
+                    normal.z * (mid.z - center[2])
+          faces.each(&:reverse!) if outward < 0
         end
         group
       end
