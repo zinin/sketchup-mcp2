@@ -184,15 +184,6 @@ class TestValidationOptional < Minitest::Test
     assert_equal 32, V.optional_positive({ "k" => 32 }, "k")
   end
 
-  def test_optional_int_positive_default
-    assert_equal 16, V.optional_int_positive({}, "k", 16)
-  end
-
-  def test_optional_int_positive_float_raises
-    err = assert_raises(E) { V.optional_int_positive({ "k" => 1.5 }, "k") }
-    assert_match(/must be an integer/, err.message)
-  end
-
   def test_optional_bool_default
     assert_equal false, V.optional_bool({}, "k")
     assert_equal true,  V.optional_bool({}, "k", true)

@@ -130,6 +130,13 @@ module MCPforSketchUp
       # (tests/test_tool_descriptions.py checks that they agree).
       EDGE_OP_BUDGET_S = 30.0
 
+      # The stats of a chamfer/fillet call before anything is counted.
+      # run_edge_op counts into a copy.
+      ZERO_STATS = { "attempted" => 0, "skipped_no_match" => 0,
+                     "subtract_failed" => 0, "succeeded" => 0,
+                     "skipped_seam" => 0, "skipped_concave" => 0,
+                     "skipped_curved" => 0 }.freeze
+
       def self.chamfer_edges(params)
         entity_id = V.require_id(params, "entity_id")
         distance_in = U.mm_to_inch(V.require_positive(params, "distance"))
@@ -186,10 +193,7 @@ module MCPforSketchUp
         model = E.active_model!
         model.start_operation(op_name, true)
         @_last_edges_done = 0
-        @_last_stats = { "attempted" => 0, "skipped_no_match" => 0,
-                         "subtract_failed" => 0, "succeeded" => 0,
-                         "skipped_seam" => 0, "skipped_concave" => 0,
-                         "skipped_curved" => 0 }
+        @_last_stats = ZERO_STATS.dup
         begin
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
@@ -322,10 +326,7 @@ module MCPforSketchUp
       end
 
       def self.last_stats
-        @_last_stats || { "attempted" => 0, "skipped_no_match" => 0,
-                          "subtract_failed" => 0, "succeeded" => 0,
-                          "skipped_seam" => 0, "skipped_concave" => 0,
-                          "skipped_curved" => 0 }
+        @_last_stats || ZERO_STATS
       end
 
       # Monotonic seconds for EDGE_OP_BUDGET_S: unlike Time.now it does not

@@ -91,8 +91,7 @@ module MCPforSketchUp
       # The name a color spec is stored under: its lower-case form when it is
       # a named color or a 6-digit hex, else nil.
       def self.canonical_material_name(name)
-        lowered = name.downcase
-        lowered if NAMED_COLORS.key?(lowered) || HEX_COLOR_RE.match?(lowered)
+        name.downcase if color_rgb(name)
       end
 
       # Resolve a color spec to a Sketchup::Color. Accepts:
@@ -102,16 +101,21 @@ module MCPforSketchUp
       # silent brown-wood fallback (which used to mask typos like "#XYZ" or
       # 3-/8-char hex).
       def self.pick_color(name)
-        named = NAMED_COLORS[name.downcase]
-        return Sketchup::Color.new(*named) if named
-        if HEX_COLOR_RE.match?(name)
-          r = name[1..2].to_i(16)
-          g = name[3..4].to_i(16)
-          b = name[5..6].to_i(16)
-          return Sketchup::Color.new(r, g, b)
-        end
+        rgb = color_rgb(name)
+        return Sketchup::Color.new(*rgb) if rgb
         raise Core::StructuredError.new(-32602,
           "invalid color: #{name.inspect} (expected named color or '#rrggbb')")
+      end
+
+      # What canonical_material_name and pick_color both recognise as a color
+      # spec: [r, g, b] of a named color or of "#rrggbb", in any case; nil
+      # for anything else.
+      def self.color_rgb(name)
+        lowered = name.downcase
+        named = NAMED_COLORS[lowered]
+        return named if named
+        return nil unless HEX_COLOR_RE.match?(lowered)
+        [lowered[1..2], lowered[3..4], lowered[5..6]].map { |hex| hex.to_i(16) }
       end
 
       # Material is applied only to the DIRECT-CHILD faces of the
