@@ -19,7 +19,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    # Floor 1.30 = новейший 1.x и первый, против которого тестирует CI.
+    # Floor 1.30 = самая старая версия mcp, против которой тестирует CI
+    # (job python-floor в deps-latest.yml ставит mcp==1.30.0).
     # <2: mcp 2.x ломает import surface; миграция на 2.x — отдельный тикет.
     # Extra [cli] убран: typer/rich нигде не импортируются.
     "mcp>=1.30,<2",

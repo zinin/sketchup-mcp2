@@ -592,7 +592,7 @@ async def get_viewport_screenshot(
                           "the shot, leaving the user's viewport unchanged"),
     ] = True,
     # NB: bare `list` on purpose — `list[Image | str]` crashes FastMCP tool
-    # registration on mcp 1.27.
+    # registration on mcp 1.27 and 1.30.
 ) -> list:
     """Capture the current SketchUp viewport; returns the PNG image plus a JSON text block {width, height, preset_used, style_used}.
 

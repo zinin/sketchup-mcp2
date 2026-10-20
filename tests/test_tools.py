@@ -241,8 +241,8 @@ async def test_empty_string_id_still_rejected(dispatch_conn):
 async def test_entity_id_schema_exposes_int_and_string():
     """T-06: LLM-видимая схема id обязана предлагать ОБА типа —
     anyOf [{integer}, {string, minLength 1}]. Регистрация union в FastMCP
-    проверена пробой на mcp 1.27; пин защищает от тихой деградации схемы
-    (например, в {}) при апгрейде mcp."""
+    проверена пробой на mcp 1.27 и 1.30; пин защищает от тихой деградации
+    схемы (например, в {}) при апгрейде mcp."""
     tools = {t.name: t for t in await mcp.list_tools()}
     id_schema = tools["delete_component"].inputSchema["properties"]["id"]
     variants = {v.get("type") for v in id_schema.get("anyOf", [])}
