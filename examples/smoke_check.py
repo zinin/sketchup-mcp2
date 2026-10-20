@@ -11,6 +11,10 @@ Pre-conditions:
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
      When SketchUp runs remotely, step 18 (export_scene) degrades to asserting
      Ruby returned a non-empty path — the file lives on the SketchUp host.
+     A non-loopback SKETCHUP_MCP_HOST (a LAN address) counts as remote.
+     Behind a reverse SSH tunnel the host stays 127.0.0.1, so also set
+     SKETCHUP_MCP_SMOKE_REMOTE=1 to get the same degraded check (README.md,
+     "Security model").
 
 Usage:
     python examples/smoke_check.py
@@ -26,6 +30,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 # Force UTF-8 on stdout/stderr so the script's unicode glyphs (→, ←, ✓)
@@ -85,6 +90,18 @@ def text_of(result: dict) -> str:
 
 def parse(result: dict) -> dict:
     return json.loads(text_of(result))
+
+
+def _export_file_is_local(host: str, environ: Mapping[str, str]) -> bool:
+    """Whether step 18 can expect the exported file on this machine's disk.
+
+    A loopback host normally means SketchUp runs here. Behind a reverse SSH
+    tunnel the host is loopback too, yet the file lands on the machine at the
+    far end; SKETCHUP_MCP_SMOKE_REMOTE=1 says so. Only the literal "1" counts.
+    """
+    if environ.get("SKETCHUP_MCP_SMOKE_REMOTE") == "1":
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 async def main() -> int:
@@ -205,8 +222,9 @@ async def main() -> int:
         step = 18; print(f"[{step}] export_scene format=png")
         ex = parse(await call(conn, "export_scene", format="png"))
         path = ex["path"]
-        # Split-host: when SketchUp runs remotely the export file isn't visible here.
-        if config.HOST in {"127.0.0.1", "localhost", "::1"}:
+        # Split-host: when SketchUp runs remotely the export file isn't visible here
+        # (a LAN address, or a loopback tunnel marked with SKETCHUP_MCP_SMOKE_REMOTE=1).
+        if _export_file_is_local(config.HOST, os.environ):
             assert os.path.exists(path), f"export file missing: {path}"
         else:
             assert path, "export_scene returned empty path"

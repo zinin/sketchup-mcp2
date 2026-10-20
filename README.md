@@ -180,7 +180,10 @@ uv run python examples/smoke_check.py          # 25-step end-to-end
 uv run python examples/smoke_multi_client.py   # concurrent multi-client
 ```
 
-For a split-host setup (e.g. Linux dev box + Windows SketchUp), prefix with `SKETCHUP_MCP_HOST=<sketchup-host>`.
+For a split-host setup (e.g. Linux dev box + Windows SketchUp), run the smokes on the Linux side. The file `export_scene` writes in step 18 of `smoke_check.py` then lands on the SketchUp machine, so that step only asserts that a path came back. Two ways to reach SketchUp:
+
+- **SSH tunnel** (preferred, see [Security model](#security-model)): the host stays `127.0.0.1`, so the script cannot tell that SketchUp is remote. Run `SKETCHUP_MCP_SMOKE_REMOTE=1 uv run python examples/smoke_check.py`; without the variable step 18 looks for the export file on the Linux machine and fails. `smoke_multi_client.py` needs nothing extra.
+- **LAN address**: prefix either script with `SKETCHUP_MCP_HOST=<sketchup-host>`. A non-loopback host is recognized as remote on its own. The plugin has to listen on that address, with the risks described in the Security model.
 
 ## Troubleshooting
 

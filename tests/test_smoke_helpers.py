@@ -33,3 +33,27 @@ def test_maybe_skip_eval_re_raises_other_codes():
     with pytest.raises(SketchUpError) as ei:
         asyncio.run(_smoke._maybe_skip_eval("step 6", boom()))
     assert ei.value.code == -32000
+
+
+def test_export_file_is_local_on_loopback():
+    assert _smoke._export_file_is_local("127.0.0.1", {}) is True
+
+
+@pytest.mark.parametrize("host", ["localhost", "::1"])
+def test_export_file_is_local_on_other_loopback_spellings(host):
+    assert _smoke._export_file_is_local(host, {}) is True
+
+
+def test_export_file_is_not_local_for_lan_host():
+    assert _smoke._export_file_is_local("192.168.1.20", {}) is False
+
+
+def test_export_file_is_not_local_behind_tunnel():
+    # A reverse SSH tunnel keeps the host on loopback, but the export file
+    # lands on the SketchUp machine at the other end.
+    assert _smoke._export_file_is_local("127.0.0.1", {"SKETCHUP_MCP_SMOKE_REMOTE": "1"}) is False
+
+
+@pytest.mark.parametrize("value", ["", "0", "true"])
+def test_only_literal_one_opts_out_of_the_local_export_check(value):
+    assert _smoke._export_file_is_local("127.0.0.1", {"SKETCHUP_MCP_SMOKE_REMOTE": value}) is True

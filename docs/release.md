@@ -88,20 +88,27 @@ Python releases only.
 uvx twine upload --repository testpypi dist/*
 ```
 
-Verify install in a fresh venv (the project's own `.venv` would conflict):
+Check by hash that TestPyPI holds exactly the files you built. The command prints `TestPyPI matches dist/` when the two lists agree, and the differing lines when they do not:
 
 ```bash
-mkdir -p /tmp/verify && cd /tmp/verify && uv venv -q && \
-  uv pip install -q --index-url https://test.pypi.org/simple/ \
-    --extra-index-url https://pypi.org/simple/ \
-    --index-strategy unsafe-best-match \
-    sketchup-mcp2==X.Y.Z && \
-  .venv/bin/python -c "import sketchup_mcp; print(sketchup_mcp.__version__)"
-rm -rf /tmp/verify
+diff <(sha256sum dist/* | sort) \
+     <(curl -fsS https://test.pypi.org/pypi/sketchup-mcp2/X.Y.Z/json \
+         | jq -r '.urls[] | "\(.digests.sha256)  dist/\(.filename)"' | sort) \
+  && echo "TestPyPI matches dist/"
 ```
 
-`--extra-index-url` is required — TestPyPI doesn't host the `mcp` dependency.
-`--index-strategy unsafe-best-match` is required because uv otherwise locks onto the first index that contains the package at all; once `sketchup-mcp2` exists on pypi.org, uv won't look at TestPyPI for the new version without this flag.
+A difference means TestPyPI serves something other than your build. Do not continue to [§5](#5-production-pypi) until you know why.
+
+Then install the **local** wheel into a fresh venv. Dependencies come from PyPI only, because the command names no other index:
+
+```bash
+VENV=$(mktemp -d) && uv venv -q "$VENV" && \
+  uv pip install -q --python "$VENV/bin/python" dist/sketchup_mcp2-X.Y.Z-py3-none-any.whl && \
+  "$VENV/bin/python" -c "import sketchup_mcp; print(sketchup_mcp.__version__)"
+rm -rf "$VENV"
+```
+
+**Why there is no install from TestPyPI.** The rehearsal used to run `uv pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match sketchup-mcp2==X.Y.Z`. That command resolves every dependency from **both** indexes, and anyone can register a dependency name that TestPyPI does not host, so a stranger's package could be installed and executed on the machine that holds the PyPI token (`~/.pypirc`) a minute before `twine upload`. Do not reinstate it.
 
 ## 5. Production PyPI
 
