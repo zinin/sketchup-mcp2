@@ -5,7 +5,8 @@
 # Loads core/ (all but application.rb) and handlers/dispatch.rb without
 # SketchUp and serves them on a real TCP socket. Every module that
 # Dispatch.call_handler routes to becomes an echo module; the routes are read
-# from dispatch.rb as text, the way test/test_dispatch_routing.rb reads them.
+# from dispatch.rb as text, with the DispatchTable that
+# test/test_dispatch_routing.rb reads them with.
 # An echo method prints one line,
 # {"handler": "<Module>.<method>", "params": {...}}, and returns
 # {"echo" => true}. The real handler files are never loaded, so nothing calls
@@ -19,6 +20,7 @@
 #
 # Not a test file: test/run_all.rb and the Rakefile load only test/test_*.rb.
 require "json"
+require_relative "../support/dispatch_table"
 
 # Logger writes to $stdout when there is no SketchUp console. Pointing $stdout
 # at stderr keeps its lines, and any stray puts, out of the protocol.
@@ -55,12 +57,10 @@ module UI
   end
 end
 
-DISPATCH_RB = File.join(PLUGIN_DIR, "handlers", "dispatch.rb")
 # [module name, method name] for each Handlers::<Module>.<method>(params) in
 # call_handler's `case tool` table.
-ROUTES = File.read(DISPATCH_RB, encoding: "UTF-8")[/def self\.call_handler\b.*?\bcase tool\b(.*?)^\s*else\b/m, 1]
-             .to_s.scan(/\bHandlers::(\w+)\.(\w+)\(params\)/).uniq
-abort "echo_server: no Handlers::<Module>.<method>(params) in #{DISPATCH_RB}" if ROUTES.empty?
+ROUTES = DispatchTable.routes.map { |_wires, module_name, method_name| [module_name, method_name] }.uniq
+abort "echo_server: no Handlers::<Module>.<method>(params) in #{DispatchTable::DISPATCH_RB}" if ROUTES.empty?
 
 ROUTES.group_by(&:first).each do |module_name, routes|
   echo = Module.new

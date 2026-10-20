@@ -4,8 +4,9 @@
 #
 # Nothing else exercises the table itself: a row with a mistyped module or
 # method name, or one that drops its params, fails only when a client sends
-# that wire name. The table is read from dispatch.rb as text and each wire
-# name becomes a test (ROUTES), so a new row is covered without touching this
+# that wire name. The table is read from dispatch.rb as text (DispatchTable,
+# which the wire-contract harness reads it with too) and each wire name
+# becomes a test (ROUTES), so a new row is covered without touching this
 # file. A test replaces the row's handler method with a recording stub,
 # dispatches the wire name and expects one call that got the params object. The
 # method must exist before it is stubbed, which is why every handler file is
@@ -20,6 +21,7 @@
 # test_view.rb has loaded view.rb with its stub.
 require "minitest/autorun"
 
+require_relative "support/dispatch_table"
 require_relative "support/singleton_stubs"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
@@ -36,15 +38,11 @@ class TestDispatchRouting < Minitest::Test
 
   HANDLER_DIR = File.expand_path("../mcp_for_sketchup/mcp_for_sketchup/handlers", __dir__)
 
-  DISPATCH_SOURCE = File.read(File.join(HANDLER_DIR, "dispatch.rb"), encoding: "UTF-8")
-
   # The text of call_handler's `case tool` table, from `case tool` to `else`.
-  TABLE = DISPATCH_SOURCE[/def self\.call_handler\b.*?\bcase tool\b(.*?)^\s*else\b/m, 1].to_s
+  TABLE = DispatchTable.table
 
   # [wire names, handler module name, method name] for each `when ... then` row.
-  ROUTES = TABLE.scan(/^\s*when\s+(.+?)\s+then\s+Handlers::(\w+)\.(\w+)\(params\)/)
-                .map { |names, mod, meth| [names.scan(/"([^"]+)"/).flatten, mod, meth] }
-                .freeze
+  ROUTES = DispatchTable.routes(TABLE).freeze
 
   # Loads every handler file, once. Only view.rb needs a SketchUp class at
   # load time; when nothing has defined Geom::Vector3d yet (this file run on
