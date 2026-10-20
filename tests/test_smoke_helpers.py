@@ -1,4 +1,7 @@
+import ast
 import asyncio
+import re
+
 import pytest
 
 from sketchup_mcp.compat import EVAL_DISABLED_CODE
@@ -57,3 +60,58 @@ def test_export_file_is_not_local_behind_tunnel():
 @pytest.mark.parametrize("value", ["", "0", "true"])
 def test_only_literal_one_opts_out_of_the_local_export_check(value):
     assert _smoke._export_file_is_local("127.0.0.1", {"SKETCHUP_MCP_SMOKE_REMOTE": value}) is True
+
+
+# --- the wiring of main(): it needs a live SketchUp, so it is read, not run ---
+
+_SMOKE_SOURCE = _SMOKE_PATH.read_text(encoding="utf-8")
+
+
+def _smoke_main() -> ast.AsyncFunctionDef:
+    tree = ast.parse(_SMOKE_SOURCE)
+    return next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "main")
+
+
+def _step_lines() -> dict[int, int]:
+    """{step number: line of its `step = N` assignment} in main()."""
+    return {
+        node.value.value: node.lineno
+        for node in ast.walk(_smoke_main())
+        if isinstance(node, ast.Assign)
+        and [t.id for t in node.targets if isinstance(t, ast.Name)] == ["step"]
+        and isinstance(node.value, ast.Constant)
+    }
+
+
+def test_step_18_asks_export_file_is_local_with_the_host_and_the_environment():
+    """T14-d: step 18 chooses between «the file exists here» and «Ruby returned a
+    path» by calling _export_file_is_local(config.HOST, os.environ). Тесты самого
+    хелпера остались бы зелёными, если бы вызов убрали или подали ему литерал.
+    Падающий local-assert подсказывает SKETCHUP_MCP_SMOKE_REMOTE=1."""
+    branches = [
+        node for node in ast.walk(_smoke_main())
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Call)
+        and getattr(node.test.func, "id", None) == "_export_file_is_local"
+    ]
+    assert len(branches) == 1, "main() must call _export_file_is_local exactly once"
+    branch = branches[0]
+    steps = _step_lines()
+    assert steps[18] < branch.lineno < steps[19], "the call belongs to step 18"
+    assert [ast.unparse(a) for a in branch.test.args] == ["config.HOST", "os.environ"]
+    local_check = branch.body[0]
+    assert isinstance(local_check, ast.Assert)
+    assert "os.path.exists(path)" in ast.unparse(local_check.test)
+    assert "SKETCHUP_MCP_SMOKE_REMOTE=1" in ast.unparse(local_check.msg)
+
+
+def test_smoke_steps_are_consecutive_and_every_total_agrees():
+    """Вставка шага перенумеровывает следующие за ним и все места, где названо
+    число шагов: итоговая строка скрипта, README, CLAUDE.md."""
+    numbers = sorted(n for n in _step_lines() if n > 0)
+    assert numbers == list(range(1, len(numbers) + 1)), f"steps are not 1..N: {numbers}"
+    total = len(numbers)
+    assert f"Smoke complete: {total} steps total" in _SMOKE_SOURCE
+    for doc in ("README.md", "CLAUDE.md"):
+        text = (_SMOKE_PATH.parents[1] / doc).read_text(encoding="utf-8")
+        assert set(re.findall(r"(\d+)-step", text)) == {str(total)}, (
+            f"{doc} must say {total}-step wherever it counts the smoke steps")

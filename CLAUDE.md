@@ -96,7 +96,7 @@ ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git chec
 uv run pytest tests/ -q        # Python (pytest) — 206 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 25-step end-to-end (covers every tool category; 19 of 22 tools)
+python examples/smoke_check.py # 26-step end-to-end (covers every tool category; 19 of 22 tools)
 ```
 
 Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load check).

@@ -130,7 +130,7 @@ For richer Ruby recipes that drive the SketchUp API directly — framed walls, g
 
 Working examples and load tests live in [`examples/`](examples/):
 
-- `smoke_check.py` — 25-step end-to-end verification of every tool category.
+- `smoke_check.py` — 26-step end-to-end verification of every tool category.
 - `smoke_multi_client.py` — concurrent multi-client load test.
 
 ## Architecture
@@ -174,7 +174,7 @@ uv run pytest tests/ -q          # Python unit tests
 ### Live smoke (requires SketchUp running with the extension started)
 
 ```bash
-uv run python examples/smoke_check.py          # 25-step end-to-end
+uv run python examples/smoke_check.py          # 26-step end-to-end
 uv run python examples/smoke_multi_client.py   # concurrent multi-client
 ```
 
