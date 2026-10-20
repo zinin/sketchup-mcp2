@@ -88,3 +88,35 @@ async def test_set_material_lists_named_colors():
     desc = tools["set_material"].description or ""
     for color in ("red", "wood", "gray", "#rrggbb"):
         assert color in desc, f"set_material: не перечислен {color}"
+
+
+async def test_group_only_tools_say_other_entities_fail():
+    """M-04: delete_component и transform_component работают только с группами
+    и экземплярами компонентов; id грани или ребра из get_selection даёт -32602.
+    Докстринг — единственное, что об этом знает модель, поэтому фраза
+    пинится."""
+    tools = {t.name: t for t in await mcp.list_tools()}
+    fragments = {
+        "delete_component": "Raw faces, edges and other entities fail with -32602.",
+        "transform_component": "Groups and component instances only; "
+                               "other entities fail with -32602.",
+    }
+    for name, frag in fragments.items():
+        desc = " ".join((tools[name].description or "").split())
+        assert frag in desc, f"{name}: в докстринге нет «{frag}»"
+
+
+async def test_export_scene_says_an_untitled_model_cannot_export_skp():
+    """M-05: .skp-экспорт несохранённой модели отклоняется (-32602) намеренно
+    (раньше T-27 сохранял её во временный файл и возвращал `warning`). Фраза
+    об отказе пинится; поля `warning` в описании больше нет, ответ —
+    {path, format}."""
+    tools = {t.name: t for t in await mcp.list_tools()}
+    tool = tools["export_scene"]
+    desc = " ".join((tool.description or "").split())
+    for frag in ("An untitled model cannot be exported to skp (-32602)",
+                 "the user must save it first",
+                 "Returns: JSON {path, format}."):
+        assert frag in desc, f"export_scene: в докстринге нет «{frag}»"
+    text = desc + json.dumps(tool.inputSchema)
+    assert "warning" not in text.lower(), "export_scene: поле warning больше не существует"
