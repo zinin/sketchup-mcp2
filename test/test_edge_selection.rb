@@ -180,6 +180,39 @@ class TestEdgeSelection < Minitest::Test
     refute OPS.seam_edge?(edge_on(UP, tilted(10.0), tilted(20.0))), "three faces"
   end
 
+  def test_a_reversed_facet_leaves_its_seams_seams
+    # A default cylinder with one side facet turned inside out. Measured
+    # between the raw normals, the two seams beside it read 165 degrees and
+    # were kept as feature edges; live, the chamfer then cut one, destroyed
+    # the body and rolled back. Measured between normals oriented alike, they
+    # read 15 degrees again, whichever face the edge lists first. Sides: the
+    # first, one in the middle and the last, whose right seam is edge 48.
+    [0, 11, 23].each do |k|
+      edges = EdgeFakes.prism(24)
+      left = edges[48 + k]
+      right = edges[48 + (k + 1) % 24]
+      left.faces[1].reverse!  # side face k, between vertical edges k and k + 1
+      [left, right].each do |seam|
+        assert OPS.seam_edge?(seam), "side #{k} reversed"
+        assert OPS.seam_edge?(FakeEdge.new(seam.start, seam.end, seam.faces.reverse)),
+               "side #{k} reversed, faces swapped"
+      end
+      chamfer = OPS.select_feature_edges(edges, skip_curved: false)
+      assert_equal [48, 24, 0, 0], counts(chamfer), "side #{k} reversed"
+      assert_equal Array(0...48), positions(edges, chamfer[:edges]), "side #{k} reversed"
+      assert_equal [0, 24, 0, 48], counts(OPS.select_feature_edges(edges, skip_curved: true)),
+                   "side #{k} reversed, skip_curved: true"
+    end
+
+    # The same on a sphere: a pole triangle or a quad turned inside out.
+    [0, 1].each do |k|
+      edges = EdgeFakes.sphere
+      faces_of(edges)[k].reverse!
+      assert_equal [0, 496, 0, 0], counts(OPS.select_feature_edges(edges, skip_curved: false)),
+                   "sphere face #{k} reversed"
+    end
+  end
+
   # ---------- select_feature_edges ----------
 
   def test_cylinder_seams_are_skipped

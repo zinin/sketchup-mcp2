@@ -582,10 +582,21 @@ module MCPforSketchUp
       # True for an edge between two facets of a tessellated curved surface:
       # exactly two faces whose normals differ by less than SEAM_MAX_DIHEDRAL_DEG.
       # Boundary, loose and non-manifold edges (faces.length != 2) are not seams.
+      #
+      # The normals are compared as if the two faces were oriented alike.
+      # Faces oriented alike run their shared edge in opposite directions;
+      # when it runs the same way in both (Edge#reversed_in? agrees), one of
+      # them is reversed, and one normal is negated before measuring.
+      # Negating both would give the same angle, so it does not matter which
+      # face is the reversed one. Measured between the raw normals, the two
+      # seams beside one reversed facet of a cylinder read 165° and were kept.
       def self.seam_edge?(edge)
         faces = edge.faces
         return false unless faces.length == 2
-        angle_deg(faces[0].normal, faces[1].normal) < SEAM_MAX_DIHEDRAL_DEG
+        normal_a = faces[0].normal
+        normal_b = faces[1].normal
+        normal_b = normal_b.reverse if edge.reversed_in?(faces[0]) == edge.reversed_in?(faces[1])
+        angle_deg(normal_a, normal_b) < SEAM_MAX_DIHEDRAL_DEG
       end
 
       # True for a concave (inside-corner) edge, such as the base of a post or

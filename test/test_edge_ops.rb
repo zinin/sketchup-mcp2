@@ -335,6 +335,19 @@ class TestEdgeOps < Minitest::Test
     assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
   end
 
+  def test_chamfer_cylinder_with_a_reversed_facet_still_skips_every_seam
+    # Live: a default cylinder with one side facet reversed. Its two seams
+    # read 165° between the raw normals and were kept; the chamfer kept 50
+    # edges and rolled back with -32603 "destroyed the body on edge 49 of 50".
+    edges = EdgeFakes.prism(24)
+    edges[48].faces[1].reverse!  # side face 0, between the seams 48 and 49
+    res = chamfer(@scene.body(edges))
+    assert_equal({ "attempted" => 48, "succeeded" => 48, "skipped_seam" => 24,
+                   "skipped_concave" => 0, "skipped_curved" => 0 }, stats_slice(res))
+    assert_equal Array(0...48), positions(edges, @scene.cut_edges), "both rims cut, no seam"
+    assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
+  end
+
   def test_fillet_mixed_body_cuts_only_the_straight_edges
     # Box − cylinder: the box edges are cut, the hole's rims are counted as
     # curved and its walls as seams.
