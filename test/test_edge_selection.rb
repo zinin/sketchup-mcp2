@@ -568,4 +568,24 @@ class TestEdgeSelection < Minitest::Test
     assert_xyz [0, 0, -1], spec[:perp2], "down the wall"
     assert_xyz [1070, 50, 100], spec[:start_pos]
   end
+
+  # ---------- the fakes check their own winding ----------
+  #
+  # A FakeFace refuses a loop wound against its normal (edge_fakes.rb), so no
+  # fixture holds a face whose normal disagrees with its loops: SketchUp winds
+  # an outer loop counterclockwise around the normal and a hole clockwise, and
+  # Edge#reversed_in? and the signed volume rest on it.
+
+  def test_a_face_refuses_an_outer_loop_wound_clockwise_around_its_normal
+    clockwise = [pt(0, 0), pt(0, 100), pt(100, 100), pt(100, 0)]  # seen from above
+    err = assert_raises(ArgumentError) { FakeFace.new(UP, [clockwise]) }
+    assert_match(/loop 0 .* wound the wrong way/, err.message)
+  end
+
+  def test_a_face_refuses_a_hole_wound_counterclockwise
+    outer = [pt(0, 0), pt(100, 0), pt(100, 100), pt(0, 100)]  # counterclockwise: right
+    hole  = [pt(30, 30), pt(70, 30), pt(70, 70), pt(30, 70)]  # counterclockwise: wrong for a hole
+    err = assert_raises(ArgumentError) { FakeFace.new(UP, [outer, hole]) }
+    assert_match(/loop 1 .* wound the wrong way/, err.message)
+  end
 end
