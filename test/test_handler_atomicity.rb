@@ -234,7 +234,7 @@ class TestHandlerAtomicity < Minitest::Test
     callers = methods.select { |other, code| other != name && code.match?(/\b#{name}\(/) }.keys
     return [name] if callers.empty?
 
-    callers.flat_map { |caller| entry_points(methods, caller, seen + [name]) }
+    callers.flat_map { |outer| entry_points(methods, outer, seen + [name]) }
   end
 
   # "Module.method" of every handler that starts an operation.
