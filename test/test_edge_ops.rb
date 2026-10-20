@@ -543,6 +543,34 @@ class TestEdgeOps < Minitest::Test
     assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
   end
 
+  # The check reads the whole body, so it runs before edge_indices narrows the
+  # edges: a subset must neither get an inside-out body past it nor turn a body
+  # that is not inside-out into one.
+
+  def test_an_inside_out_body_is_refused_with_edge_indices_too
+    body = @scene.body(inside_out(EdgeFakes.box))
+    err = assert_raises(StructuredError) { chamfer(body, "edge_indices" => [0, 1, 2, 3]) }
+    assert_equal(-32602, err.code)
+    assert_equal inside_out_message(body), err.message
+    assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
+    assert_equal 0, @scene.subtract_calls
+  end
+
+  def test_edge_indices_do_not_hide_a_reversed_face_from_the_check
+    # The open-topped box with its outer bottom reversed reads a negative
+    # volume (see above) and is not refused, because its faces disagree. Its
+    # top rim, edges 8..11, borders no reversed face: judged on those edges
+    # alone the faces agree and the volume is negative, and the body would be
+    # refused as inside-out. The filter must come after the check.
+    edges = EdgeFakes.open_box(5.0)
+    edges[0].faces[0].reverse!  # the outer bottom
+    res = chamfer(@scene.body(edges), "edge_indices" => [8, 9, 10, 11])
+    assert_equal({ "attempted" => 4, "succeeded" => 4, "skipped_seam" => 0,
+                   "skipped_concave" => 0, "skipped_curved" => 0 }, stats_slice(res))
+    assert_equal Array(8...12), positions(edges, @scene.cut_edges), "the top rim, cut"
+    assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
+  end
+
   def test_a_body_that_is_not_closed_is_not_checked
     # An open shell has no inside, so neither its orientation nor the sign
     # of its volume is read. This one is inside-out all the same: unchecked,
