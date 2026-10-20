@@ -84,6 +84,17 @@ class _EchoServer:
             pytest.fail(f"echo server exited; expected {expected}")
         return line
 
+    def assert_no_more_lines(self, wait: float = 0.5) -> None:
+        """Nothing more is printed within `wait` seconds: no handler ran that no
+        tool asked for."""
+        try:
+            line = self._lines.get(timeout=wait)
+        except queue.Empty:
+            return
+        if line is None:
+            pytest.fail("echo server exited after the last tool")
+        pytest.fail(f"echo server printed {line!r} after the last tool")
+
     def read_port(self) -> None:
         line = self._next("the `PORT <n>` line")
         key, _, value = line.strip().partition(" ")
@@ -122,15 +133,19 @@ def echo_server():
 
 def _minimal_args(tool_name: str, schema: dict) -> dict:
     """The tool's required arguments only, so every other one is the wrapper's
-    default: entity ids "1", "2", ..., material "red", any other string "x"."""
+    default: entity ids "1", "2", ..., material "red", the first value of an
+    enum, any other string "x"."""
     args, ids = {}, 0
     for name in schema.get("required", []):
+        prop = schema["properties"][name]
         if name == "id" or name.endswith("_id"):
             ids += 1
             args[name] = str(ids)
         elif name == "material":
             args[name] = "red"
-        elif schema["properties"][name].get("type") == "string":
+        elif "enum" in prop:
+            args[name] = prop["enum"][0]
+        elif prop.get("type") == "string":
             args[name] = "x"
         else:
             pytest.fail(f"{tool_name}: no minimal value for required {name!r}; add one")
@@ -180,7 +195,11 @@ async def test_every_mcp_tool_reaches_ruby_with_the_arguments_it_sent(
                 reply = str(raised.value)
             else:
                 reply = _text_of(await mcp.call_tool(tool.name, args))
-                assert "[-32601]" not in reply, f"{tool.name}: {reply}"
+            # A wire name that dispatch.rb does not route is answered with
+            # -32601 "unknown tool: <name>". Most wrappers print the code;
+            # get_version's drops it, so the text is checked as well.
+            for unrouted in ("[-32601]", "unknown tool"):
+                assert unrouted not in reply, f"{tool.name}: {reply}"
             assert len(sent) == 1, f"{tool.name} sent {len(sent)} requests: {sent}"
             wire_name, sent_args = sent[0]
             logged = echo_server.next_line(
@@ -194,6 +213,8 @@ async def test_every_mcp_tool_reaches_ruby_with_the_arguments_it_sent(
             assert logged["params"] == json.loads(json.dumps(sent_args)), (
                 f"{tool.name}: Ruby got {logged['params']}, Python sent {sent_args}"
             )
+        # One handler line per tool and no other: nothing ran that no tool asked for.
+        echo_server.assert_no_more_lines()
         # The real hello handshake succeeded: the first call went through.
     finally:
         await conn.aclose()
