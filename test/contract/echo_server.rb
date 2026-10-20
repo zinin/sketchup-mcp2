@@ -5,10 +5,9 @@
 # Loads core/ (all but application.rb) and handlers/dispatch.rb without
 # SketchUp and serves them on a real TCP socket. Every module that
 # Dispatch.call_handler routes to becomes an echo module; the routes are read
-# from dispatch.rb as text, with the DispatchTable that
-# test/test_dispatch_routing.rb reads them with.
-# An echo method prints one line,
-# {"handler": "<Module>.<method>", "params": {...}}, and returns
+# from dispatch.rb as text by DispatchTable (test/support/dispatch_table.rb),
+# which test/test_dispatch_routing.rb uses too. An echo method prints one
+# line, {"handler": "<Module>.<method>", "params": {...}}, and returns
 # {"echo" => true}. The real handler files are never loaded, so nothing calls
 # the SketchUp API. ::UI.start_timer only records the server's tick, and the
 # loop at the bottom fires it once per Server::TIMER_INTERVAL.
