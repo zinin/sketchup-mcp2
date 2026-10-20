@@ -72,15 +72,23 @@ def _smoke_main() -> ast.AsyncFunctionDef:
     return next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "main")
 
 
-def _step_lines() -> dict[int, int]:
-    """{step number: line of its `step = N` assignment} in main()."""
-    return {
-        node.value.value: node.lineno
+def _step_assignments() -> list[tuple[int, int]]:
+    """[(step number, line)] of every `step = N` assignment in main(), sorted.
+    A list, not a dict: a number that is used twice must stay visible."""
+    return sorted(
+        (node.value.value, node.lineno)
         for node in ast.walk(_smoke_main())
         if isinstance(node, ast.Assign)
         and [t.id for t in node.targets if isinstance(t, ast.Name)] == ["step"]
         and isinstance(node.value, ast.Constant)
-    }
+    )
+
+
+def _step_line(number: int) -> int:
+    """The line of the one `step = <number>` assignment in main()."""
+    lines = [line for n, line in _step_assignments() if n == number]
+    assert len(lines) == 1, f"step {number} is assigned {len(lines)} times in main()"
+    return lines[0]
 
 
 def test_step_18_asks_export_file_is_local_with_the_host_and_the_environment():
@@ -95,8 +103,7 @@ def test_step_18_asks_export_file_is_local_with_the_host_and_the_environment():
     ]
     assert len(branches) == 1, "main() must call _export_file_is_local exactly once"
     branch = branches[0]
-    steps = _step_lines()
-    assert steps[18] < branch.lineno < steps[19], "the call belongs to step 18"
+    assert _step_line(18) < branch.lineno < _step_line(19), "the call belongs to step 18"
     assert [ast.unparse(a) for a in branch.test.args] == ["config.HOST", "os.environ"]
     local_check = branch.body[0]
     assert isinstance(local_check, ast.Assert)
@@ -106,12 +113,17 @@ def test_step_18_asks_export_file_is_local_with_the_host_and_the_environment():
 
 def test_smoke_steps_are_consecutive_and_every_total_agrees():
     """Вставка шага перенумеровывает следующие за ним и все места, где названо
-    число шагов: итоговая строка скрипта, README, CLAUDE.md."""
-    numbers = sorted(n for n in _step_lines() if n > 0)
+    число шагов: итоговая строка скрипта, README, CLAUDE.md. Каждый номер
+    встречается один раз; в документах считаются только упоминания самого
+    smoke_check.py (строка с его именем и «N-step»)."""
+    numbers = [n for n, _ in _step_assignments() if n > 0]
+    repeated = sorted({n for n in numbers if numbers.count(n) > 1})
+    assert not repeated, f"step numbers used more than once: {repeated}"
     assert numbers == list(range(1, len(numbers) + 1)), f"steps are not 1..N: {numbers}"
     total = len(numbers)
     assert f"Smoke complete: {total} steps total" in _SMOKE_SOURCE
     for doc in ("README.md", "CLAUDE.md"):
         text = (_SMOKE_PATH.parents[1] / doc).read_text(encoding="utf-8")
-        assert set(re.findall(r"(\d+)-step", text)) == {str(total)}, (
-            f"{doc} must say {total}-step wherever it counts the smoke steps")
+        counts = set(re.findall(r"smoke_check\.py[^\n]*?\b(\d+)-step\b", text))
+        assert counts == {str(total)}, (
+            f"{doc} must say {total}-step on the lines that name smoke_check.py; found {sorted(counts)}")
