@@ -50,9 +50,11 @@ async def test_returns_lines_pin_top_response_shapes():
         # Реальная форма stats из operations.rb::run_edge_op — ключа "failed"
         # не существует; дрейф докстринга от wire-формы ловится здесь.
         "chamfer_edge": "stats{attempted, succeeded, subtract_failed, "
-                        "skipped_no_match, skipped_seam, skipped_curved}",
+                        "skipped_no_match, skipped_seam, skipped_concave, "
+                        "skipped_curved}",
         "fillet_edge": "stats{attempted, succeeded, subtract_failed, "
-                       "skipped_no_match, skipped_seam, skipped_curved}",
+                       "skipped_no_match, skipped_seam, skipped_concave, "
+                       "skipped_curved}",
     }
     for name, frag in expected_fragments.items():
         # Пробелы схлопываются: перенос строки внутри фрагмента (stats{...}

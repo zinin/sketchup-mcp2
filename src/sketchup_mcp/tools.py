@@ -498,17 +498,20 @@ async def chamfer_edge(
 ) -> str:
     """Chamfer (bevel) every feature edge of a group/component by ``distance`` mm.
 
-    Seams of curved surfaces — edges whose two faces meet at less than 25°, such
-    as a cylinder's vertical facet edges or every edge of a sphere — are skipped;
-    the rims of curved surfaces are chamfered segment by segment. A body with no
-    feature edges fails with -32602. One call runs at most 30 s inside SketchUp;
-    past that it rolls back and changes nothing. Unreliable on non-manifold
-    geometry.
+    Seams of curved surfaces — edges where the surface bends by less than 25°
+    (the two face normals differ by under 25°), such as a cylinder's vertical
+    facet edges or every edge of a sphere — are skipped; the rims of curved
+    surfaces are chamfered segment by segment. Concave (inside-corner) edges,
+    such as the base of a post or the inner corner of an L-shaped block, are
+    skipped too: chamfering them would need added material. A body with no
+    feature edges fails with -32602. One call runs at most 30 s inside
+    SketchUp; past that it rolls back and changes nothing. Unreliable on
+    non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_chamfered,
     stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
-    skipped_curved}} — check stats.subtract_failed == 0 (failed cuts) and
-    stats.skipped_no_match == 0 (edges consumed by earlier cuts).
+    skipped_concave, skipped_curved}} — check stats.subtract_failed == 0 (failed
+    cuts) and stats.skipped_no_match == 0 (edges consumed by earlier cuts).
     """
     return await _call(ctx, "chamfer_edges", entity_id=str(id), distance=distance)
 
@@ -529,17 +532,19 @@ async def fillet_edge(
     """Round (fillet) every straight feature edge of a group/component by
     ``radius`` mm with ``segments`` arc segments.
 
-    Skips seams of curved surfaces (faces meeting at less than 25°) and the rims
-    of curved surfaces, such as a cylinder's top and bottom circles: fillet cannot
-    round a tessellated curve. A body with no straight feature edges (cylinder,
-    cone, sphere) fails with -32602. One call runs at most 30 s inside SketchUp;
-    past that it rolls back and changes nothing. Unreliable on non-manifold
-    geometry.
+    Skips seams of curved surfaces (edges where the surface bends by less than
+    25°: the two face normals differ by under 25°) and the rims of curved
+    surfaces, such as a cylinder's top and bottom circles: fillet cannot round a
+    tessellated curve. Also skips concave (inside-corner) edges, such as the
+    base of a post or the inner corner of an L-shaped block: rounding them would
+    need added material. A body with no straight feature edges (cylinder, cone,
+    sphere) fails with -32602. One call runs at most 30 s inside SketchUp; past
+    that it rolls back and changes nothing. Unreliable on non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_filleted,
     stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
-    skipped_curved}} — check stats.subtract_failed == 0 (failed cuts) and
-    stats.skipped_no_match == 0 (edges consumed by earlier cuts).
+    skipped_concave, skipped_curved}} — check stats.subtract_failed == 0 (failed
+    cuts) and stats.skipped_no_match == 0 (edges consumed by earlier cuts).
     """
     return await _call(
         ctx, "fillet_edges", entity_id=str(id), radius=radius, segments=segments

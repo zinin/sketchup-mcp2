@@ -1,9 +1,10 @@
 # test/test_edge_ops.rb
 # M-01, M-07: chamfer_edges / fillet_edges end to end over fakes.
 #
-# run_edge_op cuts feature edges only (select_feature_edges, real here),
-# refuses a body with nothing left to cut, rolls back with a clear error when
-# SketchUp's subtract destroys the body, and stops at the 30 s budget.
+# run_edge_op cuts convex feature edges only (select_feature_edges, real
+# here: no seam, no concave edge), refuses a body with nothing left to cut,
+# rolls back with a clear error when SketchUp's subtract destroys the body,
+# and stops at the 30 s budget.
 #
 # Measured in SketchUp 2026.1 on a default cylinder: the subtract on the
 # first vertical seam returned nil and invalidated both the cutter and the
@@ -326,12 +327,12 @@ class TestEdgeOps < Minitest::Test
     OPS.chamfer_edges({ "entity_id" => target.entityID, "distance" => 2 }.merge(extra))
   end
 
-  def fillet(target)
-    OPS.fillet_edges("entity_id" => target.entityID, "radius" => 2)
+  def fillet(target, extra = {})
+    OPS.fillet_edges({ "entity_id" => target.entityID, "radius" => 2 }.merge(extra))
   end
 
   def stats_slice(res)
-    res["stats"].slice("attempted", "succeeded", "skipped_seam", "skipped_curved")
+    res["stats"].slice("attempted", "succeeded", "skipped_seam", "skipped_concave", "skipped_curved")
   end
 
   # ---------- feature edges only ----------
@@ -339,21 +340,21 @@ class TestEdgeOps < Minitest::Test
   def test_chamfer_cylinder_cuts_rims_and_counts_seams
     edges = EdgeFakes.prism(24)
     res = chamfer(@scene.body(edges))
-    assert_equal({ "attempted" => 48, "succeeded" => 48, "skipped_seam" => 24, "skipped_curved" => 0 },
-                 stats_slice(res))
+    assert_equal({ "attempted" => 48, "succeeded" => 48, "skipped_seam" => 24,
+                   "skipped_concave" => 0, "skipped_curved" => 0 }, stats_slice(res))
     assert_equal 48, res["edges_chamfered"]
     assert_equal Array(0...48), positions(edges, @scene.cut_edges), "both rims cut, no seam"
     assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
   end
 
   def test_fillet_mixed_body_cuts_only_the_straight_edges
-    # A box with a cylindrical hole: the box edges are cut, the hole's rims
-    # are counted as curved and its walls as seams.
-    edges = EdgeFakes.box + EdgeFakes.prism(24)
+    # Box − cylinder: the box edges are cut, the hole's rims are counted as
+    # curved and its walls as seams.
+    edges = EdgeFakes.box_with_hole(24)
     res = fillet(@scene.body(edges))
     assert_equal({ "attempted" => 12, "skipped_no_match" => 0, "subtract_failed" => 0,
-                   "succeeded" => 12, "skipped_seam" => 24, "skipped_curved" => 48 },
-                 res["stats"])
+                   "succeeded" => 12, "skipped_seam" => 24, "skipped_concave" => 0,
+                   "skipped_curved" => 48 }, res["stats"])
     assert_equal 12, res["edges_filleted"]
     assert_equal Array(0...12), positions(edges, @scene.cut_edges), "box edges only"
     assert_equal [[:start, "Fillet Edges"], :commit], @scene.model.log
@@ -383,8 +384,8 @@ class TestEdgeOps < Minitest::Test
     # FakeInstance has no #entities: the edges can only come from its
     # definition.
     res = chamfer(@scene.instance(EdgeFakes.prism(24)))
-    assert_equal({ "attempted" => 48, "succeeded" => 48, "skipped_seam" => 24, "skipped_curved" => 0 },
-                 stats_slice(res))
+    assert_equal({ "attempted" => 48, "succeeded" => 48, "skipped_seam" => 24,
+                   "skipped_concave" => 0, "skipped_curved" => 0 }, stats_slice(res))
     assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
   end
 
@@ -397,6 +398,56 @@ class TestEdgeOps < Minitest::Test
     assert_equal "no feature edges to chamfer on target_id=#{body.entityID} " \
                  "(all 24 edges are surface seams)", err.message
     assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
+    assert_equal 0, @scene.subtract_calls
+  end
+
+  # ---------- concave edges ----------
+
+  def test_chamfer_post_leaves_its_concave_base_alone
+    # Box ∪ cylinder: live, the post's base rim was cut into the post and
+    # counted as succeeded. Edges: the cube's 12, the base rim 12..35, the
+    # top rim 36..59, then the post's seams 60..83.
+    edges = EdgeFakes.box_with_post(24)
+    res = chamfer(@scene.body(edges))
+    assert_equal({ "attempted" => 36, "skipped_no_match" => 0, "subtract_failed" => 0,
+                   "succeeded" => 36, "skipped_seam" => 24, "skipped_concave" => 24,
+                   "skipped_curved" => 0 }, res["stats"])
+    assert_equal 36, res["edges_chamfered"]
+    assert_equal Array(0...12) + Array(36...60), positions(edges, @scene.cut_edges),
+                 "the cube's edges and the post's top rim"
+    assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
+  end
+
+  def test_fillet_post_counts_each_skipped_edge_once
+    # The base rim is concave and curved: it counts as concave only.
+    edges = EdgeFakes.box_with_post(24)
+    res = fillet(@scene.body(edges))
+    assert_equal({ "attempted" => 12, "skipped_no_match" => 0, "subtract_failed" => 0,
+                   "succeeded" => 12, "skipped_seam" => 24, "skipped_concave" => 24,
+                   "skipped_curved" => 24 }, res["stats"])
+    assert_equal Array(0...12), positions(edges, @scene.cut_edges), "the cube's edges only"
+    assert_equal [[:start, "Fillet Edges"], :commit], @scene.model.log
+  end
+
+  def test_edge_indices_selecting_only_concave_edges_refuses
+    # The concave rule applies to the chosen edges: the post's base rim.
+    body = @scene.body(EdgeFakes.box_with_post(24))
+    err = assert_raises(StructuredError) { chamfer(body, "edge_indices" => (12..35).to_a) }
+    assert_equal(-32602, err.code)
+    assert_equal "no feature edges to chamfer on target_id=#{body.entityID} " \
+                 "(all 24 edges are surface seams or concave edges)", err.message
+    assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
+    assert_equal 0, @scene.subtract_calls
+  end
+
+  def test_fillet_refusal_names_concave_edges
+    # The post's edges alone: seams, a curved top rim and a concave base rim.
+    body = @scene.body(EdgeFakes.box_with_post(24))
+    err = assert_raises(StructuredError) { fillet(body, "edge_indices" => (12..83).to_a) }
+    assert_equal(-32602, err.code)
+    assert_equal "no straight feature edges to fillet on target_id=#{body.entityID} " \
+                 "(all 72 edges are surface seams, curved rims or concave edges)", err.message
+    assert_equal [[:start, "Fillet Edges"], :abort], @scene.model.log
     assert_equal 0, @scene.subtract_calls
   end
 
@@ -428,8 +479,8 @@ class TestEdgeOps < Minitest::Test
     @scene.script = %i[ok nil_keep]
     res = chamfer(@scene.body(EdgeFakes.box))
     assert_equal({ "attempted" => 12, "skipped_no_match" => 0, "subtract_failed" => 1,
-                   "succeeded" => 11, "skipped_seam" => 0, "skipped_curved" => 0 },
-                 res["stats"])
+                   "succeeded" => 11, "skipped_seam" => 0, "skipped_concave" => 0,
+                   "skipped_curved" => 0 }, res["stats"])
     assert_equal 11, res["edges_chamfered"]
     assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
   end

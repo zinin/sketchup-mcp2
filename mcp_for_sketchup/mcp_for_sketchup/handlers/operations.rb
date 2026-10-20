@@ -107,11 +107,13 @@ module MCPforSketchUp
       # frame so cutter (sibling of target) and edge geometry share a frame.
 
       # Seams of a tessellated curved surface (cylinder wall, cone, sphere):
-      # edges whose two faces meet at less than this angle. Cutting one makes
-      # Group#subtract return nil AND destroy the body, so chamfer/fillet never
-      # touch them. Measured in SketchUp 2026.1: default cylinder seams 15°,
-      # cone 13.4°, sphere 2.2°..22.4° (rims: 90° and 116.4°). A 12-sided
-      # prism's vertical edges meet at 30° and stay feature edges.
+      # edges where the surface bends by less than this angle (the normals of
+      # their two faces differ by under it). Cutting one makes Group#subtract
+      # return nil AND destroy the body, so chamfer/fillet never touch them.
+      # Angles between the normals, measured in SketchUp 2026.1: default
+      # cylinder seams 15°, cone 13.4°, sphere 2.2°..22.4° (rims: 90° and
+      # 116.4°). A 12-sided prism bends by 30° at its vertical edges, which
+      # stay feature edges.
       SEAM_MAX_DIHEDRAL_DEG = 25.0
 
       # Consecutive segments of a polygonized curve turn by more than this at
@@ -161,10 +163,11 @@ module MCPforSketchUp
       # Re-collect uses the LIVE edge for the cutter; original snapshot serves
       # only as identity-by-direction-and-line for matching.
       #
-      # Only feature edges are cut (select_feature_edges): never the seams of
-      # a curved surface, and with skip_curved (fillet) not its curved rims
-      # either. A body the subtract destroyed and a breach of EDGE_OP_BUDGET_S
-      # raise like any other failure, so the whole call rolls back.
+      # Only convex feature edges are cut (select_feature_edges): never the
+      # seams of a curved surface or a concave edge, and with skip_curved
+      # (fillet) not a curved rim either. A body the subtract destroyed and a
+      # breach of EDGE_OP_BUDGET_S raise like any other failure, so the whole
+      # call rolls back.
       def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in, skip_curved: false)
         # Type-guard edge_indices BEFORE start_operation: a non-Array (String/
         # Integer/Hash from a direct/malformed TCP client that bypasses the
@@ -180,7 +183,8 @@ module MCPforSketchUp
         @_last_edges_done = 0
         @_last_stats = { "attempted" => 0, "skipped_no_match" => 0,
                          "subtract_failed" => 0, "succeeded" => 0,
-                         "skipped_seam" => 0, "skipped_curved" => 0 }
+                         "skipped_seam" => 0, "skipped_concave" => 0,
+                         "skipped_curved" => 0 }
         begin
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
@@ -194,13 +198,16 @@ module MCPforSketchUp
           end
 
           # Drop the edges a cut must not touch before the snapshot: seams (a
-          # subtract on one returns nil AND destroys the body) and, with
-          # skip_curved, curved rims (a per-segment fillet cannot cut them).
+          # subtract on one returns nil AND destroys the body), concave edges
+          # (the wedge would cut into the body) and, with skip_curved, curved
+          # rims (a per-segment fillet cannot cut them).
           selection = select_feature_edges(edges, skip_curved: skip_curved)
           @_last_stats["skipped_seam"] = selection[:skipped_seam]
+          @_last_stats["skipped_concave"] = selection[:skipped_concave]
           @_last_stats["skipped_curved"] = selection[:skipped_curved]
           if selection[:edges].empty?
-            raise no_feature_edges_error(op_name, entity_id, edges.length, skip_curved)
+            raise no_feature_edges_error(op_name, entity_id, edges.length, skip_curved,
+                                         selection[:skipped_concave] > 0)
           end
           edges = selection[:edges]
 
@@ -303,7 +310,8 @@ module MCPforSketchUp
       def self.last_stats
         @_last_stats || { "attempted" => 0, "skipped_no_match" => 0,
                           "subtract_failed" => 0, "succeeded" => 0,
-                          "skipped_seam" => 0, "skipped_curved" => 0 }
+                          "skipped_seam" => 0, "skipped_concave" => 0,
+                          "skipped_curved" => 0 }
       end
 
       # Monotonic seconds for EDGE_OP_BUDGET_S: unlike Time.now it does not
@@ -313,16 +321,20 @@ module MCPforSketchUp
       end
 
       # -32602 for a target whose edges are all seams (with skip_curved: seams
-      # or curved rims). `count` is the number of edges before the selection.
-      def self.no_feature_edges_error(op_name, entity_id, count, skip_curved)
+      # or curved rims), plus concave edges when `concave` (some were
+      # skipped). `count` is the number of edges before the selection.
+      def self.no_feature_edges_error(op_name, entity_id, count, skip_curved, concave)
         verb = op_name.split.first.downcase
         message =
           if skip_curved
+            skipped = concave ? "surface seams, curved rims or concave edges"
+                              : "surface seams or curved rims"
             "no straight feature edges to #{verb} on target_id=#{entity_id} " \
-            "(all #{count} edges are surface seams or curved rims)"
+            "(all #{count} edges are #{skipped})"
           else
+            skipped = concave ? "surface seams or concave edges" : "surface seams"
             "no feature edges to #{verb} on target_id=#{entity_id} " \
-            "(all #{count} edges are surface seams)"
+            "(all #{count} edges are #{skipped})"
           end
         Core::StructuredError.new(-32602, message)
       end
@@ -374,9 +386,22 @@ module MCPforSketchUp
         Geom::Point3d.new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, (a.z + b.z) / 2.0)
       end
 
+      # The midpoint and unit direction of `edge`, in the edge's own frame.
+      # Point3d#offset rather than midpoint_of: the selection helpers that
+      # call this run on duck-typed points in the tests, without Geom.
+      def self.edge_mid_and_dir(edge)
+        start_pt = edge.start.position
+        dir = edge.end.position - start_pt
+        mid = start_pt.offset(dir, dir.length / 2.0)
+        dir.length = 1.0
+        [mid, dir]
+      end
+
       # Snapshot edge geometry + BOTH adjacent faces' inward in-plane perpendiculars.
-      # Positions and vectors projected through `xform` so the spec lives in the
-      # target's PARENT frame (where the cutter will be created).
+      # The perpendiculars are found in the edge's own frame, where
+      # Face#classify_point takes its points; then positions and vectors are
+      # projected through `xform` so the spec lives in the target's PARENT
+      # frame (where the cutter will be created).
       #
       # Raises -32602 if the edge has fewer than 2 adjacent faces (boundary edges
       # of an open shape — chamfer/fillet undefined there).
@@ -390,11 +415,10 @@ module MCPforSketchUp
 
         edge_pt  = edge.start.position
         edge_end = edge.end.position
-        edge_dir = edge_end - edge_pt
-        edge_dir.length = 1.0
+        edge_mid, edge_dir = edge_mid_and_dir(edge)
 
-        perp1 = in_face_perp_inward(faces[0], edge_pt, edge_dir)
-        perp2 = in_face_perp_inward(faces[1], edge_pt, edge_dir)
+        perp1 = in_face_perp_inward(faces[0], edge_mid, edge_dir)
+        perp2 = in_face_perp_inward(faces[1], edge_mid, edge_dir)
 
         # Project everything through xform. For a Transformation, applying it
         # to a Point3d translates+rotates; applying to a Vector3d only rotates
@@ -459,11 +483,24 @@ module MCPforSketchUp
         v
       end
 
+      # How far in_face_perp_inward probes into a face, in inches (≈ 0.25 mm):
+      # ten times SketchUp's 0.001-in tolerance, so the probe is not taken for
+      # a point on the edge, and far below the width of any face worth cutting.
+      SIDE_PROBE_IN = 0.01
+
       # Unit vector lying in `face`'s plane, perpendicular to `edge_dir`,
-      # pointing from `edge_pt` toward the face interior. Use face.bounds.center
-      # as the "interior reference" — the candidate perp whose dot product with
-      # (face_center - edge_pt) is positive points inward.
-      def self.in_face_perp_inward(face, edge_pt, edge_dir)
+      # pointing from the edge into the face's material. `edge_mid` is the
+      # edge's midpoint in the face's own frame, the one
+      # Face#classify_point takes.
+      #
+      # The side is the candidate whose probe, SIDE_PROBE_IN from edge_mid,
+      # lands inside the face. face.bounds.center cannot tell it: on a face
+      # with an inner loop, such as the top of a block with a hole or a post,
+      # the centre lies in the loop, and a perpendicular turned toward it
+      # points into the hole or the post (seen live: a chamfer cut a groove
+      # around a post's base). A face too narrow for the probe falls back to
+      # the bounds centre.
+      def self.in_face_perp_inward(face, edge_mid, edge_dir)
         n = face.normal
         # In-face perpendicular to edge: cross edge_dir with face normal.
         # By construction this lies in face plane and is ⊥ edge_dir.
@@ -477,8 +514,13 @@ module MCPforSketchUp
         end
         perp.length = 1.0
 
-        # Sign: pick direction toward face interior (face.bounds.center).
-        to_interior = face.bounds.center - edge_pt
+        [perp, perp.reverse].each do |candidate|
+          probe = edge_mid.offset(candidate, SIDE_PROBE_IN)
+          return candidate if face.classify_point(probe) == Sketchup::Face::PointInside
+        end
+
+        # Fallback: pick the direction toward face.bounds.center.
+        to_interior = face.bounds.center - edge_mid
         perp = perp.reverse if perp.dot(to_interior) < 0
         perp
       end
@@ -546,6 +588,20 @@ module MCPforSketchUp
         angle_deg(faces[0].normal, faces[1].normal) < SEAM_MAX_DIHEDRAL_DEG
       end
 
+      # True for a concave (inside-corner) edge, such as the base of a post or
+      # the inner corner of an L-shaped block: the perpendicular from the edge
+      # into one face's material points to the outward side of the other face
+      # (face normals point out of the solid). Chamfering or rounding such an
+      # edge would need added material; the subtracted wedge would cut into
+      # the body instead. Boundary, loose and non-manifold edges
+      # (faces.length != 2) are not concave.
+      def self.concave_edge?(edge)
+        faces = edge.faces
+        return false unless faces.length == 2
+        edge_mid, edge_dir = edge_mid_and_dir(edge)
+        in_face_perp_inward(faces[0], edge_mid, edge_dir).dot(faces[1].normal) > 0
+      end
+
       # Segments of a polygonized curve, e.g. a cylinder rim: edges of `edges`
       # that share a vertex and a face with another edge of `edges` where the
       # path turns by more than COLLINEAR_MAX_TURN_DEG (not just a straight edge
@@ -576,14 +632,18 @@ module MCPforSketchUp
       end
 
       # Splits `edges` into what a chamfer/fillet may cut and what it leaves
-      # alone: seams always go; with skip_curved (fillet) so do the curved rims
-      # of the remaining edges. Kept edges stay in input order. The counts feed
-      # the skipped_seam / skipped_curved stats.
+      # alone: seams always go, then the concave edges among the rest; with
+      # skip_curved (fillet) so do the curved rims of what remains. Each
+      # skipped edge counts once, under the first rule that drops it. Kept
+      # edges stay in input order. The counts feed the skipped_seam /
+      # skipped_concave / skipped_curved stats.
       def self.select_feature_edges(edges, skip_curved:)
         non_seam = edges.reject { |edge| seam_edge?(edge) }
-        curved = skip_curved ? curved_rim_edges(non_seam) : []
-        { edges: non_seam - curved,
+        convex = non_seam.reject { |edge| concave_edge?(edge) }
+        curved = skip_curved ? curved_rim_edges(convex) : []
+        { edges: convex - curved,
           skipped_seam: edges.length - non_seam.length,
+          skipped_concave: non_seam.length - convex.length,
           skipped_curved: curved.length }
       end
     end
