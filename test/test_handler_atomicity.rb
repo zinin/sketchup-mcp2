@@ -23,9 +23,11 @@
 # subclassed: the handlers name it, and a file that guards the whole
 # Sketchup module expects it beside Group. The model already has a "red"
 # material, so set_material creates none. Entities.active_model! is stubbed
-# per test and restored in teardown. A failure is injected into the test's
-# own fakes, so nothing else needs restoring.
+# per test and restored by SingletonStubs. A failure is injected into the
+# test's own fakes, so nothing else needs restoring.
 require "minitest/autorun"
+
+require_relative "support/singleton_stubs"
 
 module Sketchup
   class Group; end unless defined?(Group)
@@ -45,6 +47,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/model"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints"
 
 class TestHandlerAtomicity < Minitest::Test
+  include SingletonStubs
+
   H  = MCPforSketchUp::Handlers
   EH = MCPforSketchUp::Helpers::Entities
 
@@ -143,25 +147,7 @@ class TestHandlerAtomicity < Minitest::Test
     @model = RecordingModel.new
     @model.register(FakeGroup.new(1, [FakeFace.new, FakeFace.new]))
     model = @model  # a stub body runs with self == the stubbed module
-    @stubs = []
     stub_singleton(EH, :active_model!) { model }
-  end
-
-  def teardown
-    @stubs.reverse_each do |mod, name, original|
-      mod.singleton_class.send(:remove_method, name)
-      mod.define_singleton_method(name, original) if original
-    end
-  end
-
-  # Replaces mod.name for one test. The original Method goes back in
-  # teardown; a method that did not exist is removed again. Removing before
-  # redefining keeps `ruby -w` free of "method redefined" warnings.
-  def stub_singleton(mod, name, &body)
-    original = mod.respond_to?(name) ? mod.method(name) : nil
-    mod.singleton_class.send(:remove_method, name) if original
-    @stubs << [mod, name, original]
-    mod.define_singleton_method(name, &body)
   end
 
   # Makes the last call of `path` raise RuntimeError("injected") on the

@@ -15,10 +15,11 @@
 # bound, and cutters whose subtract follows a per-test script (see
 # FakeCutter). The geometry builders (edge_spec, find_current_edge_spec, the
 # two profiles, reconstruct_edge) need Geom and are stubbed, as is
-# Entities.active_model!; every stub is restored in teardown.
+# Entities.active_model!; SingletonStubs restores every stub.
 require "minitest/autorun"
 
 require_relative "support/edge_fakes"
+require_relative "support/singleton_stubs"
 
 module Sketchup
   class Group; end unless defined?(Group)
@@ -37,6 +38,7 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
 
 class TestEdgeOps < Minitest::Test
   include EdgeFakes
+  include SingletonStubs
 
   OPS = MCPforSketchUp::Handlers::Operations
   EH  = MCPforSketchUp::Helpers::Entities
@@ -285,7 +287,6 @@ class TestEdgeOps < Minitest::Test
   def setup
     @scene = Scene.new
     scene = @scene  # a stub body runs with self == the stubbed module
-    @stubs = []
     stub_singleton(EH, :active_model!) { scene.model }
     stub_singleton(OPS, :edge_spec) { |edge, _xform| { edge: edge } }
     # Every edge still matches: the fake cuts change no geometry. The real
@@ -300,23 +301,6 @@ class TestEdgeOps < Minitest::Test
       scene.profile_for(spec)
     end
     stub_singleton(OPS, :reconstruct_edge) { |_entities, _spec| :path }
-  end
-
-  def teardown
-    @stubs.reverse_each do |mod, name, original|
-      mod.singleton_class.send(:remove_method, name)
-      mod.define_singleton_method(name, original) if original
-    end
-  end
-
-  # Replaces mod.name for one test. The original Method goes back in
-  # teardown; a method that did not exist is removed again. Removing before
-  # redefining keeps `ruby -w` free of "method redefined" warnings.
-  def stub_singleton(mod, name, &body)
-    original = mod.respond_to?(name) ? mod.method(name) : nil
-    mod.singleton_class.send(:remove_method, name) if original
-    @stubs << [mod, name, original]
-    mod.define_singleton_method(name, &body)
   end
 
   # Positions in `all` of the edges in `subset`, by identity.

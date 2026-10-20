@@ -16,9 +16,11 @@
 # Sketchup::Group / ComponentInstance stubs because the guard checks is_a?
 # (other files define their own stubs, and under run_all every file loads
 # before any test runs). Entities.active_model! is stubbed per test, and
-# Geom::Transformation.translation in the transform test; teardown restores
-# both.
+# Geom::Transformation.translation in the transform test; SingletonStubs
+# restores both.
 require "minitest/autorun"
+
+require_relative "support/singleton_stubs"
 
 module Sketchup
   class Group; end unless defined?(Group)
@@ -49,6 +51,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 
 class TestGeometryGuards < Minitest::Test
+  include SingletonStubs
+
   GEO = MCPforSketchUp::Handlers::Geometry
   EH  = MCPforSketchUp::Helpers::Entities
   StructuredError = MCPforSketchUp::Core::StructuredError
@@ -149,25 +153,7 @@ class TestGeometryGuards < Minitest::Test
   def setup
     @model = RecordingModel.new
     model = @model  # a stub body runs with self == the stubbed module
-    @stubs = []
     stub_singleton(EH, :active_model!) { model }
-  end
-
-  def teardown
-    @stubs.reverse_each do |mod, name, original|
-      mod.singleton_class.send(:remove_method, name)
-      mod.define_singleton_method(name, original) if original
-    end
-  end
-
-  # Replaces mod.name for one test. The original Method goes back in
-  # teardown; a method that did not exist is removed again. Removing before
-  # redefining keeps `ruby -w` free of "method redefined" warnings.
-  def stub_singleton(mod, name, &body)
-    original = mod.respond_to?(name) ? mod.method(name) : nil
-    mod.singleton_class.send(:remove_method, name) if original
-    @stubs << [mod, name, original]
-    mod.define_singleton_method(name, &body)
   end
 
   # ---------- delete_component ----------

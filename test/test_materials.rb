@@ -21,8 +21,10 @@
 # guarded stubs: other files define their own, and under run_all every file
 # loads before any test runs. Color keeps the shape test_pure_helpers.rb reads
 # (#rgb), because whichever file loads first wins the guard.
-# Entities.active_model! is stubbed per test and restored in teardown.
+# Entities.active_model! is stubbed per test and restored by SingletonStubs.
 require "minitest/autorun"
+
+require_relative "support/singleton_stubs"
 
 module Sketchup
   class Group; end unless defined?(Group)
@@ -50,6 +52,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/materials"
 
 class TestMaterials < Minitest::Test
+  include SingletonStubs
+
   M  = MCPforSketchUp::Handlers::Materials
   G  = MCPforSketchUp::Handlers::Geometry
   EH = MCPforSketchUp::Helpers::Entities
@@ -220,25 +224,7 @@ class TestMaterials < Minitest::Test
   def setup
     @model = RecordingModel.new
     model = @model  # a stub body runs with self == the stubbed module
-    @stubs = []
     stub_singleton(EH, :active_model!) { model }
-  end
-
-  def teardown
-    @stubs.reverse_each do |mod, name, original|
-      mod.singleton_class.send(:remove_method, name)
-      mod.define_singleton_method(name, original) if original
-    end
-  end
-
-  # Replaces mod.name for one test. The original Method goes back in
-  # teardown; a method that did not exist is removed again. Removing before
-  # redefining keeps `ruby -w` free of "method redefined" warnings.
-  def stub_singleton(mod, name, &body)
-    original = mod.respond_to?(name) ? mod.method(name) : nil
-    mod.singleton_class.send(:remove_method, name) if original
-    @stubs << [mod, name, original]
-    mod.define_singleton_method(name, &body)
   end
 
   def paint(entity, spec)

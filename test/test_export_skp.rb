@@ -19,6 +19,8 @@
 # build_export_path is stubbed: the real one creates a temp directory.
 require "minitest/autorun"
 
+require_relative "support/singleton_stubs"
+
 # export.rb aliases these at load time (V/E). Export.export calls
 # require_enum and active_model!, which with_export_stubs supplies, so empty
 # modules suffice (mirrors test_joint_cut_stats.rb).
@@ -32,6 +34,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/export"
 
 class TestExportSaveSkp < Minitest::Test
+  include SingletonStubs
+
   X = MCPforSketchUp::Handlers::Export
   V = MCPforSketchUp::Helpers::Validation
   E = MCPforSketchUp::Helpers::Entities
@@ -71,30 +75,11 @@ class TestExportSaveSkp < Minitest::Test
 
   def setup
     @built_formats = []  # the formats build_export_path was asked for
-    @stubs = []
-  end
-
-  # Puts every stubbed method back: the original Method, or nothing for a
-  # method that did not exist (the empty Validation/Entities modules above).
-  def teardown
-    @stubs.reverse_each do |mod, name, original|
-      mod.singleton_class.send(:remove_method, name)
-      mod.define_singleton_method(name, original) if original
-    end
   end
 
   # What the stubbed build_export_path returns; nothing is written there.
   def export_path_for(format)
     "/tmp/sketchup_export_test.#{format}"
-  end
-
-  # Replaces mod.name for one test; teardown restores it. Removing before
-  # redefining keeps `ruby -w` free of "method redefined" warnings.
-  def stub_singleton(mod, name, &body)
-    original = mod.respond_to?(name) ? mod.method(name) : nil
-    mod.singleton_class.send(:remove_method, name) if original
-    @stubs << [mod, name, original]
-    mod.define_singleton_method(name, &body)
   end
 
   # Stubs the three collaborators of Export.export: format validation passes

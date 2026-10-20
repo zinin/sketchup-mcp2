@@ -20,6 +20,7 @@
 # test_view.rb has loaded view.rb with its stub.
 require "minitest/autorun"
 
+require_relative "support/singleton_stubs"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
@@ -28,6 +29,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch"
 
 class TestDispatchRouting < Minitest::Test
+  include SingletonStubs
+
   H = MCPforSketchUp::Handlers
   Dispatch = H::Dispatch
 
@@ -60,25 +63,7 @@ class TestDispatchRouting < Minitest::Test
   end
 
   def setup
-    @stubs = []
     self.class.load_handlers
-  end
-
-  def teardown
-    @stubs.reverse_each do |mod, name, original|
-      mod.singleton_class.send(:remove_method, name)
-      mod.define_singleton_method(name, original) if original
-    end
-  end
-
-  # Replaces mod.name for one test. The original Method goes back in
-  # teardown; a method that did not exist is removed again. Removing before
-  # redefining keeps `ruby -w` free of "method redefined" warnings.
-  def stub_singleton(mod, name, &body)
-    original = mod.respond_to?(name) ? mod.method(name) : nil
-    mod.singleton_class.send(:remove_method, name) if original
-    @stubs << [mod, name, original]
-    mod.define_singleton_method(name, &body)
   end
 
   ROUTES.each do |wires, module_name, method_name|

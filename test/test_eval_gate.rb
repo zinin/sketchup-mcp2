@@ -15,8 +15,10 @@
 # teardown. The confirm tests run the REAL confirm_eval_enable against a
 # stubbed ::UI.messagebox that answers from a queue and records what it was
 # shown as [text, buttons] in @messageboxes, which is where a test that pins
-# the warning's wording reads it. The stub is saved and restored in teardown.
+# the warning's wording reads it. SingletonStubs saves and restores the stub.
 require "minitest/autorun"
+
+require_relative "support/singleton_stubs"
 
 # Guarded: other files define their own UI stub, and under run_all every file
 # loads before any test runs. The values are SketchUp's.
@@ -67,10 +69,11 @@ class TestEvalGate < Minitest::Test
 end
 
 class TestConfirmEvalEnable < Minitest::Test
+  include SingletonStubs
+
   SettingsDialog = MCPforSketchUp::UI::SettingsDialog
 
   def setup
-    @stubs = []
     @messageboxes = []   # [text, buttons] of every box shown
     @answers = []        # what the next boxes answer, oldest first
     # A stub body runs with self == the stubbed module, hence the locals.
@@ -79,23 +82,6 @@ class TestConfirmEvalEnable < Minitest::Test
       shown << [text, buttons]
       answers.shift
     end
-  end
-
-  def teardown
-    @stubs.reverse_each do |mod, name, original|
-      mod.singleton_class.send(:remove_method, name)
-      mod.define_singleton_method(name, original) if original
-    end
-  end
-
-  # Replaces mod.name for one test. The original Method goes back in
-  # teardown; a method that did not exist is removed again. Removing before
-  # redefining keeps `ruby -w` free of "method redefined" warnings.
-  def stub_singleton(mod, name, &body)
-    original = mod.respond_to?(name) ? mod.method(name) : nil
-    mod.singleton_class.send(:remove_method, name) if original
-    @stubs << [mod, name, original]
-    mod.define_singleton_method(name, &body)
   end
 
   # What the real confirm_eval_enable returns when the user answers `answer`.
