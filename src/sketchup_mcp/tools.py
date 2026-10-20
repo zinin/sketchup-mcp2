@@ -238,19 +238,21 @@ async def set_material(
     material: Annotated[
         str,
         Field(min_length=1,
-              description="Named color or 6-digit hex string like #a05030"),
+              description="Name of a material already in the model, named "
+                          "color, or 6-digit hex string like #a05030"),
     ],
 ) -> str:
     """Assign a material (color) to a group, component instance, face or edge.
 
-    material: the exact name of a material already in the model, a named color —
-    red, green, blue, yellow, cyan, turquoise, magenta, purple, white, black,
-    brown, wood, orange, gray, grey — or a 6-digit hex string like "#a05030" (#rrggbb).
-    Named colors and hex are case-insensitive and map to one lower-case material
-    ("Red" and "red" are the same). Anything else fails with -32602. Painting a
-    group/component affects only this instance (it is made unique first);
-    painting a raw face/edge id (obtainable via get_selection) colors the shared
-    definition — all instances show it.
+    material: a material already in the model, matched by name without regard
+    to case, is used as is (so an existing "Red" is used for "red"). Otherwise
+    a named color — red, green, blue, yellow, cyan, turquoise, magenta, purple,
+    white, black, brown, wood, orange, gray, grey — or a 6-digit hex string like
+    "#a05030" (#rrggbb), in any case, maps to one lower-case material, found or
+    created. Anything else fails with -32602. Painting a group/component affects
+    only this instance (it is made unique first); painting a raw face/edge id
+    (obtainable via get_selection) colors the shared definition — all instances
+    show it.
 
     Returns: JSON {id, name, type, bbox_mm{min,max}|null}. For a face or edge,
     type is "face" or "edge" and name is null.

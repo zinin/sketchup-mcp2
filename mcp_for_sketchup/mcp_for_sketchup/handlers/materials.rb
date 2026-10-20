@@ -64,7 +64,9 @@ module MCPforSketchUp
       end
 
       # How a material spec resolves, in this order:
-      #   1. a material of the model with exactly this name, used as is;
+      #   1. a material of the model with this name, used as is. SketchUp's
+      #      Materials#[] matches names without regard to case, so an
+      #      existing "Red" is used for "red";
       #   2. a named color or "#rrggbb" in any case, found or created under
       #      its lower-case name, so "Red" and "red" are one material;
       #   3. anything else raises -32602 before a material is created.

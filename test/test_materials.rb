@@ -8,9 +8,11 @@
 # commit_operation, so a failure there rolls the paint back, and a face or an
 # edge describes itself by its typename with a null name.
 #
-# A material spec resolves in this order: the exact name of a material of the
-# model; a named color or "#rrggbb" in any case, found or created under its
-# lower-case name; anything else is -32602, before a material is created.
+# A material spec resolves in this order: a material of the model with that
+# name, matched without regard to case as SketchUp's Materials#[] does (an
+# existing "Red" is used for "red"); a named color or "#rrggbb" in any case,
+# found or created under its lower-case name; anything else is -32602, before
+# a material is created.
 #
 # Fakes: a recording model. Its log holds [:start, label], :commit and :abort,
 # [:add, name] for a material created and :bounds each time an entity is
@@ -68,7 +70,9 @@ class TestMaterials < Minitest::Test
     end
   end
 
-  # model.materials: [] answers nil for a name it does not have, add logs.
+  # model.materials: [] matches names without regard to case, like
+  # SketchUp's Materials#[], and answers nil for a name it does not have;
+  # add logs.
   class FakeMaterials
     def initialize(log)
       @log = log
@@ -81,7 +85,7 @@ class TestMaterials < Minitest::Test
     end
 
     def [](name)
-      @by_name[name]
+      @by_name.values.find { |material| material.name.casecmp?(name) }
     end
 
     def add(name)
@@ -274,6 +278,17 @@ class TestMaterials < Minitest::Test
     red = @model.materials.seed("Red")
     target = face(11)
     paint(target, "Red")
+    assert_same red, target.material
+    assert_nil red.color
+    assert_equal [[:start, "Set Material (Red)"], :bounds, :commit], @model.log, "nothing added"
+  end
+
+  def test_existing_material_is_found_whatever_the_case
+    # SketchUp's Materials#[] ignores case: "red" finds the model's "Red",
+    # which is used as is — not recolored, no "red" added beside it.
+    red = @model.materials.seed("Red")
+    target = face(11)
+    paint(target, "red")
     assert_same red, target.material
     assert_nil red.color
     assert_equal [[:start, "Set Material (Red)"], :bounds, :commit], @model.log, "nothing added"
