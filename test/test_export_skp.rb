@@ -82,12 +82,14 @@ class TestExportSaveSkp < Minitest::Test
     "/tmp/sketchup_export_test.#{format}"
   end
 
-  # Stubs the three collaborators of Export.export: format validation passes
-  # the value through, the active model is `model`, and build_export_path
-  # records the format it was asked for in @built_formats instead of creating a
-  # temp directory. A stub body runs with self == the stubbed module, hence the
-  # locals.
+  # Stubs the three collaborators of Export.export for the length of the
+  # block: format validation passes the value through, the active model is
+  # `model`, and build_export_path records the format it was asked for in
+  # @built_formats instead of creating a temp directory. The stubs are put back
+  # when the block ends, however it ends. A stub body runs with self == the
+  # stubbed module, hence the locals.
   def with_export_stubs(model)
+    mark     = stub_mark
     built    = @built_formats
     path_for = method(:export_path_for)
     stub_singleton(V, :require_enum) { |params, key, _allowed| params[key] }
@@ -97,6 +99,8 @@ class TestExportSaveSkp < Minitest::Test
       path_for.call(format)
     end
     yield
+  ensure
+    restore_stubs(mark)
   end
 
   def assert_skp_export_refused(model)
@@ -131,6 +135,31 @@ class TestExportSaveSkp < Minitest::Test
     assert_equal({ "path" => export_path_for("skp"), "format" => "skp" }, result,
       "the response is {path, format} only: no warning key any more")
     assert_equal ["skp"], @built_formats
+  end
+
+  # save_skp is save_copy and nothing else, whatever the model's path: the
+  # untitled case is refused in export, before this runs, and a branch added
+  # here that saved such a model would re-point the open document. Called
+  # directly, because export never reaches save_skp with an untitled model.
+  def test_save_skp_only_calls_save_copy
+    ["/Users/me/project.skp", "", nil].each do |path|
+      model = FakeModel.new(path)
+
+      assert_equal true, X.save_skp(model, "/tmp/out.skp"), "the result of save_copy (path #{path.inspect})"
+      assert_equal [[:save_copy, "/tmp/out.skp"]], model.calls, "path #{path.inspect}"
+    end
+  end
+
+  def test_export_stubs_are_put_back_when_the_block_ends
+    # Whatever the three methods were before: the real ones when other files
+    # have loaded the helpers (run_all), nothing on the empty modules above.
+    stubbed = { V => :require_enum, E => :active_model!, X => :build_export_path }
+    current = -> { stubbed.map { |mod, name| mod.respond_to?(name) ? mod.method(name) : nil } }
+    before = current.call
+
+    assert_raises(RuntimeError) { with_export_stubs(FakeModel.new("")) { raise "boom" } }
+
+    assert_equal before, current.call
   end
 
   def test_untitled_obj_export_still_works
