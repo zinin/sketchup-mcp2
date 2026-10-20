@@ -689,24 +689,29 @@ module MCPforSketchUp
 
       # Signed volume of a closed body from its faces, in their own frame:
       # the sum over the faces of (n · (p − c)) · area / 3, with n a face's
-      # unit normal, p any of its vertices and c the centre of the bounds of
-      # all their vertices. Positive when the faces point out of the body,
-      # negative when it is inside-out. On a closed body whose faces agree, c
-      # changes nothing: their area-weighted normals sum to zero. Measured
-      # from c, one reversed face cannot outweigh the rest; measured from the
-      # frame's origin it can, on a body far from that origin.
+      # unit normal, p any of its vertices and c the mean of all the faces'
+      # corners. Positive when the faces point out of the body, negative when
+      # it is inside-out. On a closed body whose faces agree, c changes
+      # nothing: their area-weighted normals sum to zero. With a face
+      # reversed it matters, as that face then counts against the body by
+      # twice the pyramid it spans to c. Measured from the frame's origin, a
+      # reversed face far from that origin can outweigh the whole body;
+      # measured from the bounds centre, a cone with its base reversed comes
+      # to 0 (the base spans half the cone to mid-height). The corners' mean
+      # lies inside a convex body, a quarter of the way up a cone, so one
+      # reversed face leaves such a body positive. A thin-walled hollow body
+      # with a large face reversed can still come out negative.
       def self.signed_volume(faces)
-        return 0.0 if faces.empty?
         corners = faces.map { |face| face.vertices.map(&:position) }
-        centre = %i[x y z].map do |axis|
-          low, high = corners.flat_map { |points| points.map(&axis) }.minmax
-          (low + high) / 2.0
+        count = corners.sum(&:length)
+        return 0.0 if count.zero?
+        cx, cy, cz = %i[x y z].map do |axis|
+          corners.sum { |points| points.sum(&axis) } / count.to_f
         end
         faces.zip(corners).sum(0.0) do |face, points|
           n = face.normal
           point = points.first
-          (n.x * (point.x - centre[0]) + n.y * (point.y - centre[1]) +
-            n.z * (point.z - centre[2])) * face.area / 3.0
+          (n.x * (point.x - cx) + n.y * (point.y - cy) + n.z * (point.z - cz)) * face.area / 3.0
         end
       end
     end

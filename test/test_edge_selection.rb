@@ -488,16 +488,20 @@ class TestEdgeSelection < Minitest::Test
     faces.each(&:reverse!)
     assert_in_delta(-500_000.0, OPS.signed_volume(faces), 1e-6)
 
-    # One reversed face keeps the sign, wherever the body sits. Measured
+    # One reversed face keeps the sign, with room to spare: the volume stays
+    # above a third of the intact body's, wherever the body sits. Measured
     # from the frame's origin, the reversed top of the box 1000 above it
-    # would outweigh the rest; measured from the body's own centre, it
-    # cannot.
+    # would outweigh the rest; measured from the bounds centre, at half its
+    # height, the cone with its base reversed would come to 0.
     { "box" => EdgeFakes.box,
       "box 1000 above the origin" => EdgeFakes.prism(4, z0: 1000, z1: 1100),
-      "cylinder" => EdgeFakes.prism(24) }.each do |name, edges|
-      faces_of(edges).each_with_index do |face, k|
+      "cylinder" => EdgeFakes.prism(24),
+      "cone" => EdgeFakes.cone }.each do |name, edges|
+      faces = faces_of(edges)
+      intact = OPS.signed_volume(faces)
+      faces.each_with_index do |face, k|
         face.reverse!
-        assert_operator OPS.signed_volume(faces_of(edges)), :>, 0, "#{name}, face #{k} reversed"
+        assert_operator OPS.signed_volume(faces), :>, intact / 3, "#{name}, face #{k} reversed"
         face.reverse!
       end
     end
