@@ -2,9 +2,15 @@
 что видит модель. Тесты держат 100%-покрытие описаний и отсутствие утечек
 внутренних заметок."""
 import json
+from pathlib import Path
 
 from sketchup_mcp.app import mcp
 import sketchup_mcp.tools  # noqa: F401 — регистрация тулов
+
+_OPERATIONS_RB = (
+    Path(__file__).resolve().parent.parent
+    / "mcp_for_sketchup" / "mcp_for_sketchup" / "handlers" / "operations.rb"
+)
 
 
 async def test_every_tool_parameter_has_description():
@@ -49,12 +55,44 @@ async def test_returns_lines_pin_top_response_shapes():
         "list_components": "truncated",
         # Реальная форма stats из operations.rb::run_edge_op — ключа "failed"
         # не существует; дрейф докстринга от wire-формы ловится здесь.
-        "chamfer_edge": "stats{attempted, skipped_no_match, subtract_failed, succeeded}",
-        "fillet_edge": "stats{attempted, skipped_no_match, subtract_failed, succeeded}",
+        "chamfer_edge": "stats{attempted, succeeded, subtract_failed, "
+                        "skipped_no_match, skipped_seam, skipped_concave, "
+                        "skipped_curved}",
+        "fillet_edge": "stats{attempted, succeeded, subtract_failed, "
+                       "skipped_no_match, skipped_seam, skipped_concave, "
+                       "skipped_curved}",
     }
     for name, frag in expected_fragments.items():
-        desc = tools[name].description or ""
+        # Пробелы схлопываются: перенос строки внутри фрагмента (stats{...}
+        # у chamfer_edge/fillet_edge занимает две строки) пин не ломает.
+        desc = " ".join((tools[name].description or "").split())
         assert frag in desc, f"{name}: Returns-пин «{frag}» не найден в докстринге"
+
+
+async def test_edge_op_docstrings_name_the_ruby_budget(ruby_const):
+    """T3-d: «30 s» в докстрингах chamfer_edge/fillet_edge — это
+    EDGE_OP_BUDGET_S из operations.rb. Бюджет проверяется перед каждым резом,
+    поэтому докстринг обещает не «не дольше 30 s», а «после 30 s новый рез не
+    начинается». Смена константы без правки докстрингов ловится здесь."""
+    budget = float(ruby_const("EDGE_OP_BUDGET_S", _OPERATIONS_RB))
+    phrase = f"starts no new cut after {budget:g} s"
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for name in ("chamfer_edge", "fillet_edge"):
+        desc = " ".join((tools[name].description or "").split())
+        assert phrase in desc, f"{name}: в докстринге нет «{phrase}» (EDGE_OP_BUDGET_S)"
+
+
+async def test_edge_op_docstrings_name_the_ruby_seam_threshold(ruby_const):
+    """Порог шва в докстрингах chamfer_edge/fillet_edge должен совпадать с
+    SEAM_MAX_DIHEDRAL_DEG из operations.rb в обеих формулировках: изгиб
+    поверхности и угол между нормалями граней."""
+    threshold = float(ruby_const("SEAM_MAX_DIHEDRAL_DEG", _OPERATIONS_RB))
+    phrases = (f"bends by less than {threshold:g}°", f"differ by under {threshold:g}°")
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for name in ("chamfer_edge", "fillet_edge"):
+        desc = " ".join((tools[name].description or "").split())
+        for phrase in phrases:
+            assert phrase in desc, f"{name}: в докстринге нет «{phrase}» (SEAM_MAX_DIHEDRAL_DEG)"
 
 
 async def test_set_material_lists_named_colors():
@@ -62,3 +100,35 @@ async def test_set_material_lists_named_colors():
     desc = tools["set_material"].description or ""
     for color in ("red", "wood", "gray", "#rrggbb"):
         assert color in desc, f"set_material: не перечислен {color}"
+
+
+async def test_group_only_tools_say_other_entities_fail():
+    """M-04: delete_component и transform_component работают только с группами
+    и экземплярами компонентов; id грани или ребра из get_selection даёт -32602.
+    Докстринг — единственное, что об этом знает модель, поэтому фраза
+    пинится."""
+    tools = {t.name: t for t in await mcp.list_tools()}
+    fragments = {
+        "delete_component": "Raw faces, edges and other entities fail with -32602.",
+        "transform_component": "Groups and component instances only; "
+                               "other entities fail with -32602.",
+    }
+    for name, frag in fragments.items():
+        desc = " ".join((tools[name].description or "").split())
+        assert frag in desc, f"{name}: в докстринге нет «{frag}»"
+
+
+async def test_export_scene_says_an_untitled_model_cannot_export_skp():
+    """M-05: .skp-экспорт несохранённой модели отклоняется (-32602) намеренно
+    (раньше T-27 сохранял её во временный файл и возвращал `warning`). Фраза
+    об отказе пинится; поля `warning` в описании больше нет, ответ —
+    {path, format}."""
+    tools = {t.name: t for t in await mcp.list_tools()}
+    tool = tools["export_scene"]
+    desc = " ".join((tool.description or "").split())
+    for frag in ("An untitled model cannot be exported to skp (-32602)",
+                 "the user must save it first",
+                 "Returns: JSON {path, format}."):
+        assert frag in desc, f"export_scene: в докстринге нет «{frag}»"
+    text = desc + json.dumps(tool.inputSchema)
+    assert "warning" not in text.lower(), "export_scene: поле warning больше не существует"

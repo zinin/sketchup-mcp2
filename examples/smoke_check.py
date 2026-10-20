@@ -6,11 +6,15 @@ Pre-conditions:
      viewport-screenshot tool, verified on SketchUp 2026 only).
   2. Ruby SketchUp plugin is installed and started via Plugins → MCP Server →
      Start. The plugin version must be at least MIN_RUBY from
-     src/sketchup_mcp/compat.py; step 25 verifies this.
+     src/sketchup_mcp/compat.py; step 26 verifies this.
   3. Run with the same Python venv used by the MCP server.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
      When SketchUp runs remotely, step 18 (export_scene) degrades to asserting
      Ruby returned a non-empty path — the file lives on the SketchUp host.
+     A non-loopback SKETCHUP_MCP_HOST (a LAN address) counts as remote.
+     Behind a reverse SSH tunnel the host stays 127.0.0.1, so also set
+     SKETCHUP_MCP_SMOKE_REMOTE=1 to get the same degraded check (README.md,
+     "Security model").
 
 Usage:
     python examples/smoke_check.py
@@ -26,6 +30,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 # Force UTF-8 on stdout/stderr so the script's unicode glyphs (→, ←, ✓)
@@ -85,6 +90,39 @@ def text_of(result: dict) -> str:
 
 def parse(result: dict) -> dict:
     return json.loads(text_of(result))
+
+
+def _export_file_is_local(host: str, environ: Mapping[str, str]) -> bool:
+    """Whether step 18 can expect the exported file on this machine's disk.
+
+    A loopback host normally means SketchUp runs here. Behind a reverse SSH
+    tunnel the host is loopback too, yet the file lands on the machine at the
+    far end; SKETCHUP_MCP_SMOKE_REMOTE=1 says so. Only the literal "1" counts.
+    """
+    if environ.get("SKETCHUP_MCP_SMOKE_REMOTE") == "1":
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+# Ruby for step 23. For each group id in __IDS__ it counts the faces whose normal
+# points toward the centre of the group's bounds, that is into the body.
+# For these four bodies — a cone, a sphere, a box and a cylinder standing on
+# their bases — the bounds centre lies inside (not true of every convex body;
+# see docs/sketchup-ruby-cookbook.md). The last expression is an Array, and
+# eval_ruby returns its .to_s, "[0, 0, 0, 0]", which is JSON.
+_INWARD_FACES_RUBY = """\
+model = Sketchup.active_model
+__IDS__.map do |id|
+  group = model.find_entity_by_id(id)
+  t = group.transformation
+  centre = group.bounds.center
+  group.entities.grep(Sketchup::Face).count do |face|
+    corners = face.vertices.map { |v| t * v.position }
+    middle = Geom::Point3d.new(*%i[x y z].map { |axis| corners.sum(&axis) / corners.size })
+    (t * face.normal).dot(middle - centre) < 0
+  end
+end
+"""
 
 
 async def main() -> int:
@@ -205,9 +243,12 @@ async def main() -> int:
         step = 18; print(f"[{step}] export_scene format=png")
         ex = parse(await call(conn, "export_scene", format="png"))
         path = ex["path"]
-        # Split-host: when SketchUp runs remotely the export file isn't visible here.
-        if config.HOST in {"127.0.0.1", "localhost", "::1"}:
-            assert os.path.exists(path), f"export file missing: {path}"
+        # Split-host: when SketchUp runs remotely the export file isn't visible here
+        # (a LAN address, or a loopback tunnel marked with SKETCHUP_MCP_SMOKE_REMOTE=1).
+        if _export_file_is_local(config.HOST, os.environ):
+            assert os.path.exists(path), (
+                f"export file missing: {path} (SketchUp on another machine? "
+                f"Behind an SSH tunnel set SKETCHUP_MCP_SMOKE_REMOTE=1)")
         else:
             assert path, "export_scene returned empty path"
 
@@ -302,9 +343,47 @@ async def main() -> int:
             assert elapsed < 10, f"took {elapsed:.1f}s — looks like the old 60s hang (T-01)"
             print(f"    ✓ SyntaxError surfaced in {elapsed:.2f}s")
 
+        step = 23; print(f"[{step}] cone, sphere, cube and cylinder above the ground plane — no face points into its body")
+        # SketchUp orients a face by the vertex order of the first face of a shell
+        # (a face on the ground plane it turns down) and each later face like its
+        # neighbours. Builds of the plugin up to 0.3.1 made a cone above the ground
+        # plane and every sphere inside-out, which volume and manifold? do not show
+        # (see docs/sketchup-ruby-cookbook.md). The cube and cylinder are extruded
+        # with pushpull from a face that, off the ground plane, takes its normal
+        # from the vertex order. chamfer_edge and fillet_edge refuse an inside-out
+        # body (-32602), so the cube and cylinder are checked too. All four bodies
+        # below sit at z=50 mm, off the ground plane.
+        bodies = []
+        try:
+            bodies.append(parse(await call(conn, "create_component", type="cone",
+                                           position=[0, 600, 50], dimensions=[100, 100, 100])))
+            bodies.append(parse(await call(conn, "create_component", type="sphere",
+                                           position=[300, 600, 50], dimensions=[100, 100, 100])))
+            bodies.append(parse(await call(conn, "create_component", type="cube",
+                                           position=[600, 600, 50], dimensions=[100, 100, 100])))
+            bodies.append(parse(await call(conn, "create_component", type="cylinder",
+                                           position=[900, 600, 50], dimensions=[100, 100, 100])))
+            raw = await _maybe_skip_eval(
+                "eval_ruby step 23 (face orientation)",
+                call(conn, "eval_ruby",
+                     code=_INWARD_FACES_RUBY.replace(
+                         "__IDS__", "[" + ", ".join(str(b["id"]) for b in bodies) + "]")),
+            )
+        finally:
+            # Delete every body created so far in finally, before the assert, so a
+            # failed create, eval or assert leaves nothing behind.
+            for body in bodies:
+                await call(conn, "delete_component", id=body["id"])
+        if raw is None:
+            eval_skipped[0] += 1
+        else:
+            inward = parse(raw)
+            assert inward == [0, 0, 0, 0], (
+                f"faces pointing into the body, [cone, sphere, cube, cylinder] at z=50 mm: {inward}")
+
         # NB: cleanup must precede undo, and the undo step is NOT a rollback
         # of the modeling steps: `delete_component` is itself an undoable
-        # operation, so after the loop below step 24's undo rolls back the
+        # operation, so after the loop below step 25's undo rolls back the
         # LAST delete — resurrecting the most recently deleted ID — not the
         # last modeling op (the step-21 dovetail). One resurrected group is expected to remain
         # in the model after the run. Running undo before cleanup would
@@ -313,7 +392,7 @@ async def main() -> int:
         # id1/id2 (post-chamfer/post-fillet) are live here: boolean_operation
         # copies its operands (delete_originals=false), so the step-11 union
         # consumed copies, not the originals. Same for id_sph/id_cub in step 20.
-        step = 23; print(f"[{step}] cleanup: delete created components")
+        step = 24; print(f"[{step}] cleanup: delete created components")
         for cid in [id1, id2, id_bool, b_mortise, b_tenon,
                     id_sph, id_cub, id_sph_union, b_tail, b_pin]:
             try:
@@ -321,10 +400,10 @@ async def main() -> int:
             except Exception as e:
                 print(f"    (cleanup non-fatal: {e})")
 
-        step = 24; print(f"[{step}] undo — verify the tool runs without error")
+        step = 25; print(f"[{step}] undo — verify the tool runs without error")
         await call(conn, "undo")
 
-        step = 25; print(f"[{step}] version handshake — in-repo pair must report compatible=true")
+        step = 26; print(f"[{step}] version handshake — in-repo pair must report compatible=true")
         # smoke_check.py talks to Ruby directly (no FastMCP), so this returns
         # the raw handlers/system.rb output. Replicate the two-way verdict
         # that src/sketchup_mcp/tools.py::get_version computes: each side's
@@ -344,7 +423,7 @@ async def main() -> int:
         print("\nALL STEPS PASSED ✓")
         skips = (f", {eval_skipped[0]} skipped (eval gate closed)"
                  if eval_skipped[0] else "")
-        print(f"Smoke complete: 25 steps total{skips}")
+        print(f"Smoke complete: 26 steps total{skips}")
         return 0
     except Exception as e:
         print(f"\nFAILED at step {step}: {e}", file=sys.stderr)

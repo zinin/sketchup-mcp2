@@ -238,6 +238,29 @@ e.add_face([bld_w/MM,0,        z0/MM], [bld_w/MM, bld_l/MM, z0/MM], [re_x/MM, ry
 model.commit_operation
 ```
 
+## Face orientation when you build a shell face by face
+
+`add_face` picks the front side of a face itself, and a shell built face by face (the roofs above, a pyramid, a sphere) can come out **inside-out**, every normal pointing into the body. `volume` and `manifold?` do not show it, but anything that reads normals does: `pushpull`, a material painted on the front side, a convex-or-concave edge test. Measured in SketchUp 2026.1:
+
+- A new face takes its normal from the **vertex order** (the front is the side from which the points run counterclockwise), except that a horizontal face lying on the ground plane (z = 0) is turned **down**.
+- A face added **next to existing faces** is oriented like them, whatever its own vertex order says.
+
+So the first face of a shell decides every face joined to it. Builds of the plugin up to 0.3.1 made every sphere, and every cone above the ground plane, inside-out this way.
+
+Check one face of the finished shell against an interior point and reverse the whole shell if that face points inward. The mean of a convex body's vertices lies inside it; the centre of its bounds need not (for example, a tetrahedron cut from the corner of a cube). Work in the group's own frame, where the faces, their normals and their vertices live:
+
+```ruby
+faces  = grp.entities.grep(Sketchup::Face)
+pts    = faces.flat_map(&:vertices).uniq.map(&:position)
+centre = Geom::Point3d.new(pts.sum(&:x) / pts.size, pts.sum(&:y) / pts.size, pts.sum(&:z) / pts.size)
+f      = faces.first
+pts    = f.vertices.map(&:position)
+middle = Geom::Point3d.new(pts.sum(&:x) / pts.size, pts.sum(&:y) / pts.size, pts.sum(&:z) / pts.size)
+faces.each(&:reverse!) if f.normal.dot(middle - centre) < 0   # the normal points toward the centre
+```
+
+Decide once for the shell, never face by face: joined faces must keep agreeing. A shell with no inside, such as a roof, has no centre to check against; test the direction you want instead and fix the first face right after adding it, so that the faces added next to it follow: `face.reverse! if face.normal.z < 0` for a slope that should face up.
+
 ## Rafter at slope angle
 
 ```ruby

@@ -15,25 +15,29 @@ module MCPforSketchUp
         format = "jpeg" if format == "jpg"
         model = E.active_model!
 
+        # M-05: a .skp export of a never-saved model is refused, before
+        # build_export_path so no temp directory or file appears. The only way
+        # to write that file is Model#save, which re-points the open document
+        # to the export path under %TEMP%: the user's next Ctrl+S then writes
+        # there, and a temp cleanup can delete the only copy. (Model#save_copy
+        # would leave the document alone, but it RAISES "Model must be saved
+        # before copying" on an untitled model.) T-27 let the save through and
+        # returned a `warning` for the agent to relay; nothing guaranteed the
+        # user heard it. The other formats never touch the document, so an
+        # untitled model exports them as before.
+        if format == "skp" && model.path.to_s.empty?
+          raise Core::StructuredError.new(-32602,
+            "cannot export .skp: the model has never been saved, and saving it to a " \
+            "temp file would re-point the open document there. Ask the user to save " \
+            "the model in SketchUp first (File → Save), or export another format.")
+        end
+
         export_path = build_export_path(format)
-        # T-27: save на untitled-модели ПРИВЯЗЫВАЕТ живой документ к temp-пути
-        # (следующий Ctrl+S пользователя молча уйдёт туда). Сам выбор save
-        # задуман (см. save_skp) — но LLM обязан получить предупреждение
-        # и передать его пользователю.
-        skp_untitled = format == "skp" && model.path.to_s.empty?
-        # Sketchup::Model#save / #save_copy / #export and View#write_image return
+        # Sketchup::Model#save_copy / #export and View#write_image return
         # Boolean — false on failure (disk full, permission denied,
         # format-specific error). Without this guard the handler used to claim
         # success while no file had been written, leading callers to act on a
         # phantom path.
-        # skp export uses save_skp, which picks save vs save_copy by whether the
-        # live model has a path (codex review):
-        #   - save_copy RAISES "Model must be saved before copying" on an
-        #     UNTITLED model (no path) — so an untitled model can't use it.
-        #   - save re-points the live model's path AND clears its dirty flag —
-        #     on a TITLED document that is silent data loss.
-        # Hence: untitled → save (no real document to clobber), titled →
-        # save_copy (detached copy; path + modified state left untouched).
         ok = case format
              when "skp"            then save_skp(model, export_path)
              when "obj"            then export_obj(model, export_path)
@@ -45,29 +49,17 @@ module MCPforSketchUp
           raise Core::StructuredError.new(-32603,
             "export(#{format}) failed (no file written; check disk/permissions)")
         end
-        result = { "path" => export_path, "format" => format }
-        if skp_untitled
-          result["warning"] =
-            "model was untitled: SketchUp bound the live document to the export " \
-            "path (#{export_path}); the user's next save (Ctrl+S) will write there. " \
-            "Tell the user to Save As their intended location if that is not desired."
-        end
-        result
+        { "path" => export_path, "format" => format }
       end
 
-      # Pick save vs save_copy for a .skp export by whether the live model has a
-      # path. An untitled model (path == "") cannot use save_copy — it raises
-      # "Model must be saved before copying" — so it falls back to save (there is
-      # no real document to clobber yet). A titled model uses save_copy so its
-      # path + dirty flag stay untouched (save would re-point path + clear dirty
-      # = silent data loss). Both return Boolean, so the `unless ok` guard in
-      # #export still applies.
+      # .skp export: a detached copy via save_copy, so the live model's path and
+      # dirty flag stay untouched (save would re-point the open document to the
+      # export path and clear its dirty flag = silent data loss). save_copy
+      # RAISES "Model must be saved before copying" on an untitled model;
+      # #export refuses that case up front, so it never gets here. Returns
+      # Boolean, so the `unless ok` guard in #export still applies.
       def self.save_skp(model, export_path)
-        if model.path.to_s.empty?
-          model.save(export_path)        # untitled: no real document to clobber
-        else
-          model.save_copy(export_path)   # titled: leave path + dirty untouched (codex Critical fix)
-        end
+        model.save_copy(export_path)
       end
 
       def self.build_export_path(format)

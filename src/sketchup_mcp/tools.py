@@ -162,7 +162,8 @@ async def delete_component(
     ctx: Context,
     id: EntityId,
 ) -> str:
-    """Delete a group or component by entity ID.
+    """Delete a group or component instance by entity ID. Raw faces, edges and
+    other entities fail with -32602.
 
     Returns: JSON {ok: true}.
     """
@@ -191,6 +192,8 @@ async def transform_component(
     ] = None,
 ) -> str:
     """Move, rotate and/or scale a group or component (mm / degrees).
+
+    Groups and component instances only; other entities fail with -32602.
 
     - position: ABSOLUTE target for the entity's bounding-box MIN corner,
       in mm — the same anchor create_component uses. Applied LAST (after
@@ -235,20 +238,24 @@ async def set_material(
     material: Annotated[
         str,
         Field(min_length=1,
-              description="Named color or 6-digit hex string like #a05030"),
+              description="Name of a material already in the model, named "
+                          "color, or 6-digit hex string like #a05030"),
     ],
 ) -> str:
-    """Assign a material (color) to a group or component.
+    """Assign a material (color) to a group, component instance, face or edge.
 
-    material accepts a named color — red, green, blue, yellow, cyan,
-    turquoise, magenta, purple, white, black, brown, wood, orange, gray,
-    grey — or a 6-digit hex string like "#a05030" (#rrggbb). Anything else
-    fails with error -32602. Named colors are case-insensitive. Painting
-    affects only this instance (it is made unique first). That applies to
-    groups/components; painting a raw face/edge id (obtainable via
-    get_selection) colors the shared definition — all instances show it.
+    material: a material already in the model, matched by name without regard
+    to case, is used as is (so an existing "Red" is used for "red"). Otherwise
+    a named color — red, green, blue, yellow, cyan, turquoise, magenta, purple,
+    white, black, brown, wood, orange, gray, grey — or a 6-digit hex string like
+    "#a05030" (#rrggbb), in any case, maps to one lower-case material, found or
+    created. Anything else fails with -32602. Painting a group/component affects
+    only this instance (it is made unique first); painting a raw face/edge id
+    (obtainable via get_selection) colors the shared definition — all instances
+    show it.
 
-    Returns: JSON {id, name, type, bbox_mm{min,max}|null}.
+    Returns: JSON {id, name, type, bbox_mm{min,max}|null}. For a face or edge,
+    type is "face" or "edge" and name is null.
     """
     return await _call(ctx, "set_material", id=str(id), material=material)
 
@@ -268,10 +275,10 @@ async def export_scene(
     Formats: skp (native), obj / dae / stl (geometry), png / jpg (viewport
     render, default 1920×1080). The file is written on the machine running
     SketchUp — on a split-host setup the path is not directly readable here.
+    An untitled model cannot be exported to skp (-32602) — the user must save
+    it first; other formats work.
 
-    Returns: JSON {path, format} plus a "warning" field when exporting skp
-    from a never-saved model (SketchUp binds the live document to the export
-    path — relay the warning to the user).
+    Returns: JSON {path, format}.
     """
     return await _call(ctx, "export", format=format)
 
@@ -329,7 +336,8 @@ async def create_dovetail(
     angle: Annotated[float, Field(
         gt=0, le=60,
         description="Dovetail flare angle in degrees, 0 < angle <= 60")] = 15.0,
-    num_tails: Annotated[int, Field(gt=0, description="Number of tails")] = 3,
+    num_tails: Annotated[int, Field(
+        gt=0, le=25, description="Number of tails, 1–25")] = 3,
     offset_x: Annotated[float, Field(
         description="Joint offset from the board face's center along X, mm")] = 0.0,
     offset_y: Annotated[float, Field(
@@ -372,7 +380,8 @@ async def create_finger_joint(
     width: Annotated[float, Field(gt=0, description="Joint width in mm")] = 50.0,
     height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 25.0,
     depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 10.0,
-    num_fingers: Annotated[int, Field(gt=0, description="Number of fingers")] = 5,
+    num_fingers: Annotated[int, Field(
+        gt=0, le=50, description="Number of fingers, 1–50")] = 5,
     offset_x: Annotated[float, Field(
         description="Joint offset from the board face's center along X, mm")] = 0.0,
     offset_y: Annotated[float, Field(
@@ -489,14 +498,23 @@ async def chamfer_edge(
         float, Field(gt=0, description="Chamfer distance in mm"),
     ] = 5.0,
 ) -> str:
-    """Chamfer (bevel) edges of a group/component by ``distance`` mm.
+    """Chamfer (bevel) every feature edge of a group/component by ``distance`` mm.
 
-    By default ALL edges are chamfered. Unreliable on non-manifold geometry.
+    Seams of curved surfaces — edges where the surface bends by less than 25°
+    (the two face normals differ by under 25°), such as a cylinder's vertical
+    facet edges or every edge of a sphere — are skipped; the rims of curved
+    surfaces are chamfered segment by segment. Concave (inside-corner) edges,
+    such as the base of a post or the inner corner of an L-shaped block, are
+    skipped too: chamfering them would need added material. A body with no
+    feature edges fails with -32602, as does an inside-out body (faces
+    pointing inward): reverse its faces first. A call starts no new cut after
+    30 s inside SketchUp and then rolls back, changing nothing. Unreliable on
+    non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_chamfered,
-    stats{attempted, skipped_no_match, subtract_failed, succeeded}} — check
-    stats.subtract_failed == 0 (failed cuts) and stats.skipped_no_match == 0
-    (edges consumed by earlier cuts).
+    stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
+    skipped_concave, skipped_curved}} — check stats.subtract_failed == 0 (failed
+    cuts) and stats.skipped_no_match == 0 (edges consumed by earlier cuts).
     """
     return await _call(ctx, "chamfer_edges", entity_id=str(id), distance=distance)
 
@@ -511,18 +529,27 @@ async def fillet_edge(
         float, Field(gt=0, description="Fillet radius in mm"),
     ] = 5.0,
     segments: Annotated[
-        int, Field(gt=0, description="Arc segments per rounded edge"),
+        int, Field(ge=1, le=32, description="Arc segments per rounded edge, 1–32"),
     ] = 8,
 ) -> str:
-    """Round (fillet) edges of a group/component by ``radius`` mm with
-    ``segments`` arc segments.
+    """Round (fillet) every straight feature edge of a group/component by
+    ``radius`` mm with ``segments`` arc segments.
 
-    By default ALL edges are filleted. Unreliable on non-manifold geometry.
+    Skips seams of curved surfaces (edges where the surface bends by less than
+    25°: the two face normals differ by under 25°) and the rims of curved
+    surfaces, such as a cylinder's top and bottom circles: fillet cannot round a
+    tessellated curve. Also skips concave (inside-corner) edges, such as the
+    base of a post or the inner corner of an L-shaped block: rounding them would
+    need added material. A body with no straight feature edges (cylinder, cone,
+    sphere) fails with -32602, as does an inside-out body (faces pointing
+    inward): reverse its faces first. A call starts no new cut after 30 s
+    inside SketchUp and then rolls back, changing nothing. Unreliable on
+    non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_filleted,
-    stats{attempted, skipped_no_match, subtract_failed, succeeded}} — check
-    stats.subtract_failed == 0 (failed cuts) and stats.skipped_no_match == 0
-    (edges consumed by earlier cuts).
+    stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
+    skipped_concave, skipped_curved}} — check stats.subtract_failed == 0 (failed
+    cuts) and stats.skipped_no_match == 0 (edges consumed by earlier cuts).
     """
     return await _call(
         ctx, "fillet_edges", entity_id=str(id), radius=radius, segments=segments
@@ -565,7 +592,7 @@ async def get_viewport_screenshot(
                           "the shot, leaving the user's viewport unchanged"),
     ] = True,
     # NB: bare `list` on purpose — `list[Image | str]` crashes FastMCP tool
-    # registration on mcp 1.27.
+    # registration on mcp 1.27 and 1.30.
 ) -> list:
     """Capture the current SketchUp viewport; returns the PNG image plus a JSON text block {width, height, preset_used, style_used}.
 

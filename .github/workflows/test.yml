@@ -38,7 +38,24 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      # --frozen: lock обязан соответствовать pyproject (задача 1 его регенерирует);
-      # рассинхрон = красный CI, а не тихая пересборка резолвером.
-      - run: uv sync --frozen --extra dev
-      - run: uv run pytest tests/ -q
+      # --locked падает, если uv.lock рассинхронизирован с pyproject.toml;
+      # --frozen молча поставил бы устаревший lock.
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked pytest tests/ -q
+
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked pytest tests/test_contract_wire.py -q
+        env:
+          SKETCHUP_MCP_CONTRACT: '1'

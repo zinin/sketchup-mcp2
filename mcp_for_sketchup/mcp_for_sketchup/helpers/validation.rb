@@ -82,14 +82,6 @@ module MCPforSketchUp
         require_positive(params, key)
       end
 
-      def self.optional_int_positive(params, key, default = nil)
-        return default unless params.key?(key)
-        v = params[key]
-        raise E.new(-32602, "field #{key} must be an integer") unless v.is_a?(Integer)
-        raise E.new(-32602, "field #{key} must be > 0, got #{v}") unless v > 0
-        v
-      end
-
       def self.optional_int_nonneg(params, key, default = nil)
         return default unless params.key?(key)
         v = params[key]

@@ -224,7 +224,7 @@ class TestJointsFrameCompensation < Minitest::Test
   # «оптимизация» в обход хелпера вернула бы двойное смещение T-03.
   def test_carve_helpers_route_through_parent_frame_prototype
     src = File.read(File.expand_path(
-      "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb", __dir__))
+      "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb", __dir__), encoding: "UTF-8")
     %w[carve_tails carve_pins carve_board1_fingers].each do |name|
       body = src[/def self\.#{name}\b(?:(?!\n      def self\.).)*/m]
       refute_nil body, "#{name} not found in joints.rb"
@@ -241,7 +241,7 @@ class TestJointsFrameCompensation < Minitest::Test
   # Намеренный literal-пин: обновлять осознанно, не «чинить» под форматтер.
   def test_carve_board2_slots_keeps_sibling_cutter_pattern
     src = File.read(File.expand_path(
-      "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb", __dir__))
+      "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb", __dir__), encoding: "UTF-8")
     body = src[/def self\.carve_board2_slots\b(?:(?!\n      def self\.).)*/m]
     refute_nil body, "carve_board2_slots not found in joints.rb"
     assert_match(/current\.parent\.entities\.add_group/, body,

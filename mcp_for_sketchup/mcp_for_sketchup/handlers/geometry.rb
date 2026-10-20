@@ -26,7 +26,10 @@ module MCPforSketchUp
         validate_min_dimensions!(dims_mm, type)
         pos  = pos_mm.map  { |v| U.mm_to_inch(v) }
         dims = dims_mm.map { |v| U.mm_to_inch(v) }
-        segments = V.optional_int_positive(params, "segments", default_segments_for(type))
+        # M-07: 3..128. В схеме tools.py этого параметра нет — граница держится
+        # только здесь, для прямых TCP-клиентов; сфера строит segments² граней.
+        # Проверяется при любом type, хотя куб segments не читает.
+        segments = V.optional_int_range(params, "segments", min: 3, max: 128, default: default_segments_for(type))
         # T-54: опциональное имя группы. Без него все созданные группы
         # безымянны — find_components(name=...) бессилен, а модель не может
         # назвать то, что строит, иначе как через eval_ruby.
@@ -51,6 +54,8 @@ module MCPforSketchUp
       end
 
       # Returns {id, name, type, bbox_mm} so Claude can re-locate after destructive ops.
+      # A face or an edge (set_material paints them) has no #name: its type is
+      # its typename in lower case ("face", "edge") and its name is nil.
       # bbox_mm == nil, если у entity пустые bounds (T-55: инвертированный
       # сентинел SketchUp ±1e30" не должен утекать как ±2.54e31 мм).
       def self.describe_entity(entity)
@@ -64,10 +69,16 @@ module MCPforSketchUp
               "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
             }
           end
+        type, name =
+          case entity
+          when Sketchup::Group             then ["group", entity.name]
+          when Sketchup::ComponentInstance then ["component", entity.name]
+          else [entity.typename.downcase, nil]
+          end
         {
           "id"   => entity.entityID,
-          "name" => entity.name,
-          "type" => entity.is_a?(Sketchup::Group) ? "group" : "component",
+          "name" => name,
+          "type" => type,
           "bbox_mm" => bbox_mm
         }
       end
@@ -78,6 +89,7 @@ module MCPforSketchUp
         model.start_operation("Delete Component", true)
         begin
           entity = E.find!(id)
+          E.require_group_or_component!(entity, "entity #{id}")
           entity.erase!
           model.commit_operation
           { "ok" => true }
@@ -120,6 +132,7 @@ module MCPforSketchUp
         model.start_operation("Transform Component", true)
         begin
           entity = E.find!(id)
+          E.require_group_or_component!(entity, "entity #{id}")
           if rotation
             apply_rotation(entity, rotation)
           end
@@ -216,7 +229,14 @@ module MCPforSketchUp
         apex   = [center[0], center[1], center[2] + height]
         group = entities.add_group
         circle = G.circle_points(center, radius, segments)
-        group.entities.add_face(circle)
+        base = group.entities.add_face(circle)
+        # Основание должно смотреть наружу, то есть вниз, и это нужно сделать ДО
+        # боковых граней: SketchUp ориентирует новую грань как соседей. Круг на
+        # z = 0 он разворачивает вниз сам, выше — оставляет нормаль по порядку
+        # вершин (вверх, внутрь конуса), и боковые грани повторяли бы её: конус
+        # выходил вывернутым (live, SketchUp 2026.1: на z = 50 ни одна из 25
+        # граней не смотрела наружу).
+        base.reverse! if base.normal.z > 0
         (0...segments).each do |i|
           j = (i + 1) % segments
           group.entities.add_face(circle[i], circle[j], apex)
@@ -280,6 +300,19 @@ module MCPforSketchUp
                 "build_sphere: skipped degenerate face at pole: #{e.class}: #{e.message}")
             end
           end
+        end
+        # Оболочка выходит вывернутой (live, SketchUp 2026.1: 0 из 256 граней
+        # наружу): первая грань, северный полярный треугольник, берёт нормаль по
+        # порядку вершин — внутрь, а остальные ориентируются как соседи. Грани
+        # согласованы между собой, поэтому решение одно на всю оболочку: если
+        # первая смотрит к центру сферы, а не от него, разворачиваем все.
+        faces = group.entities.grep(Sketchup::Face)
+        unless faces.empty?
+          normal = faces.first.normal
+          mid    = faces.first.bounds.center
+          outward = normal.x * (mid.x - center[0]) + normal.y * (mid.y - center[1]) +
+                    normal.z * (mid.z - center[2])
+          faces.each(&:reverse!) if outward < 0
         end
         group
       end

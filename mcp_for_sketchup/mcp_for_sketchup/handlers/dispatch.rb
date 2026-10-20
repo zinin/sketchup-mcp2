@@ -99,6 +99,13 @@ module MCPforSketchUp
         }
       end
 
+      # Wire names that never mutate the model. connection.py::_RETRY_SAFE_TOOLS
+      # must stay a subset of this list (tests/test_contract.py reads both).
+      READ_ONLY_TOOLS = %w[
+        get_model_info list_components get_component_info find_components
+        list_layers get_selection get_viewport_screenshot get_version
+      ].freeze
+
       def self.call_handler(tool, params)
         case tool
         when "create_component"      then Handlers::Geometry.create_component(params)

@@ -48,7 +48,7 @@ class TestTransformAbsolute < Minitest::Test
   # красит тест; обновить пин осознанно, не «чинить» стиль под форматтер.
   def test_transform_component_translates_via_position_delta
     src = File.read(File.expand_path(
-      "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb", __dir__))
+      "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb", __dir__), encoding: "UTF-8")
     body = src[/def self\.transform_component.*?(?=\n      def self\.)/m]
     refute_nil body, "transform_component body not found"
     assert_match(/position_delta\(entity\.bounds\.min,\s*position\)/, body,
@@ -125,16 +125,21 @@ class TestTransformComponentHandler < Minitest::Test
   end
 
   class FakeModel
+    attr_reader :log
     def initialize(by_id)
       @by_id = by_id
+      @log = []
     end
-    def start_operation(_name, _disable_ui = true)
+    def start_operation(name, *)
+      @log << [:start, name]
       true
     end
     def commit_operation
+      @log << :commit
       true
     end
     def abort_operation
+      @log << :abort
       true
     end
     def find_entity_by_id(int_id)
@@ -170,6 +175,11 @@ class TestTransformComponentHandler < Minitest::Test
     else
       Geom::Transformation.singleton_class.send(:remove_method, :translation)
     end
+  end
+
+  def test_transform_component_commits_on_success
+    GEO.transform_component("id" => 4242, "position" => [381.0, 0.0, 0.0])
+    assert_equal [[:start, "Transform Component"], :commit], EH.active_model!.log
   end
 
   def test_position_moves_bbox_min_to_absolute_target

@@ -10,7 +10,7 @@ class TestOperationNames < Minitest::Test
   HANDLERS = File.expand_path("../mcp_for_sketchup/mcp_for_sketchup/handlers", __dir__)
 
   def source(rel_dir, file)
-    File.read(File.join(rel_dir, file))
+    File.read(File.join(rel_dir, file), encoding: "UTF-8")
   end
 
   def assert_op_label(src, regex, description)
@@ -80,7 +80,7 @@ class TestOperationNames < Minitest::Test
     # OR contains a colon-separator like "boolean_operation:union". Both are
     # forms this file exists to keep out of the Undo menu.
     Dir[File.join(HANDLERS, "*.rb")].each do |path|
-      File.read(path).scan(/start_operation\("([^"]+)"/).each do |(literal_arg)|
+      File.read(path, encoding: "UTF-8").scan(/start_operation\("([^"]+)"/).each do |(literal_arg)|
         # Allow interpolation marker `#{...}` anywhere; check the static
         # prefix only. A capitalised first letter passes.
         first_visible = literal_arg.sub(/\A#\{[^}]*\}/, '')[0]

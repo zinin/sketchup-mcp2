@@ -26,11 +26,12 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   between clients on the model are the user's responsibility** (no
   server-side locking). Half-open sockets detected via `SO_KEEPALIVE`
   (OS default ~2h).
-- **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; cast incoming string IDs with `.to_i`.
+- **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; incoming ids are parsed strictly with `Integer(id.to_s, 10)` — never `.to_i`, which silently mis-targets: `"12abc".to_i == 12` and `"12.9".to_i == 12` address entity 12 (`"abc".to_i == 0` at least fails loudly as "entity 0 not found").
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
 - **Mutating handlers wrap edits in `model.start_operation`/`commit_operation`** so `undo` rolls back atomically.
+- **`.skp` export of an untitled model is refused on purpose** (-32602, before any file or directory is made). The old T-27 behaviour saved it to `%TEMP%/sketchup_exports/…` with `Model#save` and returned a `warning`, but `save` re-points the open document there: the user's next Ctrl+S wrote to `%TEMP%`, and a temp cleanup could delete the only copy. `Model#save_copy` would leave the document alone but raises on an untitled model. `save_skp` only ever calls `save_copy` — do not add a `save` branch. Other formats are unaffected.
 - **eval gate**: `eval_ruby` is gated by the `eval_enabled` pref, which
   ships **on** (`Config::DEFAULTS[:eval_enabled] = true`) and is closed from
   `Plugins → MCP Server → Settings...`. An absent pref resolves to that
@@ -47,10 +48,11 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   the new open default with no confirm, including one upgrading from a
   `-warehouse` build where the gate was closed; (2) **per-call review at the
   MCP client** — Claude Desktop / Claude Code show each `eval_ruby` call's
-  code to approve or deny. Note this second layer is a client convention,
-  not a protocol guarantee: MCP does not mandate an interaction model, and a
-  client running pre-authorized (`--dangerously-skip-permissions`) shows
-  nothing.
+  code to approve or deny. It covers only calls made through that client; a
+  direct TCP client bypasses it. Note this second layer is a client
+  convention, not a protocol guarantee: MCP does not mandate an interaction
+  model, and a client running pre-authorized
+  (`--dangerously-skip-permissions`) shows nothing.
   The extension deliberately does NOT log or re-prompt the code — that would
   duplicate the client's permission UI and break autonomous
   (`--dangerously-skip-permissions`) operation.
@@ -90,11 +92,11 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 416 runs / 1125 assertions
-uv run pytest tests/ -q        # Python (pytest) — 182 tests
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 579 runs / 1813 assertions
+uv run pytest tests/ -q        # Python (pytest) — 214 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 25-step end-to-end (covers every tool category; 19 of 22 tools)
+python examples/smoke_check.py # 26-step end-to-end (covers every tool category; 19 of 22 tools)
 ```
 
 Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load check).
@@ -105,7 +107,7 @@ Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load
 
 | Setting | Default | Notes |
 |---|---|---|
-| Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead. |
+| Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups use the reverse SSH tunnel described in README → Security model instead. |
 | Port | `9876` | 1..65535 |
 | Log Level | `WARN` | `DEBUG` / `INFO` / `WARN` / `ERROR`. Default `WARN` so info/debug never clutter SketchUp's shared Ruby console; every emitted line is prefixed `[<UTC iso8601>] [MCPforSU] [LEVEL]`. |
 | Enable Ruby evaluation | **on** | Gates `eval_ruby`. Ships enabled; uncheck to close the gate. Re-enabling it pops a blocking security confirm (arbitrary code ⇒ full filesystem/network/shell). |
@@ -118,10 +120,10 @@ Log-level changes apply immediately. Enabling Ruby evaluation requires confirmin
 
 - `SKETCHUP_MCP_HOST` (default `127.0.0.1`) — where to connect to the SketchUp extension
 - `SKETCHUP_MCP_PORT` (default `9876`)
-- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds)
+- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds) — keep it well above 30 s: an edge op starts no new cut after 30 s inside SketchUp and then rolls back. SketchUp does not know the client gave up, so after a timed-out mutating call check the model (`get_component_info` / `list_components`) before retrying.
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
 
-`examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` (via `sketchup_mcp.config`). For a split-host setup — Linux dev box + Windows SketchUp — set them when running the smoke check, e.g. `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`. In that mode the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network).
+`examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` (via `sketchup_mcp.config`). For a split-host setup — Linux dev box + Windows SketchUp — there are two ways. **LAN address:** `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`; a non-loopback host counts as remote. **Reverse SSH tunnel** (README → Security model; the plugin stays on `127.0.0.1`): the host is loopback, so also set `SKETCHUP_MCP_SMOKE_REMOTE=1`, e.g. `SKETCHUP_MCP_SMOKE_REMOTE=1 uv run python examples/smoke_check.py`. Either way the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network). Without the variable, a loopback host makes step 18 look for the file on this machine and fail; `_export_file_is_local` in the script decides.
 
 ## Architecture
 
@@ -163,11 +165,11 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Category | Tools |
 |---|---|
 | Geometry | `create_component`, `delete_component`, `transform_component` |
-| Materials | `set_material` (named colors + hex `#rrggbb`) |
+| Materials | `set_material` (groups, component instances, faces, edges; existing material names, named colors, hex `#rrggbb`) |
 | Booleans | `boolean_operation` (union / difference / intersection) |
 | Edge ops | `chamfer_edge`, `fillet_edge` (Ruby-side names are plural — `chamfer_edges`/`fillet_edges`) |
 | Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
-| Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
+| Export | `export_scene` (skp / obj / dae / stl / png / jpg; skp refused for an untitled model) |
 | Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | View | `get_viewport_screenshot` (returns MCP Image + JSON metadata text block; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
 | Lifecycle | `undo` |

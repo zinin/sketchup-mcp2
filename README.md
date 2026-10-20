@@ -59,11 +59,11 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 | Category | Tools |
 |---|---|
 | **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm**; `position` is an **absolute** bbox-min target |
-| **Materials** | `set_material` — named colors and hex `#rrggbb` |
+| **Materials** | `set_material` — paints a group, component instance, face or edge with an existing material (by name), a named color or hex `#rrggbb` |
 | **Booleans** | `boolean_operation` — union / difference / intersection |
-| **Edge ops** | `chamfer_edge`, `fillet_edge` — distance/radius in mm, segments configurable |
+| **Edge ops** | `chamfer_edge`, `fillet_edge` — feature edges only (seams and concave edges skipped; fillet also skips curved rims and refuses a body without straight feature edges); distance/radius in mm, segments configurable |
 | **Joinery** | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
-| **Export** | `export_scene` — skp / obj / dae / stl / png / jpg |
+| **Export** | `export_scene` — skp / obj / dae / stl / png / jpg; skp is refused for an untitled model |
 | **Introspection** | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image` + JSON metadata text block; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |
 | **Lifecycle** | `undo` |
@@ -87,7 +87,7 @@ All dimensions in **millimeters**; angles in **degrees**. Every entity-returning
 |---|---|---|
 | `SKETCHUP_MCP_HOST` | `127.0.0.1` | Where to connect to the SketchUp extension |
 | `SKETCHUP_MCP_PORT` | `9876` | TCP port |
-| `SKETCHUP_MCP_TIMEOUT` | `60` | Per-tool-call timeout (seconds) |
+| `SKETCHUP_MCP_TIMEOUT` | `60` | Per-tool-call timeout (seconds); keep it well above 30 s (the default 60 is fine) — a chamfer/fillet call starts no new cut after 30 s inside SketchUp and then rolls back, and a client that gives up first can miss an edit that still commits |
 | `SKETCHUP_MCP_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
 
 ### Ruby side (Settings dialog inside SketchUp)
@@ -98,9 +98,23 @@ The Ruby side logs at **`WARN` by default**, so it stays quiet in SketchUp's sha
 
 `eval_ruby` — the arbitrary-Ruby escape hatch — is **enabled by default**. Uncheck **Enable Ruby evaluation** in the Settings dialog to close the gate; the setting persists across SketchUp restarts, and re-enabling it pops a blocking confirmation spelling out the risk (arbitrary Ruby ⇒ full filesystem / network / shell access). With the gate closed, a client's `eval_ruby` call comes back as a plain message telling the user how to re-open it.
 
-**Per-call review.** Open gate or not, the exact Ruby a client sends stays visible in your MCP client — Claude Desktop and Claude Code display every tool call's arguments and let you approve or deny each one before it runs, so you can review each snippet case by case. (That per-call prompt is skipped only if you opt out of approvals, e.g. Claude Code's `--dangerously-skip-permissions`.)
+**Per-call review.** Open gate or not, the exact Ruby a client sends stays visible in your MCP client — Claude Desktop and Claude Code display every tool call's arguments and let you approve or deny each one before it runs, so you can review each snippet case by case. (That per-call prompt is skipped only if you opt out of approvals, e.g. Claude Code's `--dangerously-skip-permissions`.) This review covers only calls made through that client — see [Security model](#security-model).
 
-> **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead.
+> **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). See [Security model](#security-model); for multi-machine setups use the SSH tunnel described there.
+
+## Security model
+
+The plugin's TCP socket has **no authentication**. Anything that can open a connection to its port can call every tool, and `eval_ruby` — arbitrary Ruby with full filesystem, network and shell access — is one of them for as long as **Enable Ruby evaluation** is on, which it is by default. That means any process on the SketchUp machine, and other machines too when **Host** is not a loopback address.
+
+- **Approval in your MCP client covers only calls made through that client.** Claude Desktop and Claude Code show each call's arguments before it runs; a process that talks to the socket directly bypasses that review.
+- **The defaults are safe on a single-user machine.** The plugin listens on `127.0.0.1`, so only local processes can connect, and they already run with your permissions.
+- **An upgrade can open the eval gate without a dialog.** It affects an install that never saved the Settings and upgrades from a `-warehouse` build (the eval-disabled variant published with 0.2.0 and 0.3.0), where `eval_ruby` shipped closed: with no stored preference the shipped default applies (`eval_ruby` is on since 0.3.1) and no confirmation appears. Open Settings once and uncheck **Enable Ruby evaluation** if you do not want it. An install where it was unchecked explicitly stays that way.
+- **Split host (MCP client on a Linux VM, SketchUp on Windows): tunnel instead of binding to the LAN.** Keep the plugin on `127.0.0.1` and run this on the Windows machine:
+  ```bash
+  ssh -N -R 9876:127.0.0.1:9876 user@linux-vm
+  ```
+  The MCP server on the Linux side then connects to `127.0.0.1:9876`, the default. You need the OpenSSH client on Windows (built into Windows 10/11) and `sshd` on the VM. The tunnel's VM end listens on the VM's loopback, so every process on the VM, under any user, reaches the plugin — `eval_ruby` included, while the gate is open — through it; sshd's default `GatewayPorts no` is what keeps the port off the VM's network.
+- **Binding Host to a LAN address or `0.0.0.0` exposes the plugin to every machine that can reach the port** — `eval_ruby` included, while **Enable Ruby evaluation** is on. The Settings dialog's inline warning appears only for wildcard hosts such as `0.0.0.0`, not for an explicit LAN IP; the server itself logs a WARN when it binds to any non-loopback host (in SketchUp's Ruby Console, and in the log file if you enabled it).
 
 ## Examples
 
@@ -116,7 +130,7 @@ For richer Ruby recipes that drive the SketchUp API directly — framed walls, g
 
 Working examples and load tests live in [`examples/`](examples/):
 
-- `smoke_check.py` — 25-step end-to-end verification of every tool category.
+- `smoke_check.py` — 26-step end-to-end verification of every tool category.
 - `smoke_multi_client.py` — concurrent multi-client load test.
 
 ## Architecture
@@ -160,11 +174,14 @@ uv run pytest tests/ -q          # Python unit tests
 ### Live smoke (requires SketchUp running with the extension started)
 
 ```bash
-uv run python examples/smoke_check.py          # 25-step end-to-end
+uv run python examples/smoke_check.py          # 26-step end-to-end
 uv run python examples/smoke_multi_client.py   # concurrent multi-client
 ```
 
-For a split-host setup (e.g. Linux dev box + Windows SketchUp), prefix with `SKETCHUP_MCP_HOST=<sketchup-host>`.
+For a split-host setup (e.g. Linux dev box + Windows SketchUp), run the smokes on the Linux side. The file `export_scene` writes in step 18 of `smoke_check.py` then lands on the SketchUp machine, so that step only asserts that a path came back. Two ways to reach SketchUp:
+
+- **SSH tunnel** (preferred, see [Security model](#security-model)): the host stays `127.0.0.1`, so the script cannot tell that SketchUp is remote. Run `SKETCHUP_MCP_SMOKE_REMOTE=1 uv run python examples/smoke_check.py`; without the variable step 18 looks for the export file on the Linux machine and fails. `smoke_multi_client.py` needs nothing extra.
+- **LAN address**: prefix either script with `SKETCHUP_MCP_HOST=<sketchup-host>`. A non-loopback host is recognized as remote on its own. The plugin has to listen on that address, with the risks described in the Security model.
 
 ## Troubleshooting
 
@@ -188,7 +205,9 @@ Each side declares only the oldest counterpart it works with, so being newer nev
 
 ### Tool-call timeouts on long operations
 
-Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds.
+Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds. Keep it well above 30 s: a chamfer or fillet call starts no new cut after 30 s inside SketchUp and then rolls back, and a client that gives up sooner can walk away from an edit that still commits.
+
+SketchUp does not learn that the client gave up. After a timed-out call that changes the model, check the model with `get_component_info` or `list_components` before retrying — a blind retry can apply the edit twice (a double chamfer). The error message says the same. Read-only calls are safe to repeat.
 
 ### SketchUp UI freezes during big requests
 
@@ -215,7 +234,7 @@ Keep the **virtualenv on a local disk**. With `uv`, point it there via `UV_PROJE
 
 The `uvx sketchup-mcp2` setup shown earlier isn't affected — `uvx` already keeps its environment under uv's local cache.
 
-> **Why is the venv on a shared folder at all?** This bridge is typically run in an isolated VM setup — both Claude Code launched with `--dangerously-skip-permissions` and `eval_ruby` (arbitrary Ruby, full filesystem/shell access) enabled are risky enough to want a disposable VM. Typical layout: a Linux VM (Claude Code + MCP server) ↔ a Windows VM (SketchUp) over the LAN, project on a host-shared folder — which is exactly why the `UV_PROJECT_ENVIRONMENT` note above matters.
+> **Why is the venv on a shared folder at all?** This bridge is typically run in an isolated VM setup — both Claude Code launched with `--dangerously-skip-permissions` and `eval_ruby` (arbitrary Ruby, full filesystem/shell access) enabled are risky enough to want a disposable VM. Typical layout: a Linux VM (Claude Code + MCP server) ↔ a Windows VM (SketchUp) connected through the SSH tunnel described in [Security model](#security-model), project on a host-shared folder — which is exactly why the `UV_PROJECT_ENVIRONMENT` note above matters.
 
 ## License
 

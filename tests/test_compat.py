@@ -1,7 +1,4 @@
 """Tests for sketchup_mcp.compat — version parsing and Ruby compatibility check."""
-import re
-from pathlib import Path
-
 import pytest
 
 from sketchup_mcp import compat
@@ -88,27 +85,13 @@ def test_unparseable_raises_clear_message():
     assert "v1" in msg
 
 
-_COMPAT_RB = (
-    Path(__file__).resolve().parent.parent
-    / "mcp_for_sketchup" / "mcp_for_sketchup" / "core" / "compat.rb"
-)
-
-
-def _ruby_const(name: str) -> str:
-    """Read a string constant such as ``SERVER_VERSION = "0.3.1"`` from compat.rb."""
-    source = _COMPAT_RB.read_text(encoding="utf-8")
-    m = re.search(rf'^\s*{name}\s*=\s*"([^"]*)"', source, re.M)
-    assert m, f"{name} not found in {_COMPAT_RB}"
-    return m.group(1)
-
-
-def test_in_repo_pair_is_compatible():
+def test_in_repo_pair_is_compatible(ruby_const):
     """The client and the plugin in this commit must accept each other.
 
     Replaces the old MAX pinning tests: it catches a mistyped floor and a
     floor that names a counterpart version this commit does not have yet."""
-    server_version = _ruby_const("SERVER_VERSION")
-    min_python = _ruby_const("MIN_PYTHON")
+    server_version = ruby_const("SERVER_VERSION")
+    min_python = ruby_const("MIN_PYTHON")
     assert compat.parse(compat.MIN_RUBY) <= compat.parse(server_version), (
         f"MIN_RUBY {compat.MIN_RUBY} rejects the in-repo plugin v{server_version}"
     )
@@ -123,7 +106,7 @@ def test_in_repo_pair_is_compatible():
 _LAST_CAPPED_RELEASE = "0.3.1"
 
 
-def test_first_release_past_0_3_1_raises_floors():
+def test_first_release_past_0_3_1_raises_floors(ruby_const):
     """A side released past 0.3.1 must also raise its floor past 0.3.1.
 
     No 0.3.x counterpart can pair with it anyway. The raised MIN_PYTHON makes
@@ -133,8 +116,8 @@ def test_first_release_past_0_3_1_raises_floors():
     uvx install. Together with test_in_repo_pair_is_compatible this also
     refuses a one-sided first release after 0.3.1."""
     capped = compat.parse(_LAST_CAPPED_RELEASE)
-    server_version = _ruby_const("SERVER_VERSION")
-    min_python = _ruby_const("MIN_PYTHON")
+    server_version = ruby_const("SERVER_VERSION")
+    min_python = ruby_const("MIN_PYTHON")
     if compat.parse(server_version) > capped:
         assert compat.parse(min_python) > capped, (
             f"plugin v{server_version} ships past {_LAST_CAPPED_RELEASE}: "

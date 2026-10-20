@@ -109,16 +109,21 @@ class TestBooleanDirection < Minitest::Test
   end
 
   class FakeModel
+    attr_reader :log
     def initialize(by_id)
       @by_id = by_id
+      @log = []
     end
-    def start_operation(_name, _disable_ui = true)
+    def start_operation(name, *)
+      @log << [:start, name]
       true
     end
     def commit_operation
+      @log << :commit
       true
     end
     def abort_operation
+      @log << :abort
       true
     end
     def find_entity_by_id(int_id)
@@ -146,6 +151,11 @@ class TestBooleanDirection < Minitest::Test
   def run_op(operation)
     OPS.boolean_operation(
       "operation" => operation, "target_id" => 101, "tool_id" => 202)
+  end
+
+  def test_boolean_operation_commits_on_success
+    run_op("difference")
+    assert_equal [[:start, "Boolean Difference"], :commit], EH.active_model!.log
   end
 
   def test_difference_receiver_is_tool_copy_argument_is_target_copy
