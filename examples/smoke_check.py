@@ -346,8 +346,8 @@ async def main() -> int:
         # (a face on the ground plane it turns down) and each later face like its
         # neighbours. Builds of the plugin up to 0.3.1 made a cone above the ground
         # plane and every sphere inside-out, which volume and manifold? do not show
-        # (see docs/sketchup-ruby-cookbook.md). Both bodies sit at z=50 mm, off the
-        # plane.
+        # (see docs/sketchup-ruby-cookbook.md). Both bodies below sit at z=50 mm,
+        # off the ground plane.
         cone = parse(await call(conn, "create_component", type="cone",
                                 position=[0, 600, 50], dimensions=[100, 100, 100]))
         ball = parse(await call(conn, "create_component", type="sphere",

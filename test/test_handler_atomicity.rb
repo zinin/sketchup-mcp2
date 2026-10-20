@@ -210,11 +210,19 @@ class TestHandlerAtomicity < Minitest::Test
   # ---------- every start_operation site has a row ----------
   #
   # The scan reads the handler files as text. It sees `start_operation(...)`
-  # and `start_operation "..."`, in a `def self.x` or a plain `def x`. It does
-  # not see an operation started through send or define_method. A helper that
-  # is called without parentheses is not linked to its callers: the scan then
-  # lists the helper as a handler without a row, or its callers as rows that
-  # start no operation, which is loud, not silent.
+  # and `start_operation "..."`, in a `def self.x` or a plain `def x`, and it
+  # links a helper such as run_edge_op to the methods that call it with
+  # parentheses. Three patterns slip past it silently:
+  #   * an operation started through send or define_method;
+  #   * a `def` that does not start its line (`private def x`): its code is
+  #     counted for the method before it, so it is missed when that method
+  #     has a row;
+  #   * a new handler that calls a helper without parentheses
+  #     (`run_edge_op p`) while the other callers use them.
+  # A paren-less call fails loudly in two other cases: every caller of the
+  # helper is paren-less (the helper is listed without a row), or a handler
+  # that has a row switches to one (its row names a handler the scan no
+  # longer finds). None of the silent patterns is in handlers/ today.
 
   HANDLER_DIR = File.expand_path("../mcp_for_sketchup/mcp_for_sketchup/handlers", __dir__)
 
