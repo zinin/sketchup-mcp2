@@ -26,7 +26,7 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   between clients on the model are the user's responsibility** (no
   server-side locking). Half-open sockets detected via `SO_KEEPALIVE`
   (OS default ~2h).
-- **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; cast incoming string IDs with `.to_i`.
+- **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; incoming ids are parsed strictly with `Integer(id.to_s, 10)` — never `.to_i`, because `"abc".to_i == 0` silently addresses entity 0.
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
@@ -47,10 +47,11 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   the new open default with no confirm, including one upgrading from a
   `-warehouse` build where the gate was closed; (2) **per-call review at the
   MCP client** — Claude Desktop / Claude Code show each `eval_ruby` call's
-  code to approve or deny. Note this second layer is a client convention,
-  not a protocol guarantee: MCP does not mandate an interaction model, and a
-  client running pre-authorized (`--dangerously-skip-permissions`) shows
-  nothing.
+  code to approve or deny. It covers only calls made through that client; a
+  direct TCP client bypasses it. Note this second layer is a client
+  convention, not a protocol guarantee: MCP does not mandate an interaction
+  model, and a client running pre-authorized
+  (`--dangerously-skip-permissions`) shows nothing.
   The extension deliberately does NOT log or re-prompt the code — that would
   duplicate the client's permission UI and break autonomous
   (`--dangerously-skip-permissions`) operation.

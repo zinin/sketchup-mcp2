@@ -100,7 +100,23 @@ The Ruby side logs at **`WARN` by default**, so it stays quiet in SketchUp's sha
 
 **Per-call review.** Open gate or not, the exact Ruby a client sends stays visible in your MCP client — Claude Desktop and Claude Code display every tool call's arguments and let you approve or deny each one before it runs, so you can review each snippet case by case. (That per-call prompt is skipped only if you opt out of approvals, e.g. Claude Code's `--dangerously-skip-permissions`.)
 
-> **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead.
+> **⚠ Security warning:** binding the host to `0.0.0.0` exposes the MCP server — including `eval_ruby`, which runs arbitrary Ruby inside SketchUp — to the entire local network with **no authentication**. Use only on trusted networks (host → VM, isolated lab). See [Security model](#security-model); for multi-machine setups use the SSH tunnel described there.
+
+## Security model
+
+The plugin's TCP socket has **no authentication**. Anything that can open a connection to its port can call every tool, including `eval_ruby` (arbitrary Ruby with full filesystem, network and shell access): any process on the SketchUp machine, and other machines too when **Host** is not a loopback address.
+
+- **Approval in your MCP client covers only calls made through that client.** Claude Desktop and Claude Code show each call's arguments before it runs; a process that talks to the socket directly bypasses that review.
+- **The defaults are safe on a single-user machine.** The plugin listens on `127.0.0.1`, so only local processes can connect, and they already run with your permissions.
+- **An upgrade can open the eval gate without a dialog.** If you never saved the Settings, the shipped default applies after an upgrade (`eval_ruby` is on since 0.3.1) and no confirmation appears. Open Settings once and uncheck **Enable Ruby evaluation** if you do not want it.
+- **Split host (MCP client on a Linux VM, SketchUp on Windows): tunnel instead of binding to the LAN.** Keep the plugin on `127.0.0.1` and run this on the Windows machine:
+
+  ```bash
+  ssh -N -R 9876:127.0.0.1:9876 user@linux-vm
+  ```
+
+  The MCP server on the Linux side then connects to `127.0.0.1:9876`, the default. You need the OpenSSH client on Windows (built into Windows 10/11) and `sshd` on the VM.
+- **Binding Host to a LAN address or `0.0.0.0` exposes `eval_ruby` to every machine that can reach the port.** The Settings dialog warns only for `0.0.0.0`-style hosts, not for an explicit LAN IP.
 
 ## Examples
 
@@ -215,7 +231,7 @@ Keep the **virtualenv on a local disk**. With `uv`, point it there via `UV_PROJE
 
 The `uvx sketchup-mcp2` setup shown earlier isn't affected — `uvx` already keeps its environment under uv's local cache.
 
-> **Why is the venv on a shared folder at all?** This bridge is typically run in an isolated VM setup — both Claude Code launched with `--dangerously-skip-permissions` and `eval_ruby` (arbitrary Ruby, full filesystem/shell access) enabled are risky enough to want a disposable VM. Typical layout: a Linux VM (Claude Code + MCP server) ↔ a Windows VM (SketchUp) over the LAN, project on a host-shared folder — which is exactly why the `UV_PROJECT_ENVIRONMENT` note above matters.
+> **Why is the venv on a shared folder at all?** This bridge is typically run in an isolated VM setup — both Claude Code launched with `--dangerously-skip-permissions` and `eval_ruby` (arbitrary Ruby, full filesystem/shell access) enabled are risky enough to want a disposable VM. Typical layout: a Linux VM (Claude Code + MCP server) ↔ a Windows VM (SketchUp) connected through the SSH tunnel from [Security model](#security-model), project on a host-shared folder — which is exactly why the `UV_PROJECT_ENVIRONMENT` note above matters.
 
 ## License
 

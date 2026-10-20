@@ -72,7 +72,7 @@
   </div>
   <div class="error" id="eval_enabled-error"></div>
   <div class="warning" id="eval-warning" style="margin-left: 0;">
-    Allows connected MCP clients to run arbitrary Ruby with full file/shell access. This is ON by default — uncheck it unless you fully trust every MCP client that connects.
+    Lets anything that can connect to the MCP server's port — any local process, and other machines if Host is not a loopback address — run arbitrary Ruby with full file/shell access. ON by default; uncheck it unless you trust everything that can reach the port.
   </div>
 
   <div id="status" class="status">

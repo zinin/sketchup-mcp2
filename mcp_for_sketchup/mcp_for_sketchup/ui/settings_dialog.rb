@@ -191,9 +191,11 @@ module MCPforSketchUp
       def self.confirm_eval_enable
         answer = ::UI.messagebox(
           "You are about to enable Ruby evaluation.\n\n" \
-          "This lets connected MCP clients run arbitrary Ruby code inside " \
-          "SketchUp with FULL access to your filesystem, network, and shell.\n\n" \
-          "Only enable this with MCP clients you fully trust.\n\n" \
+          "This lets anything that can connect to the MCP server's port — " \
+          "any local process, and other machines if Host is not a loopback " \
+          "address — run arbitrary Ruby code inside SketchUp with FULL " \
+          "access to your filesystem, network, and shell.\n\n" \
+          "Only enable this on a machine and network you trust.\n\n" \
           "Continue?",
           ::MB_YESNO,
         )
