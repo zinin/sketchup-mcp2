@@ -344,9 +344,10 @@ async def main() -> int:
         step = 23; print(f"[{step}] cone and sphere above the ground plane — no face points into its body")
         # SketchUp orients a face by the vertex order of the first face of a shell
         # (a face on the ground plane it turns down) and each later face like its
-        # neighbours. Before a4a60b9 a cone at z>0 and every sphere came out
-        # inside-out, which volume and manifold? do not show (see
-        # docs/sketchup-ruby-cookbook.md). Both bodies sit at z=50 mm, off the plane.
+        # neighbours. Builds of the plugin up to 0.3.1 made a cone above the ground
+        # plane and every sphere inside-out, which volume and manifold? do not show
+        # (see docs/sketchup-ruby-cookbook.md). Both bodies sit at z=50 mm, off the
+        # plane.
         cone = parse(await call(conn, "create_component", type="cone",
                                 position=[0, 600, 50], dimensions=[100, 100, 100]))
         ball = parse(await call(conn, "create_component", type="sphere",

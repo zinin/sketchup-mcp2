@@ -245,17 +245,18 @@ model.commit_operation
 - A new face takes its normal from the **vertex order** (the front is the side from which the points run counterclockwise), except that a horizontal face lying on the ground plane (z = 0) is turned **down**.
 - A face added **next to existing faces** is oriented like them, whatever its own vertex order says.
 
-So the first face of a shell decides every face joined to it. `create_component` built every sphere, and every cone above the ground plane, inside-out this way until a4a60b9.
+So the first face of a shell decides every face joined to it. Builds of the plugin up to 0.3.1 made every sphere, and every cone above the ground plane, inside-out this way.
 
-Check one face of the finished shell against the body centre (the centre of the bounds lies inside a convex body) and reverse the whole shell if that face points inward:
+Check one face of the finished shell against the body centre (the centre of the bounds lies inside a convex body) and reverse the whole shell if that face points inward. The bounds of a group are in its parent's frame and its faces in its own, so the face is moved into the parent's frame with the group's transformation first (the identity only for a group that nothing has moved):
 
 ```ruby
 faces  = grp.entities.grep(Sketchup::Face)
-centre = grp.bounds.center
+t      = grp.transformation                               # the group's own frame -> its parent's
+centre = grp.bounds.center                                # already in the parent's frame
 f      = faces.first
-pts    = f.vertices.map(&:position)
+pts    = f.vertices.map { |v| t * v.position }
 middle = Geom::Point3d.new(pts.sum(&:x) / pts.size, pts.sum(&:y) / pts.size, pts.sum(&:z) / pts.size)
-faces.each(&:reverse!) if f.normal.dot(middle - centre) < 0   # the normal points toward the centre
+faces.each(&:reverse!) if (t * f.normal).dot(middle - centre) < 0   # the normal points toward the centre
 ```
 
 Decide once for the shell, never face by face: joined faces must keep agreeing. A shell with no inside, such as a roof, has no centre to check against; test the direction you want instead and fix the first face right after adding it, so that the faces added next to it follow: `face.reverse! if face.normal.z < 0` for a slope that should face up.
