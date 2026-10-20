@@ -5,9 +5,9 @@
 # model.commit_operation and answer any StandardError with
 # Geometry.safe_abort(model) and a re-raise, so one call is one undo step and
 # a call that fails leaves the model as it was. ROWS holds all eleven, so a
-# handler that stops aborting fails here whatever its own tests cover. A last
-# test reads the handler files and finds every method that calls
-# start_operation, so a new site without a row fails too.
+# handler that stops aborting fails here whatever its own tests cover. The
+# last tests read the handler files and find every method that calls
+# start_operation, so a new site without a row fails too, and pin that scan.
 #
 # A row names the handler, a call that passes validation, the model call that
 # then raises RuntimeError("injected") (a path from the model: %i[layers add]
@@ -208,21 +208,33 @@ class TestHandlerAtomicity < Minitest::Test
   end
 
   # ---------- every start_operation site has a row ----------
+  #
+  # The scan reads the handler files as text. It sees `start_operation(...)`
+  # and `start_operation "..."`, in a `def self.x` or a plain `def x`. It does
+  # not see an operation started through send or define_method. A helper that
+  # is called without parentheses is not linked to its callers: the scan then
+  # lists the helper as a handler without a row, or its callers as rows that
+  # start no operation, which is loud, not silent.
 
   HANDLER_DIR = File.expand_path("../mcp_for_sketchup/mcp_for_sketchup/handlers", __dir__)
 
-  # { "Module" => { "method" => code } } for the `def self.` methods of the
-  # handler files. A method's code runs from its def to the next def, minus
-  # the comment lines, so a comment that names start_operation does not count.
-  def handler_methods
+  # { "Module" => text } of the handler files.
+  def handler_sources
     Dir[File.join(HANDLER_DIR, "*.rb")].sort.to_h do |path|
-      chunks = File.read(path, encoding: "UTF-8").split(/^(?=[ \t]*def self\.\w)/)
-      methods = chunks.filter_map do |chunk|
-        name = chunk[/\A[ \t]*def self\.(\w+)/, 1]
-        [name, chunk.lines.grep_v(/\A\s*#/).join] if name
-      end
-      [File.basename(path, ".rb").capitalize, methods.to_h]
+      [File.basename(path, ".rb").capitalize, File.read(path, encoding: "UTF-8")]
     end
+  end
+
+  # { "method" => code } for the methods in `source`. Every `def`, with or
+  # without self., starts a method that runs to the next def, so a def added
+  # after a row method does not join its code. The code leaves out the comment
+  # lines: a comment that names start_operation does not count.
+  def methods_of(source)
+    chunks = source.split(/^(?=[ \t]*def\b)/)
+    chunks.filter_map do |chunk|
+      name = chunk[/\A[ \t]*def[ \t]+(?:self\.)?(\w+[?!=]?)/, 1]
+      [name, chunk.lines.grep_v(/\A\s*#/).join] if name
+    end.to_h
   end
 
   # The method itself, or the methods that call it, and theirs in turn: a
@@ -231,16 +243,18 @@ class TestHandlerAtomicity < Minitest::Test
   def entry_points(methods, name, seen = [])
     return [] if seen.include?(name)
 
-    callers = methods.select { |other, code| other != name && code.match?(/\b#{name}\(/) }.keys
+    callers = methods.select { |other, code| other != name && code.match?(/\b#{Regexp.escape(name)}\(/) }.keys
     return [name] if callers.empty?
 
     callers.flat_map { |outer| entry_points(methods, outer, seen + [name]) }
   end
 
-  # "Module.method" of every handler that starts an operation.
-  def operation_handlers
-    handler_methods.flat_map do |module_name, methods|
-      openers = methods.select { |_, code| code.match?(/\bstart_operation\(/) }.keys
+  # "Module.method" of every method in `sources` ({ "Module" => text }) that
+  # starts an operation.
+  def operation_handlers(sources = handler_sources)
+    sources.flat_map do |module_name, source|
+      methods = methods_of(source)
+      openers = methods.select { |_, code| code.match?(/\bstart_operation[\s(]/) }.keys
       openers.flat_map { |name| entry_points(methods, name) }.uniq
              .map { |name| "#{module_name}.#{name}" }
     end
@@ -254,5 +268,44 @@ class TestHandlerAtomicity < Minitest::Test
       "these handlers call start_operation but have no row in ROWS: add one"
     assert_empty rows - found,
       "these rows name handlers that no longer call start_operation (or the scan misses them)"
+  end
+
+  def test_the_scan_handles_bare_calls_plain_defs_helpers_and_comments
+    source = <<~RUBY
+      module Fake
+        def self.quiet(params)
+          # model.start_operation("only in a comment", true)
+          nil
+        end
+
+        # The next one calls model.start_operation("for real", true) and says so.
+        def self.plain(params)
+          model.start_operation("Plain", true)
+        end
+
+        def self.bare(params)
+          model.start_operation "Bare", true
+        end
+
+        def self.helper(params)
+          model.start_operation("Helper", true)
+        end
+
+        def self.uses_helper(params)
+          helper(params)
+        end
+
+        def self.also_uses_helper(params)
+          helper(params)
+        end
+
+        def instance_method(params)
+          model.start_operation("Instance", true)
+        end
+      end
+    RUBY
+
+    assert_equal %w[Fake.also_uses_helper Fake.bare Fake.instance_method Fake.plain Fake.uses_helper],
+                 operation_handlers("Fake" => source).sort
   end
 end
