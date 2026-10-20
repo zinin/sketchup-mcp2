@@ -87,7 +87,7 @@ All dimensions in **millimeters**; angles in **degrees**. Every entity-returning
 |---|---|---|
 | `SKETCHUP_MCP_HOST` | `127.0.0.1` | Where to connect to the SketchUp extension |
 | `SKETCHUP_MCP_PORT` | `9876` | TCP port |
-| `SKETCHUP_MCP_TIMEOUT` | `60` | Per-tool-call timeout (seconds); keep it well above 30 s (the default 60 is fine) — chamfer/fillet stop themselves after 30 s inside SketchUp, and a client that gives up first can miss an edit that still commits |
+| `SKETCHUP_MCP_TIMEOUT` | `60` | Per-tool-call timeout (seconds); keep it well above 30 s (the default 60 is fine) — a chamfer/fillet call starts no new cut after 30 s inside SketchUp and then rolls back, and a client that gives up first can miss an edit that still commits |
 | `SKETCHUP_MCP_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
 
 ### Ruby side (Settings dialog inside SketchUp)
@@ -205,7 +205,7 @@ Each side declares only the oldest counterpart it works with, so being newer nev
 
 ### Tool-call timeouts on long operations
 
-Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds. Keep it well above 30 s: chamfer and fillet stop themselves after 30 s inside SketchUp, and a client that gives up sooner can walk away from an edit that still commits.
+Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds. Keep it well above 30 s: a chamfer or fillet call starts no new cut after 30 s inside SketchUp and then rolls back, and a client that gives up sooner can walk away from an edit that still commits.
 
 SketchUp does not learn that the client gave up. After a timed-out call that changes the model, check the model with `get_component_info` or `list_components` before retrying — a blind retry can apply the edit twice (a double chamfer). The error message says the same. Read-only calls are safe to repeat.
 

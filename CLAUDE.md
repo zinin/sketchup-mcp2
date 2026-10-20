@@ -120,7 +120,7 @@ Log-level changes apply immediately. Enabling Ruby evaluation requires confirmin
 
 - `SKETCHUP_MCP_HOST` (default `127.0.0.1`) — where to connect to the SketchUp extension
 - `SKETCHUP_MCP_PORT` (default `9876`)
-- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds) — keep it well above 30 s: edge ops stop themselves after 30 s inside SketchUp. SketchUp does not know the client gave up, so after a timed-out mutating call check the model (`get_component_info` / `list_components`) before retrying.
+- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds) — keep it well above 30 s: an edge op starts no new cut after 30 s inside SketchUp and then rolls back. SketchUp does not know the client gave up, so after a timed-out mutating call check the model (`get_component_info` / `list_components`) before retrying.
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
 
 `examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` (via `sketchup_mcp.config`). For a split-host setup — Linux dev box + Windows SketchUp — there are two ways. **LAN address:** `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`; a non-loopback host counts as remote. **Reverse SSH tunnel** (README → Security model; the plugin stays on `127.0.0.1`): the host is loopback, so also set `SKETCHUP_MCP_SMOKE_REMOTE=1`, e.g. `SKETCHUP_MCP_SMOKE_REMOTE=1 uv run python examples/smoke_check.py`. Either way the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network). Without the variable, a loopback host makes step 18 look for the file on this machine and fail; `_export_file_is_local` in the script decides.
