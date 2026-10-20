@@ -467,11 +467,13 @@ class TestEdgeOps < Minitest::Test
   end
 
   # ---------- an inside-out body ----------
+  #
+  # Refused by name when it is closed, its faces agree and its signed volume
+  # is negative; any other body goes on to the selection.
 
-  # A box with every face turned to point into it, as cones and spheres of
-  # earlier builds came out.
-  def inside_out_box
-    edges = EdgeFakes.box
+  # The body with every face turned to point into it, as cones and spheres
+  # of earlier builds came out.
+  def inside_out(edges)
     edges.flat_map(&:faces).uniq.each(&:reverse!)
     edges
   end
@@ -481,10 +483,26 @@ class TestEdgeOps < Minitest::Test
       "reverse its faces in SketchUp (Reverse Faces / Orient Faces) and retry"
   end
 
+  # The stats of a chamfer on the open-topped box: its 16 convex edges cut,
+  # the 8 concave ones round the cavity skipped.
+  OPEN_BOX_STATS = { "attempted" => 16, "succeeded" => 16, "skipped_seam" => 0,
+                     "skipped_concave" => 8, "skipped_curved" => 0 }.freeze
+
   def test_chamfer_refuses_an_inside_out_body_by_name
     # Every edge of it reads concave, so it was refused as a body of seams or
     # concave edges: the wrong cause.
-    body = @scene.body(inside_out_box)
+    body = @scene.body(inside_out(EdgeFakes.box))
+    err = assert_raises(StructuredError) { chamfer(body) }
+    assert_equal(-32602, err.code)
+    assert_equal inside_out_message(body), err.message
+    assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
+    assert_equal 0, @scene.subtract_calls
+  end
+
+  def test_chamfer_refuses_an_inside_out_body_with_concave_edges_by_name
+    # Turned inside out, the open-topped box's concave corners read convex:
+    # left to the selection, the chamfer would cut into them.
+    body = @scene.body(inside_out(EdgeFakes.open_box(5.0)))
     err = assert_raises(StructuredError) { chamfer(body) }
     assert_equal(-32602, err.code)
     assert_equal inside_out_message(body), err.message
@@ -493,7 +511,7 @@ class TestEdgeOps < Minitest::Test
   end
 
   def test_fillet_refuses_an_inside_out_instance_by_name
-    body = @scene.instance(inside_out_box)
+    body = @scene.instance(inside_out(EdgeFakes.box))
     err = assert_raises(StructuredError) { fillet(body) }
     assert_equal(-32602, err.code)
     assert_equal inside_out_message(body), err.message
@@ -501,11 +519,18 @@ class TestEdgeOps < Minitest::Test
     assert_equal 0, @scene.subtract_calls
   end
 
+  def test_an_outward_body_is_not_refused
+    # The open-topped box as built: closed, its faces agree, its volume is
+    # positive.
+    res = chamfer(@scene.body(EdgeFakes.open_box(5.0)))
+    assert_equal OPEN_BOX_STATS, stats_slice(res)
+    assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
+  end
+
   def test_one_reversed_face_is_not_refused
-    # One face turned inside out leaves a closed body's volume positive,
-    # wherever the body sits: each face of a box in turn, then the top of a
-    # box 1000 above its frame's origin, where the top's (n · p) alone would
-    # outweigh the rest.
+    # One face turned inside out: the faces no longer agree, so the body is
+    # not inside-out as a whole. Each face of a box in turn, then the top of
+    # a box 1000 above its frame's origin.
     bodies = Array.new(6) do |k|
       edges = EdgeFakes.box
       edges.flat_map(&:faces).uniq[k].reverse!
@@ -519,18 +544,37 @@ class TestEdgeOps < Minitest::Test
     assert_equal [[:start, "Chamfer Edges"], :commit] * 7, @scene.model.log
   end
 
+  def test_one_reversed_face_is_not_refused_even_when_the_volume_reads_negative
+    # The open-topped box, 5 thick, with its outer bottom reversed. Measured
+    # from the mean of its corners, the bottom spans more than half the thin
+    # body, so the signed volume reads negative: 230 500 - 2 * 170 833. The
+    # faces disagree, so the sign is not read and the selection takes the
+    # body as it is: the edges along the reversed bottom stay convex.
+    edges = EdgeFakes.open_box(5.0)
+    edges[0].faces[0].reverse!  # the outer bottom
+    volume = OPS.signed_volume(edges.flat_map(&:faces).uniq)
+    assert_operator volume, :<, 0, "the volume reads negative"
+    res = chamfer(@scene.body(edges))
+    assert_equal OPEN_BOX_STATS, stats_slice(res)
+    assert_equal [[:start, "Chamfer Edges"], :commit], @scene.model.log
+  end
+
   def test_a_body_that_is_not_closed_is_not_checked
-    # An open shell has no inside, so the sign of its volume means nothing.
-    # This one is inside-out all the same: unchecked, it reaches the
-    # selection, which reads every edge as concave.
-    volumes = []
-    stub_singleton(OPS, :signed_volume) do |faces|
-      volumes << faces
+    # An open shell has no inside, so neither its orientation nor the sign
+    # of its volume is read. This one is inside-out all the same: unchecked,
+    # it reaches the selection, which reads every edge as concave.
+    checked = []
+    stub_singleton(OPS, :consistently_oriented?) do |_edges|
+      checked << :orientation
+      true
+    end
+    stub_singleton(OPS, :signed_volume) do |_faces|
+      checked << :volume
       -1.0
     end
-    body = @scene.body(inside_out_box, manifold: false)
+    body = @scene.body(inside_out(EdgeFakes.box), manifold: false)
     err = assert_raises(StructuredError) { chamfer(body) }
-    assert_empty volumes, "the inside-out check ran on a body that is not closed"
+    assert_empty checked, "the inside-out check ran on a body that is not closed"
     assert_equal(-32602, err.code)
     assert_equal "no feature edges to chamfer on target_id=#{body.entityID} " \
                  "(all 12 edges are surface seams or concave edges)", err.message

@@ -4,7 +4,7 @@
 # them: the feature-edge selection (seam_edge?, concave_edge?,
 # curved_rim_edges, select_feature_edges), the side of a cut
 # (in_face_perp_inward, edge_spec) and the inside-out check
-# (signed_volume). What they model:
+# (consistently_oriented?, signed_volume). What they model:
 #   Edge#faces, #vertices, #start, #end, #other_vertex, #reversed_in?
 #   Vertex#position
 #   Face#normal, #area, #vertices, #classify_point, #bounds, #reverse!
@@ -393,8 +393,9 @@ module EdgeFakes
 
   # ---------- composite bodies ----------
   # Built face by face; edges_on finds each edge's faces. CUBE is the side of
-  # the cube under box_with_post and box_with_hole (0..CUBE on every axis),
-  # the bodies of the live chamfer failure: box ∪ cylinder, box − cylinder.
+  # the cube under box_with_post, box_with_hole and open_box (0..CUBE on every
+  # axis); the first two are the bodies of the live chamfer failure: box ∪
+  # cylinder, box − cylinder.
 
   CUBE = 100.0
   FEATURE_RADIUS = 20.0
@@ -478,6 +479,32 @@ module EdgeFakes
     faces, pairs = cube(top_hole: high, bottom_hole: low)
     faces.concat(walls(low, high, outward: false))
     edges_on(faces, pairs + ring_sides(low) + ring_sides(high) + low.zip(high))
+  end
+
+  # An open-topped box: the cube hollowed out from the top, its walls and
+  # floor `wall` thick. Its top is a rim around the cavity's mouth. Faces:
+  # the outer bottom first (the bottom rim lists it as faces[0]), the rim,
+  # the cavity's floor, then side by side each outer wall and the inner wall
+  # behind it, facing into the cavity. Edges: the bottom rim (4), the outer
+  # verticals (4), the top rim (4), the mouth (4), then the cavity's
+  # verticals (4) and the floor's rim (4). The last eight are concave, the
+  # rest convex.
+  def self.open_box(wall)
+    outer = [[0.0, 0.0], [CUBE, 0.0], [CUBE, CUBE], [0.0, CUBE]]
+    inner = [[wall, wall], [CUBE - wall, wall], [CUBE - wall, CUBE - wall], [wall, CUBE - wall]]
+    bottom = outer.map { |x, y| vertex(x, y, 0.0) }
+    top    = outer.map { |x, y| vertex(x, y, CUBE) }
+    mouth  = inner.map { |x, y| vertex(x, y, CUBE) }
+    floor  = inner.map { |x, y| vertex(x, y, wall) }
+    faces = [face([0, 0, -1], bottom.reverse), face([0, 0, 1], top, mouth.reverse),
+             face([0, 0, 1], floor)]
+    [[0, -1, 0], [1, 0, 0], [0, 1, 0], [-1, 0, 0]].each_with_index do |normal, i|
+      j = (i + 1) % 4
+      faces << face(normal, [bottom[i], bottom[j], top[j], top[i]])
+      faces << face(normal.map(&:-@), [floor[i], mouth[i], mouth[j], floor[j]])
+    end
+    edges_on(faces, ring_sides(bottom) + bottom.zip(top) + ring_sides(top) +
+                    ring_sides(mouth) + floor.zip(mouth) + ring_sides(floor))
   end
 
   # An L-shaped block: the profile (0,0) (100,0) (100,50) (50,50) (50,100)

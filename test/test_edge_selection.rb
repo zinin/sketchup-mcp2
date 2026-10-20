@@ -13,8 +13,10 @@
 # into the face from the edge's midpoint (Face#classify_point), not from the
 # face's bounds centre, which lies in the hole on a face with an inner loop.
 #
-# Before any of that, a closed body that is inside-out as a whole (its signed
-# volume is negative) is refused: every edge of it reads concave.
+# Before any of that, a closed body that is inside-out as a whole is refused:
+# its faces agree (each edge runs one way in one face and the other way in
+# the other) and its signed volume is negative. Every edge of it reads
+# concave.
 #
 # All of this is pure geometry over duck-typed edges
 # (test/support/edge_fakes.rb) and needs no SketchUp.
@@ -466,14 +468,45 @@ class TestEdgeSelection < Minitest::Test
 
   # ---------- inside-out bodies ----------
 
+  # Every closed body of EdgeFakes, built with its faces agreeing.
+  def closed_bodies
+    { "box" => EdgeFakes.box, "cylinder" => EdgeFakes.prism(24), "cone" => EdgeFakes.cone,
+      "sphere" => EdgeFakes.sphere, "box ∪ cylinder" => EdgeFakes.box_with_post(24),
+      "box − cylinder" => EdgeFakes.box_with_hole(24), "L-block" => EdgeFakes.l_block,
+      "open-topped box" => EdgeFakes.open_box(5.0) }
+  end
+
+  def test_faces_agree_until_one_of_them_is_reversed
+    # A body turned inside out as a whole agrees with itself again: every
+    # edge still runs one way in one face and the other way in the other.
+    closed_bodies.each do |name, edges|
+      faces = faces_of(edges)
+      assert OPS.consistently_oriented?(edges), name
+      faces.first.reverse!
+      refute OPS.consistently_oriented?(edges), "#{name}, one face reversed"
+      faces.drop(1).each(&:reverse!)
+      assert OPS.consistently_oriented?(edges), "#{name}, inside out as a whole"
+    end
+  end
+
+  def test_only_edges_between_two_faces_count_for_the_orientation
+    # Loose, boundary and non-manifold edges have no pair of faces to
+    # compare (their fakes have no loops to ask).
+    assert OPS.consistently_oriented?([])
+    loose_boundary_and_three_faced = [edge_on, edge_on(UP), edge_on(UP, tilted(10.0), tilted(20.0))]
+    assert OPS.consistently_oriented?(loose_boundary_and_three_faced)
+  end
+
   def test_signed_volume_of_an_outward_body_is_its_volume
     # A 24-gon of radius 20, the post's footprint and the hole's section.
     ngon = 0.5 * 24 * 20.0**2 * Math.sin(2 * Math::PI / 24)
     {
       "box (a square prism of radius 50)" => [EdgeFakes.box, 500_000.0],
+      "the box, 1000 above the origin" => [EdgeFakes.prism(4, z0: 1000, z1: 1100), 500_000.0],
       "L-block" => [EdgeFakes.l_block, 750_000.0],
       "box ∪ cylinder" => [EdgeFakes.box_with_post(24), 1_000_000.0 + ngon * 50],
-      "box − cylinder" => [EdgeFakes.box_with_hole(24), 1_000_000.0 - ngon * 100]
+      "box − cylinder" => [EdgeFakes.box_with_hole(24), 1_000_000.0 - ngon * 100],
+      "open-topped box, 5 thick" => [EdgeFakes.open_box(5.0), 1_000_000.0 - 90.0**2 * 95]
     }.each do |name, (edges, volume)|
       assert_in_delta volume, OPS.signed_volume(faces_of(edges)), 1e-6, name
     end
@@ -483,27 +516,13 @@ class TestEdgeSelection < Minitest::Test
     end
   end
 
-  def test_signed_volume_turns_negative_only_inside_out
-    faces = faces_of(EdgeFakes.box)
-    faces.each(&:reverse!)
-    assert_in_delta(-500_000.0, OPS.signed_volume(faces), 1e-6)
-
-    # One reversed face keeps the sign, with room to spare: the volume stays
-    # above a third of the intact body's, wherever the body sits. Measured
-    # from the frame's origin, the reversed top of the box 1000 above it
-    # would outweigh the rest; measured from the bounds centre, at half its
-    # height, the cone with its base reversed would come to 0.
-    { "box" => EdgeFakes.box,
-      "box 1000 above the origin" => EdgeFakes.prism(4, z0: 1000, z1: 1100),
-      "cylinder" => EdgeFakes.prism(24),
-      "cone" => EdgeFakes.cone }.each do |name, edges|
+  def test_signed_volume_of_an_inside_out_body_is_minus_its_volume
+    bodies = { "box" => [EdgeFakes.box, -500_000.0],
+               "open-topped box, 5 thick" => [EdgeFakes.open_box(5.0), 90.0**2 * 95 - 1_000_000.0] }
+    bodies.each do |name, (edges, volume)|
       faces = faces_of(edges)
-      intact = OPS.signed_volume(faces)
-      faces.each_with_index do |face, k|
-        face.reverse!
-        assert_operator OPS.signed_volume(faces), :>, intact / 3, "#{name}, face #{k} reversed"
-        face.reverse!
-      end
+      faces.each(&:reverse!)
+      assert_in_delta volume, OPS.signed_volume(faces), 1e-6, name
     end
   end
 

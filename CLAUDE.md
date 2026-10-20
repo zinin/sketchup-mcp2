@@ -91,7 +91,7 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 550 runs / 1739 assertions
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 555 runs / 1715 assertions
 uv run pytest tests/ -q        # Python (pytest) — 206 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)

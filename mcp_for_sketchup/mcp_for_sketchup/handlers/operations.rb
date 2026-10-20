@@ -175,8 +175,9 @@ module MCPforSketchUp
       #
       # Only convex feature edges are cut (select_feature_edges): never the
       # seams of a curved surface or a concave edge, and with skip_curved
-      # (fillet) not a curved rim either. A closed target that is inside-out
-      # is refused before the selection, which would read its every edge as
+      # (fillet) not a curved rim either. A closed target turned inside out
+      # as a whole (its faces agree and its signed volume is negative) is
+      # refused before the selection, which would read its every edge as
       # concave. A body the subtract destroyed and a breach of
       # EDGE_OP_BUDGET_S raise like any other failure, so the whole call
       # rolls back.
@@ -198,16 +199,19 @@ module MCPforSketchUp
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
           target_entities = E.mutable_entity_collection(entity)
+          edges = target_entities.grep(Sketchup::Edge)
           # A body whose faces all point into it reads concave at every edge,
-          # and the selection would refuse it for the wrong cause. Only a
-          # closed body has an inside: an open shell's volume has no sign
-          # worth reading.
-          if entity.manifold? && signed_volume(target_entities.grep(Sketchup::Face)) < 0
+          # and the selection would refuse it for the wrong cause. It is
+          # refused here when it is closed (an open shell has no inside), its
+          # faces agree and its signed volume is negative. With some faces
+          # reversed the sign means little (one large reversed face can turn
+          # it), and the selection takes such a body as it is.
+          if entity.manifold? && consistently_oriented?(edges) &&
+             signed_volume(target_entities.grep(Sketchup::Face)) < 0
             raise Core::StructuredError.new(-32602,
               "target_id=#{entity_id} is inside-out: its faces point into the body; " \
               "reverse its faces in SketchUp (Reverse Faces / Orient Faces) and retry")
           end
-          edges = target_entities.grep(Sketchup::Edge)
           edges = filter_edges(edges, edge_indices) if edge_indices
           if edges.empty?
             raise Core::StructuredError.new(-32602,
@@ -687,20 +691,29 @@ module MCPforSketchUp
 
       # ----- inside-out bodies -------------------------------------------------
 
+      # True when the faces of a body agree on which side is out: every edge
+      # with exactly two faces runs one way in one face's loop and the other
+      # way in the other's (Edge#reversed_in? differs). A body turned inside
+      # out as a whole agrees too; one with some of its faces reversed does
+      # not. Edges with fewer or more faces have no pair to compare.
+      def self.consistently_oriented?(edges)
+        edges.all? do |edge|
+          faces = edge.faces
+          faces.length != 2 || edge.reversed_in?(faces[0]) != edge.reversed_in?(faces[1])
+        end
+      end
+
       # Signed volume of a closed body from its faces, in their own frame:
       # the sum over the faces of (n · (p − c)) · area / 3, with n a face's
       # unit normal, p any of its vertices and c the mean of all the faces'
       # corners. Positive when the faces point out of the body, negative when
-      # it is inside-out. On a closed body whose faces agree, c changes
-      # nothing: their area-weighted normals sum to zero. With a face
-      # reversed it matters, as that face then counts against the body by
-      # twice the pyramid it spans to c. Measured from the frame's origin, a
-      # reversed face far from that origin can outweigh the whole body;
-      # measured from the bounds centre, a cone with its base reversed comes
-      # to 0 (the base spans half the cone to mid-height). The corners' mean
-      # lies inside a convex body, a quarter of the way up a cone, so one
-      # reversed face leaves such a body positive. A thin-walled hollow body
-      # with a large face reversed can still come out negative.
+      # it is inside-out. The sign means that only when the faces agree
+      # (consistently_oriented?), which run_edge_op checks first: then c
+      # changes nothing, as the area-weighted normals sum to zero, and
+      # measuring from c, within the body's bounds, rather than from the
+      # frame's origin keeps the terms as small as the body. With some faces
+      # reversed, a reversed face counts against the body by twice the
+      # pyramid it spans to c, and one large face can turn the sign.
       def self.signed_volume(faces)
         corners = faces.map { |face| face.vertices.map(&:position) }
         count = corners.sum(&:length)
