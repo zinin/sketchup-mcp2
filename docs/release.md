@@ -88,27 +88,30 @@ Python releases only.
 uvx twine upload --repository testpypi dist/*
 ```
 
-Check by hash that TestPyPI holds exactly the files you built. The command prints `TestPyPI matches dist/` when the two lists agree, and the differing lines when they do not:
+Check by hash that TestPyPI holds exactly the files you built. The step needs bash (for `<(...)`), `curl`, `jq` and GNU `sha256sum`. It stops at once if `dist/` lacks the wheel or the sdist: with an empty `dist/` and a failed lookup both lists would be empty and `diff` would call that a match. The command prints `TestPyPI matches dist/` when the two lists agree, and the differing lines when they do not:
 
 ```bash
-diff <(sha256sum dist/* | sort) \
-     <(curl -fsS https://test.pypi.org/pypi/sketchup-mcp2/X.Y.Z/json \
-         | jq -r '.urls[] | "\(.digests.sha256)  dist/\(.filename)"' | sort) \
+ls dist/*.whl dist/*.tar.gz >/dev/null && \
+  diff <(sha256sum dist/* | sort) \
+       <(curl -fsS https://test.pypi.org/pypi/sketchup-mcp2/X.Y.Z/json \
+           | jq -r '.urls[] | "\(.digests.sha256)  dist/\(.filename)"' | sort) \
   && echo "TestPyPI matches dist/"
 ```
 
-A difference means TestPyPI serves something other than your build. Do not continue to [§5](#5-production-pypi) until you know why.
+A difference means TestPyPI serves something other than your build, or the lookup failed (`curl` prints the error and the right-hand list is empty). Do not continue to [§5](#5-production-pypi) until you know why.
 
 Then install the **local** wheel into a fresh venv. Dependencies come from PyPI only, because the command names no other index:
 
 ```bash
 VENV=$(mktemp -d) && uv venv -q "$VENV" && \
   uv pip install -q --python "$VENV/bin/python" dist/sketchup_mcp2-X.Y.Z-py3-none-any.whl && \
-  "$VENV/bin/python" -c "import sketchup_mcp; print(sketchup_mcp.__version__)"
+  "$VENV/bin/python" -c "import sketchup_mcp.app, sketchup_mcp.tools; print(sketchup_mcp.__version__)"
 rm -rf "$VENV"
 ```
 
-**Why there is no install from TestPyPI.** The rehearsal used to run `uv pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match sketchup-mcp2==X.Y.Z`. That command resolves every dependency from **both** indexes, and anyone can register a dependency name that TestPyPI does not host, so a stranger's package could be installed and executed on the machine that holds the PyPI token (`~/.pypirc`) a minute before `twine upload`. Do not reinstate it.
+The import loads the server and its tools, so the dependencies PyPI resolved (`mcp`, `pydantic`) are exercised, not only the wheel's own `__version__`.
+
+**Why there is no install from TestPyPI.** The rehearsal used to run `uv pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match sketchup-mcp2==X.Y.Z`. That command resolves every dependency from **both** indexes, and anyone can register a dependency name that TestPyPI does not host, so a stranger's package could be installed and executed — a dependency confusion attack — on the machine that holds the PyPI token (`~/.pypirc`), a minute before the production `twine upload` of [§5](#5-production-pypi). Do not reinstate it.
 
 ## 5. Production PyPI
 
