@@ -122,9 +122,12 @@ module MCPforSketchUp
       COLLINEAR_MAX_TURN_DEG = 0.5
 
       # Time budget of one chamfer/fillet call, counted from the start of the
-      # cut loop and checked before each cut. It stays under the client's
-      # default 60 s timeout, so the client never gives up on a call that
-      # later commits. Past it the whole call rolls back.
+      # cut loop and checked before each cut: past it no new cut starts, and
+      # the whole call rolls back instead. A call can still run beyond it by
+      # the cut in progress, plus the selection before the loop and the final
+      # describe; the client's default 60 s timeout leaves room for that last
+      # cut. The chamfer_edge and fillet_edge docstrings name this number
+      # (tests/test_tool_descriptions.py checks that they agree).
       EDGE_OP_BUDGET_S = 30.0
 
       def self.chamfer_edges(params)

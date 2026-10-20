@@ -94,12 +94,14 @@ _COMPAT_RB = (
 )
 
 
-def _ruby_const(name: str) -> str:
-    """Read a string constant such as ``SERVER_VERSION = "0.3.1"`` from compat.rb."""
-    source = _COMPAT_RB.read_text(encoding="utf-8")
-    m = re.search(rf'^\s*{name}\s*=\s*"([^"]*)"', source, re.M)
-    assert m, f"{name} not found in {_COMPAT_RB}"
-    return m.group(1)
+def _ruby_const(name: str, path: Path = _COMPAT_RB) -> str:
+    """Read a constant such as ``SERVER_VERSION = "0.3.1"`` or
+    ``EDGE_OP_BUDGET_S = 30.0`` from a Ruby file (compat.rb unless ``path``
+    names another): the text of its string or number literal."""
+    source = path.read_text(encoding="utf-8")
+    m = re.search(rf'^\s*{name}\s*=\s*(?:"([^"]*)"|([\d_.]+))', source, re.M)
+    assert m, f"{name} not found in {path}"
+    return m.group(1) if m.group(1) is not None else m.group(2)
 
 
 def test_in_repo_pair_is_compatible():
