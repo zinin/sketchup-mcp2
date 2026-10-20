@@ -24,10 +24,9 @@
 # way run every edge they share in opposite directions. What a face answers
 # comes from its loops: #classify_point, #bounds, #area, #vertices, and
 # Edge#reversed_in? (true when the face's loop runs the edge from its end to
-# its start).
-# #reverse! turns a face inside out as Face#reverse! does: the normal flips
-# and every loop runs the other way. A face built from a normal alone has
-# nothing to probe and raises if asked.
+# its start). #reverse! turns a face inside out as Face#reverse! does: the
+# normal flips and every loop runs the other way. A face built from a normal
+# alone has nothing to probe and raises if asked.
 #
 # Constructors: FakeVertex.new(position), FakeFace.new(normal, loops),
 # FakeEdge.new(start_vertex, end_vertex, faces). EdgeFakes.facet makes a face

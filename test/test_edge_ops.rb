@@ -13,10 +13,9 @@
 #
 # Fakes: a recording model, bodies over EdgeFakes edges and the faces they
 # bound, and cutters whose subtract follows a per-test script (see
-# FakeCutter). The geometry builders
-# (edge_spec, find_current_edge_spec, the two profiles, reconstruct_edge)
-# need Geom and are stubbed, as is Entities.active_model!; every stub is
-# restored in teardown.
+# FakeCutter). The geometry builders (edge_spec, find_current_edge_spec, the
+# two profiles, reconstruct_edge) need Geom and are stubbed, as is
+# Entities.active_model!; every stub is restored in teardown.
 require "minitest/autorun"
 
 require_relative "support/edge_fakes"
