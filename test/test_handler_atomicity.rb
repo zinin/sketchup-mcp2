@@ -5,7 +5,9 @@
 # model.commit_operation and answer any StandardError with
 # Geometry.safe_abort(model) and a re-raise, so one call is one undo step and
 # a call that fails leaves the model as it was. ROWS holds all eleven, so a
-# handler that stops aborting fails here whatever its own tests cover.
+# handler that stops aborting fails here whatever its own tests cover. A last
+# test reads the handler files and finds every method that calls
+# start_operation, so a new site without a row fails too.
 #
 # A row names the handler, a call that passes validation, the model call that
 # then raises RuntimeError("injected") (a path from the model: %i[layers add]
@@ -203,5 +205,54 @@ class TestHandlerAtomicity < Minitest::Test
       handler.public_send(name, params)
       assert_equal [[:start, label], :commit], @model.log
     end
+  end
+
+  # ---------- every start_operation site has a row ----------
+
+  HANDLER_DIR = File.expand_path("../mcp_for_sketchup/mcp_for_sketchup/handlers", __dir__)
+
+  # { "Module" => { "method" => code } } for the `def self.` methods of the
+  # handler files. A method's code runs from its def to the next def, minus
+  # the comment lines, so a comment that names start_operation does not count.
+  def handler_methods
+    Dir[File.join(HANDLER_DIR, "*.rb")].sort.to_h do |path|
+      chunks = File.read(path, encoding: "UTF-8").split(/^(?=[ \t]*def self\.\w)/)
+      methods = chunks.filter_map do |chunk|
+        name = chunk[/\A[ \t]*def self\.(\w+)/, 1]
+        [name, chunk.lines.grep_v(/\A\s*#/).join] if name
+      end
+      [File.basename(path, ".rb").capitalize, methods.to_h]
+    end
+  end
+
+  # The method itself, or the methods that call it, and theirs in turn: a
+  # method that starts an operation for others (run_edge_op, for chamfer_edges
+  # and fillet_edges) is not what a client calls.
+  def entry_points(methods, name, seen = [])
+    return [] if seen.include?(name)
+
+    callers = methods.select { |other, code| other != name && code.match?(/\b#{name}\(/) }.keys
+    return [name] if callers.empty?
+
+    callers.flat_map { |caller| entry_points(methods, caller, seen + [name]) }
+  end
+
+  # "Module.method" of every handler that starts an operation.
+  def operation_handlers
+    handler_methods.flat_map do |module_name, methods|
+      openers = methods.select { |_, code| code.match?(/\bstart_operation\(/) }.keys
+      openers.flat_map { |name| entry_points(methods, name) }.uniq
+             .map { |name| "#{module_name}.#{name}" }
+    end
+  end
+
+  def test_every_handler_that_starts_an_operation_has_a_row
+    rows = ROWS.map { |handler, name, *| "#{handler.name.split('::').last}.#{name}" }
+    found = operation_handlers
+
+    assert_empty found - rows,
+      "these handlers call start_operation but have no row in ROWS: add one"
+    assert_empty rows - found,
+      "these rows name handlers that no longer call start_operation (or the scan misses them)"
   end
 end
