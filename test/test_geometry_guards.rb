@@ -168,7 +168,7 @@ class TestGeometryGuards < Minitest::Test
     err = assert_raises(StructuredError) { GEO.delete_component("id" => "11") }
 
     assert_equal(-32602, err.code)
-    assert_equal "entity must be a Group or ComponentInstance, got #{face.class.name}", err.message
+    assert_equal "entity 11 must be a Group or ComponentInstance, got #{face.class.name}", err.message
     refute face.erased?, "the face must not be erased"
     assert_equal [[:start, "Delete Component"], :abort], @model.log
   end
@@ -222,7 +222,7 @@ class TestGeometryGuards < Minitest::Test
     end
 
     assert_equal(-32602, err.code)
-    assert_equal "entity must be a Group or ComponentInstance, got #{face.class.name}", err.message
+    assert_equal "entity 11 must be a Group or ComponentInstance, got #{face.class.name}", err.message
     assert_empty face.transforms, "nothing may be moved"
     assert_equal [[:start, "Transform Component"], :abort], @model.log
   end

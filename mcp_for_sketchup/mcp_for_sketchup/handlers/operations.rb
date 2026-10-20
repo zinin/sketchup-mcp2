@@ -211,8 +211,8 @@ module MCPforSketchUp
           if entity.manifold? && consistently_oriented?(edges) &&
              signed_volume(target_entities.grep(Sketchup::Face)) < 0
             raise Core::StructuredError.new(-32602,
-              "target_id=#{entity_id} is inside-out: its faces point into the body; " \
-              "reverse its faces in SketchUp (Reverse Faces / Orient Faces) and retry")
+              "target_id=#{entity_id} is inside-out: its faces, or those of one of its shells, point into the body; " \
+              "reverse them in SketchUp (Reverse Faces / Orient Faces) and retry")
           end
           edges = filter_edges(edges, edge_indices) if edge_indices
           if edges.empty?
@@ -256,7 +256,7 @@ module MCPforSketchUp
             if monotonic_now - started_at > EDGE_OP_BUDGET_S
               raise Core::StructuredError.new(-32603,
                 "#{op_name}: stopped after #{i} of #{total} edges — exceeded the " \
-                "#{EDGE_OP_BUDGET_S.to_i} s budget; the operation was rolled back, " \
+                "#{format('%g', EDGE_OP_BUDGET_S)} s budget; the operation was rolled back, " \
                 "the model is unchanged")
             end
 
@@ -631,11 +631,14 @@ module MCPforSketchUp
       # Both directions must say so. With consistent normals the two dot
       # products are equal (-sin of the angle between the normals for a convex
       # edge, +sin for a concave one), so they always agree on a well-oriented
-      # body. With one face turned inside out only one of them flips, and that
-      # face's convex edges are kept, whichever face the edge lists first. A
-      # body turned inside out as a whole still reads as concave all over
-      # (run_edge_op refuses a closed one before the selection). The second
-      # perpendicular is worked out only when the first one says concave.
+      # body. With one face turned inside out only one of them flips, and all
+      # of that face's edges are kept, whichever face the edge lists first: its
+      # convex edges, as they should be, and its concave ones too, where the
+      # wedge then cuts into the body. That is the price of the rule; a body
+      # with some faces reversed reaches the selection as it is. A body turned
+      # inside out as a whole still reads as concave all over (run_edge_op
+      # refuses a closed one before the selection). The second perpendicular
+      # is worked out only when the first one says concave.
       def self.concave_edge?(edge)
         faces = edge.faces
         return false unless faces.length == 2

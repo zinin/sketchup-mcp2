@@ -463,8 +463,8 @@ class TestEdgeOps < Minitest::Test
   end
 
   def inside_out_message(body)
-    "target_id=#{body.entityID} is inside-out: its faces point into the body; " \
-      "reverse its faces in SketchUp (Reverse Faces / Orient Faces) and retry"
+    "target_id=#{body.entityID} is inside-out: its faces, or those of one of its shells, point into the body; " \
+      "reverse them in SketchUp (Reverse Faces / Orient Faces) and retry"
   end
 
   # The stats of a chamfer on the open-topped box: its 16 convex edges cut,

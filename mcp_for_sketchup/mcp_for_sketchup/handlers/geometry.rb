@@ -89,7 +89,7 @@ module MCPforSketchUp
         model.start_operation("Delete Component", true)
         begin
           entity = E.find!(id)
-          E.require_group_or_component!(entity)
+          E.require_group_or_component!(entity, "entity #{id}")
           entity.erase!
           model.commit_operation
           { "ok" => true }
@@ -132,7 +132,7 @@ module MCPforSketchUp
         model.start_operation("Transform Component", true)
         begin
           entity = E.find!(id)
-          E.require_group_or_component!(entity)
+          E.require_group_or_component!(entity, "entity #{id}")
           if rotation
             apply_rotation(entity, rotation)
           end

@@ -352,14 +352,17 @@ async def main() -> int:
                                 position=[0, 600, 50], dimensions=[100, 100, 100]))
         ball = parse(await call(conn, "create_component", type="sphere",
                                 position=[300, 600, 50], dimensions=[100, 100, 100]))
-        raw = await _maybe_skip_eval(
-            "eval_ruby step 23 (face orientation)",
-            call(conn, "eval_ruby",
-                 code=_INWARD_FACES_RUBY.replace("__IDS__", f"[{cone['id']}, {ball['id']}]")),
-        )
-        # Delete before asserting, so a failure leaves nothing behind.
-        for body in (cone, ball):
-            await call(conn, "delete_component", id=body["id"])
+        try:
+            raw = await _maybe_skip_eval(
+                "eval_ruby step 23 (face orientation)",
+                call(conn, "eval_ruby",
+                     code=_INWARD_FACES_RUBY.replace("__IDS__", f"[{cone['id']}, {ball['id']}]")),
+            )
+        finally:
+            # Delete both bodies in finally, before the assert, so neither a
+            # failed eval nor a failed assert leaves them behind.
+            for body in (cone, ball):
+                await call(conn, "delete_component", id=body["id"])
         if raw is None:
             eval_skipped[0] += 1
         else:

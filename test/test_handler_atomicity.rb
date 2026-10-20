@@ -8,6 +8,7 @@
 # handler that stops aborting fails here whatever its own tests cover. The
 # last tests read the handler files and find every method that calls
 # start_operation, so a new site without a row fails too, and pin that scan.
+# They also keep operation handlers and eval_ruby out of READ_ONLY_TOOLS.
 #
 # A row names the handler, a call that passes validation, the model call that
 # then raises RuntimeError("injected") (a path from the model: %i[layers add]
@@ -30,6 +31,7 @@
 require "minitest/autorun"
 
 require_relative "support/singleton_stubs"
+require_relative "support/dispatch_table"
 
 module Sketchup
   class Group; end unless defined?(Group)
@@ -47,6 +49,7 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/materials"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/model"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch"
 
 class TestHandlerAtomicity < Minitest::Test
   include SingletonStubs
@@ -276,6 +279,19 @@ class TestHandlerAtomicity < Minitest::Test
       "these handlers call start_operation but have no row in ROWS: add one"
     assert_empty rows - found,
       "these rows name handlers that no longer call start_operation (or the scan misses them)"
+  end
+
+  # A stale-socket retry must never repeat a model edit or arbitrary Ruby.
+  def test_read_only_tools_do_not_route_to_mutating_handlers
+    routes = DispatchTable.routes.flat_map do |names, mod, meth|
+      names.map { |name| [name, "#{mod}.#{meth}"] }
+    end.to_h
+    mutating = operation_handlers + ["Eval.eval_ruby"]
+
+    H::Dispatch::READ_ONLY_TOOLS.each do |name|
+      assert routes.key?(name), "#{name} is read-only but has no dispatch route"
+      refute_includes mutating, routes[name], "#{name} is read-only but routes to #{routes[name]}"
+    end
   end
 
   def test_the_scan_handles_bare_calls_plain_defs_helpers_and_comments

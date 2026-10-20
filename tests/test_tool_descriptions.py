@@ -82,6 +82,19 @@ async def test_edge_op_docstrings_name_the_ruby_budget(ruby_const):
         assert phrase in desc, f"{name}: в докстринге нет «{phrase}» (EDGE_OP_BUDGET_S)"
 
 
+async def test_edge_op_docstrings_name_the_ruby_seam_threshold(ruby_const):
+    """Порог шва в докстрингах chamfer_edge/fillet_edge должен совпадать с
+    SEAM_MAX_DIHEDRAL_DEG из operations.rb в обеих формулировках: изгиб
+    поверхности и угол между нормалями граней."""
+    threshold = float(ruby_const("SEAM_MAX_DIHEDRAL_DEG", _OPERATIONS_RB))
+    phrases = (f"bends by less than {threshold:g}°", f"differ by under {threshold:g}°")
+    tools = {t.name: t for t in await mcp.list_tools()}
+    for name in ("chamfer_edge", "fillet_edge"):
+        desc = " ".join((tools[name].description or "").split())
+        for phrase in phrases:
+            assert phrase in desc, f"{name}: в докстринге нет «{phrase}» (SEAM_MAX_DIHEDRAL_DEG)"
+
+
 async def test_set_material_lists_named_colors():
     tools = {t.name: t for t in await mcp.list_tools()}
     desc = tools["set_material"].description or ""
