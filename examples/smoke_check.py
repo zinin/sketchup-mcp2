@@ -105,9 +105,11 @@ def _export_file_is_local(host: str, environ: Mapping[str, str]) -> bool:
 
 
 # Ruby for step 23. For each group id in __IDS__ it counts the faces whose normal
-# points toward the centre of the group's bounds, that is into the body: both
-# bodies are convex, so that centre lies inside them. The last expression is an
-# Array, and eval_ruby returns its .to_s, "[0, 0]", which is JSON.
+# points toward the centre of the group's bounds, that is into the body.
+# For these four bodies — a cone, a sphere, a box and a cylinder standing on
+# their bases — the bounds centre lies inside (not true of every convex body;
+# see docs/sketchup-ruby-cookbook.md). The last expression is an Array, and
+# eval_ruby returns its .to_s, "[0, 0, 0, 0]", which is JSON.
 _INWARD_FACES_RUBY = """\
 model = Sketchup.active_model
 __IDS__.map do |id|
@@ -341,34 +343,43 @@ async def main() -> int:
             assert elapsed < 10, f"took {elapsed:.1f}s — looks like the old 60s hang (T-01)"
             print(f"    ✓ SyntaxError surfaced in {elapsed:.2f}s")
 
-        step = 23; print(f"[{step}] cone and sphere above the ground plane — no face points into its body")
+        step = 23; print(f"[{step}] cone, sphere, cube and cylinder above the ground plane — no face points into its body")
         # SketchUp orients a face by the vertex order of the first face of a shell
         # (a face on the ground plane it turns down) and each later face like its
         # neighbours. Builds of the plugin up to 0.3.1 made a cone above the ground
         # plane and every sphere inside-out, which volume and manifold? do not show
-        # (see docs/sketchup-ruby-cookbook.md). Both bodies below sit at z=50 mm,
-        # off the ground plane.
-        cone = parse(await call(conn, "create_component", type="cone",
-                                position=[0, 600, 50], dimensions=[100, 100, 100]))
-        ball = parse(await call(conn, "create_component", type="sphere",
-                                position=[300, 600, 50], dimensions=[100, 100, 100]))
+        # (see docs/sketchup-ruby-cookbook.md). The cube and cylinder are extruded
+        # with pushpull from a face that, off the ground plane, takes its normal
+        # from the vertex order. chamfer_edge and fillet_edge refuse an inside-out
+        # body (-32602), so the cube and cylinder are checked too. All four bodies
+        # below sit at z=50 mm, off the ground plane.
+        bodies = []
         try:
+            bodies.append(parse(await call(conn, "create_component", type="cone",
+                                           position=[0, 600, 50], dimensions=[100, 100, 100])))
+            bodies.append(parse(await call(conn, "create_component", type="sphere",
+                                           position=[300, 600, 50], dimensions=[100, 100, 100])))
+            bodies.append(parse(await call(conn, "create_component", type="cube",
+                                           position=[600, 600, 50], dimensions=[100, 100, 100])))
+            bodies.append(parse(await call(conn, "create_component", type="cylinder",
+                                           position=[900, 600, 50], dimensions=[100, 100, 100])))
             raw = await _maybe_skip_eval(
                 "eval_ruby step 23 (face orientation)",
                 call(conn, "eval_ruby",
-                     code=_INWARD_FACES_RUBY.replace("__IDS__", f"[{cone['id']}, {ball['id']}]")),
+                     code=_INWARD_FACES_RUBY.replace(
+                         "__IDS__", "[" + ", ".join(str(b["id"]) for b in bodies) + "]")),
             )
         finally:
-            # Delete both bodies in finally, before the assert, so neither a
-            # failed eval nor a failed assert leaves them behind.
-            for body in (cone, ball):
+            # Delete every body created so far in finally, before the assert, so a
+            # failed create, eval or assert leaves nothing behind.
+            for body in bodies:
                 await call(conn, "delete_component", id=body["id"])
         if raw is None:
             eval_skipped[0] += 1
         else:
             inward = parse(raw)
-            assert inward == [0, 0], (
-                f"faces pointing into the body, [cone, sphere] at z=50 mm: {inward}")
+            assert inward == [0, 0, 0, 0], (
+                f"faces pointing into the body, [cone, sphere, cube, cylinder] at z=50 mm: {inward}")
 
         # NB: cleanup must precede undo, and the undo step is NOT a rollback
         # of the modeling steps: `delete_component` is itself an undoable
