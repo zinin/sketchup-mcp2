@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Conventional Commits: without a prefix Dependabot titles its commits
+    # "Bump ...", outside the convention of the rest of the history.
+    commit-message:
+      prefix: "build"
     ignore:
       # mcp 2.x breaks the import surface; the migration is a separate ticket.
       - dependency-name: mcp
@@ -12,3 +16,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: "ci"
