@@ -374,6 +374,15 @@ async def test_schema_rejects_dovetail_num_tails_above_25(dispatch_conn):
     dispatch_conn.send_command.assert_not_called()
 
 
+async def test_schema_rejects_dovetail_num_tails_zero(dispatch_conn):
+    # Нижняя граница gt=0: ge=0 пропустил бы ноль зубьев.
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_dovetail",
+                            {"tail_id": "1", "pin_id": "2", "num_tails": 0})
+    assert "num_tails" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
 async def test_schema_accepts_dovetail_num_tails_25(dispatch_conn):
     await mcp.call_tool("create_dovetail",
                         {"tail_id": "1", "pin_id": "2", "num_tails": 25})
@@ -385,6 +394,15 @@ async def test_schema_rejects_finger_joint_num_fingers_above_50(dispatch_conn):
     with pytest.raises(Exception) as exc_info:
         await mcp.call_tool("create_finger_joint",
                             {"board1_id": "1", "board2_id": "2", "num_fingers": 51})
+    assert "num_fingers" in str(exc_info.value)
+    dispatch_conn.send_command.assert_not_called()
+
+
+async def test_schema_rejects_finger_joint_num_fingers_zero(dispatch_conn):
+    # Нижняя граница gt=0: ge=0 пропустил бы ноль пальцев.
+    with pytest.raises(Exception) as exc_info:
+        await mcp.call_tool("create_finger_joint",
+                            {"board1_id": "1", "board2_id": "2", "num_fingers": 0})
     assert "num_fingers" in str(exc_info.value)
     dispatch_conn.send_command.assert_not_called()
 
