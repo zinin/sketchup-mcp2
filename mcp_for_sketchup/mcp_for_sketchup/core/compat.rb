@@ -5,17 +5,17 @@ module MCPforSketchUp
       # SERVER_VERSION mirrors the wire-field `server_version` and avoids
       # shadowing Ruby's global `::RUBY_VERSION` (the interpreter version).
       # This is the SketchUp PLUGIN version, bumped at release time.
-      SERVER_VERSION = "0.3.1"
+      SERVER_VERSION = "0.4.0"
 
       # Oldest sketchup-mcp2 client this plugin works with — mirror of
       # compat.py::MIN_RUBY. There is no upper bound: the newer side of a pair
       # knows what changed, so the newer side rejects the older one. Moves only
       # when this plugin needs a newer client (a contract break raises both
       # floors to that release, as in 0.3.0; a one-sided requirement raises this
-      # one alone). A hotfix leaves it put. Releases up to 0.3.1 still cap the
-      # counterpart at their own version, so the first release under this rule
-      # ships both sides.
-      MIN_PYTHON   = "0.3.0"
+      # one alone). A hotfix leaves it put. Releases up to 0.3.1 cap the
+      # counterpart at their own version, so 0.4.0, the first release under
+      # this rule, ships both sides and raises both floors to its own version.
+      MIN_PYTHON   = "0.4.0"
 
       # Shared by every message that tells the user to upgrade the client.
       # `uvx` — the setup README documents — keeps running its cached version

@@ -3,7 +3,7 @@ require 'zip'
 require 'fileutils'
 
 EXTENSION_NAME = 'mcp_for_sketchup'
-VERSION = '0.3.1'
+VERSION = '0.4.0'
 
 # There is exactly one build, so there are no options to parse — but silence is
 # the wrong answer to an argument. `package.rb --variant=warehouse` used to
