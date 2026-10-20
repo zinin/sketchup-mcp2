@@ -38,18 +38,15 @@ module MCPforSketchUp
   end
 end
 
-unless defined?(Sketchup)
-  module Sketchup
-    class Group; end
-    class ComponentInstance; end
-  end
-end
-
+# Каждая константа охраняется отдельно: другой файл мог определить Sketchup, но
+# не Group (в run_all так делают test_application.rb, test_model_undo.rb и
+# test_settings_dialog.rb), а NamedGroup ниже наследует Sketchup::Group.
 # Билдер сферы собирает грани через entities.grep(Sketchup::Face): фейковые
-# грани обязаны быть её подклассом. Guarded: в run_all стаб мог определить
-# другой файл.
+# грани обязаны быть её подклассом.
 module Sketchup
-  class Face; end unless defined?(Face)
+  class Group; end unless defined?(Sketchup::Group)
+  class ComponentInstance; end unless defined?(Sketchup::ComponentInstance)
+  class Face; end unless defined?(Sketchup::Face)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
