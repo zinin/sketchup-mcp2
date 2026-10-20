@@ -31,6 +31,7 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
 - **Mutating handlers wrap edits in `model.start_operation`/`commit_operation`** so `undo` rolls back atomically.
+- **`.skp` export of an untitled model is refused on purpose** (-32602, before any file or directory is made). The old T-27 behaviour saved it to `%TEMP%/sketchup_exports/…` with `Model#save` and returned a `warning`, but `save` re-points the open document there: the user's next Ctrl+S wrote to `%TEMP%`, and a temp cleanup could delete the only copy. `Model#save_copy` would leave the document alone but raises on an untitled model. `save_skp` only ever calls `save_copy` — do not add a `save` branch. Other formats are unaffected.
 - **eval gate**: `eval_ruby` is gated by the `eval_enabled` pref, which
   ships **on** (`Config::DEFAULTS[:eval_enabled] = true`) and is closed from
   `Plugins → MCP Server → Settings...`. An absent pref resolves to that
@@ -106,7 +107,7 @@ Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load
 
 | Setting | Default | Notes |
 |---|---|---|
-| Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups consider a loopback SSH tunnel instead. |
+| Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups use the reverse SSH tunnel described in README → Security model instead. |
 | Port | `9876` | 1..65535 |
 | Log Level | `WARN` | `DEBUG` / `INFO` / `WARN` / `ERROR`. Default `WARN` so info/debug never clutter SketchUp's shared Ruby console; every emitted line is prefixed `[<UTC iso8601>] [MCPforSU] [LEVEL]`. |
 | Enable Ruby evaluation | **on** | Gates `eval_ruby`. Ships enabled; uncheck to close the gate. Re-enabling it pops a blocking security confirm (arbitrary code ⇒ full filesystem/network/shell). |
@@ -119,7 +120,7 @@ Log-level changes apply immediately. Enabling Ruby evaluation requires confirmin
 
 - `SKETCHUP_MCP_HOST` (default `127.0.0.1`) — where to connect to the SketchUp extension
 - `SKETCHUP_MCP_PORT` (default `9876`)
-- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds)
+- `SKETCHUP_MCP_TIMEOUT` (default `60` seconds) — keep it well above 30 s: edge ops stop themselves after 30 s inside SketchUp. SketchUp does not know the client gave up, so after a timed-out mutating call check the model (`get_component_info` / `list_components`) before retrying.
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
 
 `examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` (via `sketchup_mcp.config`). For a split-host setup — Linux dev box + Windows SketchUp — there are two ways. **LAN address:** `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`; a non-loopback host counts as remote. **Reverse SSH tunnel** (README → Security model; the plugin stays on `127.0.0.1`): the host is loopback, so also set `SKETCHUP_MCP_SMOKE_REMOTE=1`, e.g. `SKETCHUP_MCP_SMOKE_REMOTE=1 uv run python examples/smoke_check.py`. Either way the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network). Without the variable, a loopback host makes step 18 look for the file on this machine and fail; `_export_file_is_local` in the script decides.

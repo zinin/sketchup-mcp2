@@ -207,7 +207,9 @@ Each side declares only the oldest counterpart it works with, so being newer nev
 
 ### Tool-call timeouts on long operations
 
-Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds.
+Bump `SKETCHUP_MCP_TIMEOUT` in your `.mcp.json` env block. Default is 60 seconds. Keep it well above 30 s: chamfer and fillet stop themselves after 30 s inside SketchUp, and a client that gives up sooner can walk away from an edit that still commits.
+
+SketchUp does not learn that the client gave up. After a timed-out call that changes the model, check the model with `get_component_info` or `list_components` before retrying — a blind retry can apply the edit twice (a double chamfer). The error message says the same. Read-only calls are safe to repeat.
 
 ### SketchUp UI freezes during big requests
 
