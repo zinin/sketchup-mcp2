@@ -192,6 +192,11 @@ class TestHandlerAtomicity < Minitest::Test
   ].freeze
 
   # The handlers whose row call runs to the end over these fakes.
+  # Success-to-commit checks elsewhere: chamfer_edges/fillet_edges in
+  # test/test_edge_ops.rb; create_component in test/test_geometry_builders.rb;
+  # transform_component in test/test_transform_absolute.rb; boolean_operation
+  # in test/test_boolean_direction.rb. The joinery handlers have none until
+  # joinery is rewritten (part 3).
   COMMITTING = %i[delete_component set_material create_layer].freeze
 
   ROWS.each do |handler, name, params, failing_call, label|

@@ -411,13 +411,23 @@ class TestCreateComponentName < Minitest::Test
   end
 
   class FakeModel
-    attr_reader :active_entities
+    attr_reader :active_entities, :log
     def initialize
       @active_entities = NamedEntities.new
+      @log = []
     end
-    def start_operation(*); true; end
-    def commit_operation; true; end
-    def abort_operation; true; end
+    def start_operation(name, *)
+      @log << [:start, name]
+      true
+    end
+    def commit_operation
+      @log << :commit
+      true
+    end
+    def abort_operation
+      @log << :abort
+      true
+    end
   end
 
   def with_fake_model(model)
@@ -441,6 +451,11 @@ class TestCreateComponentName < Minitest::Test
     model = FakeModel.new
     result = with_fake_model(model) { GEO.create_component(params) }
     [model, result]
+  end
+
+  def test_create_component_commits_on_success
+    model, _result = create_sphere
+    assert_equal [[:start, "Create Component (Sphere)"], :commit], model.log
   end
 
   def test_name_applied_when_given
