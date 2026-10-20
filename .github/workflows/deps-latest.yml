@@ -1,7 +1,10 @@
 name: deps-latest
 
-# Weekly run against the newest dependency versions a fresh `uvx sketchup-mcp2`
-# resolves; uv.lock pins only what CI installs, not what users get.
+# Weekly runs against the two ends of what the dependency metadata allows.
+# python-latest: the newest versions a fresh `uvx sketchup-mcp2` resolves;
+# uv.lock pins only what CI installs, not what users get. python-floor: the
+# oldest, the runtime dependencies at the floors pyproject.toml declares, which
+# neither the lock nor the matrix in test.yml ever installs.
 on:
   schedule:
     - cron: '17 4 * * 1'
@@ -26,3 +29,23 @@ jobs:
       - run: uv sync --upgrade --extra dev
       - run: uv pip list
       - run: uv run --frozen pytest tests/ -q
+
+  python-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          # 3.10: the oldest supported Python. Not 3.14: there mcp 1.30 itself
+          # requires pydantic >= 2.12, so the pydantic floor cannot be installed.
+          python-version: '3.10'
+      - run: uv venv
+      # The two pins are the floors in pyproject.toml (mcp>=1.30, pydantic>=2.11;
+      # 2.11.0 is also mcp 1.30's own floor below Python 3.14): change them
+      # together. They go into the venv with `uv pip install`; `uv sync` would
+      # put the lock's versions back.
+      - run: uv pip install -e '.[dev]' 'mcp==1.30.0' 'pydantic==2.11.0'
+      - run: uv pip list
+      # --no-sync: `uv run` must not re-sync the venv to uv.lock either.
+      - run: uv run --no-sync pytest tests/ -q
