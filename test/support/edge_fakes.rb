@@ -1,23 +1,36 @@
 # test/support/edge_fakes.rb
-# Duck-typed edges for the pure helpers of the edge ops in Handlers::Operations
-# (the feature-edge selection: seam_edge?, concave_edge?, curved_rim_edges,
-# select_feature_edges; the side of a cut: in_face_perp_inward), reusable by
-# any test that feeds a body's edges to the edge ops. They answer exactly what
-# that code reads:
-#   Edge#faces, #vertices, #other_vertex, #start, #end
-#   Vertex#position, Face#normal, #classify_point, #bounds
-#   Point3d#-, #offset, Vector3d#angle_between, #cross, #dot, #length,
-#   #length=, #reverse
+# Duck-typed edges, faces and vertices for the edge ops of
+# Handlers::Operations, reusable by any test that feeds a body's edges to
+# them: the feature-edge selection (seam_edge?, concave_edge?,
+# curved_rim_edges, select_feature_edges) and the side of a cut
+# (in_face_perp_inward, edge_spec). What they model:
+#   Edge#faces, #vertices, #start, #end, #other_vertex, #reversed_in?
+#   Vertex#position
+#   Face#normal, #classify_point, #bounds, #reverse!
+#   Point3d#-, #offset, #x, #y, #z
+#   Vector3d#angle_between, #cross, #dot, #length, #length=, #reverse
+# Nothing else: no entity IDs, no materials, no transformations.
 #
 # Vertices, faces and edges are plain objects, NOT Structs: in SketchUp an
 # entity is its identity, so two vertices at the same position are still two
 # vertices. Struct equality is by value and would merge them.
 #
+# A face is its normal and its loops of points: the outer loop, then one per
+# hole, wound as SketchUp winds them, the outer loop counterclockwise seen
+# from the side the normal points to and every hole clockwise. The
+# constructor refuses a loop wound the other way, so no fixture holds a face
+# whose normal disagrees with its loops, and two faces of a body built that
+# way run every edge they share in opposite directions. What a face answers
+# comes from its loops: #classify_point, #bounds, and Edge#reversed_in?
+# (true when the face's loop runs the edge from its end to its start).
+# #reverse! turns a face inside out as Face#reverse! does: the normal flips
+# and every loop runs the other way. A face built from a normal alone has
+# nothing to probe and raises if asked.
+#
 # Constructors: FakeVertex.new(position), FakeFace.new(normal, loops),
-# FakeEdge.new(start_vertex, end_vertex, faces). A face answers #classify_point
-# and #bounds from its loops (the outer loop, then its holes); one built from a
-# normal alone has nothing to probe and raises if asked. #reverse! turns a face
-# inside out, as Face#reverse! does, for a body with a wrongly oriented face.
+# FakeEdge.new(start_vertex, end_vertex, faces). EdgeFakes.facet makes a face
+# whose normal follows from the winding of its loop, EdgeFakes.mesh a body
+# of such faces with the edges they share.
 #
 # The Sketchup stubs are guarded: other test files define their own empty
 # Sketchup::Edge / Sketchup::Face, and under run_all every file loads before
@@ -94,6 +107,21 @@ module EdgeFakes
     end
   end
 
+  # The vector area of a closed loop of points (Newell's method): as long as
+  # the area the loop encloses, pointing to the side from which the loop is
+  # seen to run counterclockwise.
+  def self.vector_area(points)
+    sum = FakeVec.new(0.0, 0.0, 0.0)
+    points.each_index do |i|
+      a = points[i]
+      b = points[(i + 1) % points.size]
+      sum.x += a.y * b.z - a.z * b.y
+      sum.y += a.z * b.x - a.x * b.z
+      sum.z += a.x * b.y - a.y * b.x
+    end
+    FakeVec.new(sum.x / 2.0, sum.y / 2.0, sum.z / 2.0)
+  end
+
   class FakeVertex
     attr_reader :position
 
@@ -110,10 +138,18 @@ module EdgeFakes
     attr_reader :normal
 
     # `loops`: lists of FakePt, the outer loop first, then one per hole,
-    # each in order around it.
+    # each in order around it: the outer loop counterclockwise seen from
+    # where `normal` points, a hole clockwise. Raises for a loop wound the
+    # other way.
     def initialize(normal, loops = [])
       @normal = normal
       @loops = loops
+      loops.each_with_index do |loop, k|
+        counterclockwise = EdgeFakes.vector_area(loop).dot(normal) > 0
+        next if counterclockwise == k.zero?
+        raise ArgumentError, "loop #{k} of a face with normal #{normal.to_a} is wound the wrong " \
+                             "way: the outer loop runs counterclockwise around the normal, a hole clockwise"
+      end
     end
 
     # Like Face#bounds: the bounding box of the outer loop.
@@ -139,10 +175,11 @@ module EdgeFakes
       end
     end
 
-    # Like Face#reverse!: the face's normal points the other way. The loops
-    # stay as they are; nothing here reads their order.
+    # Like Face#reverse!: the face turns inside out. Its normal points the
+    # other way, and every loop runs the other way round.
     def reverse!
       @normal = @normal.reverse
+      @loops = @loops.map(&:reverse)
       self
     end
 
@@ -152,6 +189,12 @@ module EdgeFakes
       @loops.any? do |loop|
         sides(loop).any? { |from, to| (from == a && to == b) || (from == b && to == a) }
       end
+    end
+
+    # True when a loop has a side from point `from` to point `to`, run in
+    # that direction. Fixture plumbing for FakeEdge#reversed_in?.
+    def runs?(from, to)
+      geometry.any? { |loop| sides(loop).include?([from, to]) }
     end
 
     private
@@ -206,6 +249,16 @@ module EdgeFakes
         @start
       end
     end
+
+    # Like Sketchup::Edge#reversed_in?: true when `face`'s loop runs this
+    # edge from its end to its start, false when from its start to its end.
+    def reversed_in?(face)
+      from = @start.position
+      to = @end.position
+      return false if face.runs?(from, to)
+      return true if face.runs?(to, from)
+      raise ArgumentError, "this FakeEdge is not a side of that face"
+    end
   end
 
   def self.vertex(x, y, z)
@@ -226,7 +279,7 @@ module EdgeFakes
   # so the seams of prism(24) sit at indices 48..71. Every call builds its own
   # vertices and faces, so two prisms never share an entity.
   #
-  # Dihedral angles: rims 90 degrees, vertical edges 360 / n degrees.
+  # Angles between normals: rims 90 degrees, vertical edges 360 / n degrees.
   def self.prism(n, z0: 0, z1: 100)
     raise ArgumentError, "a prism needs at least 3 sides, got #{n}" if n < 3
 
@@ -234,7 +287,9 @@ module EdgeFakes
     bottom = ring(n, RADIUS, z0)
     top    = ring(n, RADIUS, z1)
 
-    cap_bottom = FakeFace.new(FakeVec.new(0.0, 0.0, -1.0), [bottom.map(&:position)])
+    # The bottom ring runs counterclockwise seen from above, so clockwise
+    # seen from below, where the bottom cap's normal points: reversed.
+    cap_bottom = FakeFace.new(FakeVec.new(0.0, 0.0, -1.0), [bottom.map(&:position).reverse])
     cap_top    = FakeFace.new(FakeVec.new(0.0, 0.0, 1.0), [top.map(&:position)])
     sides = Array.new(n) do |i|
       mid = (i + 0.5) * step
@@ -258,6 +313,67 @@ module EdgeFakes
 
   def self.box
     prism(4)
+  end
+
+  # ---------- bodies of facets ----------
+
+  # A face over one loop of points, its normal following from their order:
+  # it points to the side from which the loop runs counterclockwise.
+  def self.facet(points)
+    normal = vector_area(points)
+    normal.length = 1.0
+    FakeFace.new(normal, [points])
+  end
+
+  # The edges of a body of facets, each given as a loop of vertices wound
+  # counterclockwise seen from outside: one edge per pair of vertices next
+  # to each other in a loop, on the facets that share it, in the order the
+  # loops first reach it. An edge runs the way the first of those loops
+  # does.
+  def self.mesh(loops)
+    faces = loops.map { |loop| facet(loop.map(&:position)) }
+    by_pair = {}
+    loops.each_with_index do |loop, k|
+      ring_sides(loop).each do |from, to|
+        key = [from.object_id, to.object_id].sort
+        (by_pair[key] ||= [from, to, []])[2] << faces[k]
+      end
+    end
+    by_pair.values.map { |from, to, sharing| FakeEdge.new(from, to, sharing) }
+  end
+
+  # A default SketchUp cone, as create_component builds it (24 segments,
+  # diameter 100, height 100): the base and n triangles up to the apex, all
+  # facing outward. Edges: the base rim (n edges, 116.4 degrees between
+  # normals for n = 24), then the n slanted seams (13.4 degrees).
+  def self.cone(n = 24)
+    base = ring(n, RADIUS, 0.0)
+    apex = vertex(0, 0, 2 * RADIUS)
+    # The base ring runs counterclockwise seen from above; its face looks
+    # down, so its loop is reversed.
+    mesh([base.reverse] + Array.new(n) { |i| [base[i], base[(i + 1) % n], apex] })
+  end
+
+  # A default SketchUp sphere, as create_component builds it (16 segments,
+  # diameter 100): a pole at the top and the bottom with n - 1 rings of n
+  # vertices between them, a fan of triangles at each pole and quads
+  # between the rings, all facing outward. For n = 16: 256 faces and 496
+  # edges, every one a seam (2.2 .. 22.4 degrees between normals).
+  def self.sphere(n = 16)
+    north = vertex(0, 0, RADIUS)
+    south = vertex(0, 0, -RADIUS)
+    rings = (1...n).map do |k|
+      latitude = Math::PI * k / n
+      ring(n, RADIUS * Math.sin(latitude), RADIUS * Math.cos(latitude))
+    end
+    loops = []
+    n.times do |j|
+      k = (j + 1) % n
+      loops << [north, rings.first[j], rings.first[k]]
+      rings.each_cons(2) { |upper, lower| loops << [upper[j], lower[j], lower[k], upper[k]] }
+      loops << [south, rings.last[k], rings.last[j]]
+    end
+    mesh(loops)
   end
 
   # ---------- composite bodies ----------
@@ -290,13 +406,15 @@ module EdgeFakes
   # The faces and edge pairs of the cube, a ring of vertices as an inner loop
   # of its top or bottom face if given. The top and the bottom come first in
   # the faces, so an edge of such a ring lists that face as faces[0]. The
-  # edges come like prism's: bottom, top, then vertical.
+  # edges come like prism's: bottom, top, then vertical. A ring runs
+  # counterclockwise seen from above: right for a hole in the bottom face,
+  # which looks down, and reversed for one in the top.
   def self.cube(top_hole: nil, bottom_hole: nil)
     corners = [[0.0, 0.0], [CUBE, 0.0], [CUBE, CUBE], [0.0, CUBE]]
     bottom = corners.map { |x, y| vertex(x, y, 0.0) }
     top    = corners.map { |x, y| vertex(x, y, CUBE) }
-    faces = [face([0, 0, 1], *[top, top_hole].compact),
-             face([0, 0, -1], *[bottom, bottom_hole].compact)]
+    faces = [face([0, 0, 1], *[top, top_hole&.reverse].compact),
+             face([0, 0, -1], *[bottom.reverse, bottom_hole].compact)]
     [[0, -1, 0], [1, 0, 0], [0, 1, 0], [-1, 0, 0]].each_with_index do |normal, i|
       j = (i + 1) % 4
       faces << face(normal, [bottom[i], bottom[j], top[j], top[i]])
@@ -312,7 +430,8 @@ module EdgeFakes
     Array.new(n) do |i|
       mid = (i + 0.5) * 2 * Math::PI / n
       j = (i + 1) % n
-      face([sign * Math.cos(mid), sign * Math.sin(mid), 0.0], [low[i], low[j], high[j], high[i]])
+      corners = [low[i], low[j], high[j], high[i]]
+      face([sign * Math.cos(mid), sign * Math.sin(mid), 0.0], outward ? corners : corners.reverse)
     end
   end
 
@@ -355,11 +474,13 @@ module EdgeFakes
     profile = [[0, 0], [100, 0], [100, 50], [50, 50], [50, 100], [0, 100]]
     near = profile.map { |x, z| vertex(x, 0, z) }
     far  = profile.map { |x, z| vertex(x, 100, z) }
-    faces = [face([0, -1, 0], near), face([0, 1, 0], far)]
+    # The profile runs counterclockwise seen from the near side (-y), so
+    # clockwise from the far side: the far end's loop is reversed.
+    faces = [face([0, -1, 0], near), face([0, 1, 0], far.reverse)]
     # The outward normal of the long face from profile point k to k + 1.
     [[0, 0, -1], [1, 0, 0], [0, 0, 1], [1, 0, 0], [0, 0, 1], [-1, 0, 0]].each_with_index do |normal, k|
       j = (k + 1) % profile.size
-      faces << face(normal, [near[k], near[j], far[j], far[k]])
+      faces << face(normal, [near[k], far[k], far[j], near[j]])
     end
     edges_on(faces, ring_sides(near) + ring_sides(far) + near.zip(far))
   end

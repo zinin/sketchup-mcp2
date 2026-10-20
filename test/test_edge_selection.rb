@@ -33,7 +33,6 @@ class TestEdgeSelection < Minitest::Test
 
   OPS   = MCPforSketchUp::Handlers::Operations
   UP    = FakeVec.new(0.0, 0.0, 1.0)
-  FRONT = FakeVec.new(0.0, -1.0, 0.0)  # 90 degrees from UP
 
   # Geom::Transformation stand-in for a pure translation: moves points by
   # `by` and leaves vectors alone.
@@ -79,15 +78,28 @@ class TestEdgeSelection < Minitest::Test
   end
 
   # A standalone edge (vertices of its own) on one face per given normal.
+  # The faces are normals only: enough for an edge that does not have
+  # exactly two faces, which no rule looks into.
   def edge_on(*normals)
     FakeEdge.new(FakeVertex.new(FakePt.new(0.0, 0.0, 0.0)),
                  FakeVertex.new(FakePt.new(0.0, 100.0, 0.0)),
                  normals.map { |normal| FakeFace.new(normal) })
   end
 
-  # A standalone edge whose two faces meet at `deg` degrees.
+  # A standalone edge along +y whose two faces' normals differ by `deg`
+  # degrees: a flat top (normal UP) on the -x side and, on the other, a face
+  # folded down from the top's plane by `deg`. Both are wound as one body
+  # winds its faces, so each runs the edge the other way.
   def dihedral_edge(deg)
-    edge_on(UP, tilted(deg))
+    rad = deg * Math::PI / 180.0
+    near = FakeVertex.new(pt(0, 0))
+    far = FakeVertex.new(pt(0, 100))
+    a = near.position
+    b = far.position
+    fold = FakeVec.new(Math.cos(rad), 0.0, -Math.sin(rad))
+    top = FakeFace.new(UP, [[a, b, pt(-100, 100), pt(-100, 0)]])
+    folded = FakeFace.new(tilted(deg), [[b, a, a.offset(fold, 100.0), b.offset(fold, 100.0)]])
+    FakeEdge.new(near, far, [top, folded])
   end
 
   # A top face (normal UP) with the path through `vertices` as one side and
@@ -97,31 +109,45 @@ class TestEdgeSelection < Minitest::Test
     FakeFace.new(UP, [path + [pt(path.last.x, 100), pt(path.first.x, 100)]])
   end
 
+  # The face hanging 100 below the edge from vertex `from` to `to`, facing
+  # away from a top that spreads from the edge to +y; wound like that top, it
+  # runs the edge from `to` back to `from`.
+  def front_below(from, to)
+    down = FakeVec.new(0.0, 0.0, -100.0)
+    EdgeFakes.facet([to.position, from.position, from.position.offset(down), to.position.offset(down)])
+  end
+
   # Two edges meeting at a vertex; the second leaves it turned by `turn_deg`.
-  # Both border the same two faces (normals 90 degrees apart, so neither is a
-  # seam), or, with same_faces: false, faces of their own. Each edge is a
-  # convex corner, like a box's, between a top face spreading to +y and a
-  # front face; the front faces are normals only, as only faces[0] is probed.
+  # Each edge is a convex corner, like a box's: a top face spreads from it to
+  # +y and a front face of its own hangs below it (normals 90 degrees apart,
+  # so neither edge is a seam). The two edges share the top, or, with
+  # same_faces: false, each has a top of its own.
   def bent_pair(turn_deg, same_faces: true)
     rad = turn_deg * Math::PI / 180.0
     a = FakeVertex.new(FakePt.new(0.0, 0.0, 0.0))
     v = FakeVertex.new(FakePt.new(50.0, 0.0, 0.0))
     b = FakeVertex.new(FakePt.new(50.0 + 50.0 * Math.cos(rad), 50.0 * Math.sin(rad), 0.0))
     if same_faces
-      faces = [top_beside(a, v, b), FakeFace.new(FRONT)]
-      [FakeEdge.new(a, v, faces), FakeEdge.new(v, b, faces)]
+      top = top_beside(a, v, b)
+      [FakeEdge.new(a, v, [top, front_below(a, v)]), FakeEdge.new(v, b, [top, front_below(v, b)])]
     else
-      [FakeEdge.new(a, v, [top_beside(a, v), FakeFace.new(FRONT)]),
-       FakeEdge.new(v, b, [top_beside(v, b), FakeFace.new(FRONT)])]
+      [FakeEdge.new(a, v, [top_beside(a, v), front_below(a, v)]),
+       FakeEdge.new(v, b, [top_beside(v, b), front_below(v, b)])]
     end
   end
 
   # The top of a block at z = 0, 100 x 100, with a 40 x 40 hole through the
-  # middle: its bounds centre (50, 50) lies in the hole.
+  # middle: its bounds centre (50, 50) lies in the hole. The hole's loop runs
+  # clockwise seen from above.
   def holed_square
     loops = [[[0, 0], [100, 0], [100, 100], [0, 100]],
-             [[30, 30], [70, 30], [70, 70], [30, 70]]]
+             [[30, 30], [30, 70], [70, 70], [70, 30]]]
     FakeFace.new(UP, loops.map { |loop| loop.map { |x, y| pt(x, y) } })
+  end
+
+  # Degrees between the normals of an edge's two faces.
+  def normals_apart(edge)
+    OPS.angle_deg(edge.faces[0].normal, edge.faces[1].normal)
   end
 
   # ---------- seam_edge? ----------
@@ -138,7 +164,7 @@ class TestEdgeSelection < Minitest::Test
       90.0  => false,  # cylinder rims, box edges
       116.4 => false   # cone rim
     }.each do |deg, seam|
-      assert_equal seam, OPS.seam_edge?(dihedral_edge(deg)), "edge meeting at #{deg} degrees"
+      assert_equal seam, OPS.seam_edge?(dihedral_edge(deg)), "normals differ by #{deg}°"
     end
   end
 
@@ -191,9 +217,27 @@ class TestEdgeSelection < Minitest::Test
     end
   end
 
-  def test_sphere_like_body_is_all_seams
-    # Default sphere: 496 edges whose faces meet at 2.2 .. 22.4 degrees.
-    edges = Array.new(496) { |i| dihedral_edge(2.2 + (22.4 - 2.2) * i / 495.0) }
+  def test_cone_keeps_its_rim_and_skips_its_seams
+    # A default cone, of faces that share their vertices and edges: the base
+    # rim 0..23, normals 116.4 degrees apart, then the slanted seams 24..47,
+    # 13.4 degrees apart.
+    edges = EdgeFakes.cone
+    assert_equal [116.4], edges.first(24).map { |edge| normals_apart(edge).round(1) }.uniq
+    assert_equal [13.4], edges.last(24).map { |edge| normals_apart(edge).round(1) }.uniq
+
+    chamfer = OPS.select_feature_edges(edges, skip_curved: false)
+    assert_equal [24, 24, 0, 0], counts(chamfer)
+    assert_equal Array(0...24), positions(edges, chamfer[:edges]), "the rim, segment by segment"
+    assert_equal [0, 24, 0, 24], counts(OPS.select_feature_edges(edges, skip_curved: true)),
+                 "a fillet cannot round the rim"
+  end
+
+  def test_sphere_is_all_seams
+    # A default sphere, of faces that share their vertices and edges: 496
+    # edges, normals 2.2 .. 22.4 degrees apart.
+    edges = EdgeFakes.sphere
+    assert_equal 496, edges.size
+    assert_equal [2.2, 22.4], edges.map { |edge| normals_apart(edge) }.minmax.map { |deg| deg.round(1) }
     [false, true].each do |skip_curved|
       sel = OPS.select_feature_edges(edges, skip_curved: skip_curved)
       assert_equal [0, 496, 0, 0], counts(sel), "skip_curved: #{skip_curved}"
@@ -236,8 +280,8 @@ class TestEdgeSelection < Minitest::Test
   # ---------- curved rims ----------
 
   def test_collinear_split_edge_is_not_curved
-    # One straight edge split in two: the pieces share a vertex and both
-    # faces (90 degrees apart) but do not turn at all.
+    # One straight edge split in two: the pieces share a vertex and the top
+    # face but do not turn at all.
     sel = OPS.select_feature_edges(bent_pair(0.0), skip_curved: true)
     assert_equal [2, 0, 0, 0], counts(sel)
   end
@@ -257,7 +301,7 @@ class TestEdgeSelection < Minitest::Test
   end
 
   def test_edges_sharing_a_vertex_but_no_face_are_not_curved
-    # The same 10 degree bend is a curved rim on shared faces (see
+    # The same 10 degree bend is a curved rim on a shared top (see
     # test_only_turns_between_the_two_thresholds_make_a_curved_rim); on faces
     # of their own the edges are unrelated surfaces touching at a point.
     sel = OPS.select_feature_edges(bent_pair(10.0, same_faces: false), skip_curved: true)
@@ -354,7 +398,8 @@ class TestEdgeSelection < Minitest::Test
     # distance.
     along_x = FakeVec.new(1.0, 0.0, 0.0)
     { 0.004 => [0, 1, 0], -0.004 => [0, -1, 0] }.each do |width, expected|
-      strip = FakeFace.new(UP, [[pt(0, 0), pt(100, 0), pt(100, width), pt(0, width)]])
+      low, high = [0.0, width].minmax
+      strip = FakeFace.new(UP, [[pt(0, low), pt(100, low), pt(100, high), pt(0, high)]])
       strip.define_singleton_method(:classify_point) { |_point| Sketchup::Face::PointOutside }
       assert_xyz expected, OPS.in_face_perp_inward(strip, pt(50, 0), along_x), "strip at y #{width}"
     end

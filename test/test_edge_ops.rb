@@ -311,18 +311,6 @@ class TestEdgeOps < Minitest::Test
     subset.map { |picked| all.index { |e| e.equal?(picked) } }
   end
 
-  # `n` standalone edges, each between two faces meeting at 2.2 .. 22.4
-  # degrees, like the 496 edges of a default sphere.
-  def seam_edges(n)
-    Array.new(n) do |i|
-      rad = (2.2 + (22.4 - 2.2) * i / (n - 1).to_f) * Math::PI / 180.0
-      faces = [FakeFace.new(FakeVec.new(0.0, 0.0, 1.0)),
-               FakeFace.new(FakeVec.new(Math.sin(rad), 0.0, Math.cos(rad)))]
-      FakeEdge.new(FakeVertex.new(FakePt.new(0.0, 0.0, 0.0)),
-                   FakeVertex.new(FakePt.new(0.0, 100.0, 0.0)), faces)
-    end
-  end
-
   def chamfer(target, extra = {})
     OPS.chamfer_edges({ "entity_id" => target.entityID, "distance" => 2 }.merge(extra))
   end
@@ -371,11 +359,12 @@ class TestEdgeOps < Minitest::Test
   end
 
   def test_chamfer_all_seam_body_refuses
-    body = @scene.body(seam_edges(40))
+    # A default sphere: its 496 edges are seams, normals 2.2 .. 22.4° apart.
+    body = @scene.body(EdgeFakes.sphere)
     err = assert_raises(StructuredError) { chamfer(body) }
     assert_equal(-32602, err.code)
     assert_equal "no feature edges to chamfer on target_id=#{body.entityID} " \
-                 "(all 40 edges are surface seams)", err.message
+                 "(all 496 edges are surface seams)", err.message
     assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
     assert_equal 0, @scene.subtract_calls
   end
