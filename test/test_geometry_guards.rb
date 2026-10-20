@@ -57,12 +57,16 @@ class TestGeometryGuards < Minitest::Test
   EH  = MCPforSketchUp::Helpers::Entities
   StructuredError = MCPforSketchUp::Core::StructuredError
 
-  # Every entity reports the same bounds, in inches.
+  # Every entity reports the same bounds, in inches. scale reads the centre.
   FakePt     = Struct.new(:x, :y, :z)
-  FakeBounds = Struct.new(:min, :max)
+  FakeBounds = Struct.new(:min, :max) do
+    def center
+      FakePt.new(*%i[x y z].map { |axis| (min[axis] + max[axis]) / 2.0 })
+    end
+  end
   BOUNDS = FakeBounds.new(FakePt.new(0.0, 0.0, 0.0), FakePt.new(1.0, 2.0, 4.0))
 
-  # What the stubbed Geom::Transformation.translation returns.
+  # What the stubbed Geom::Transformation.translation and .scaling return.
   Translation = Struct.new(:x, :y, :z)
 
   class RecordingModel
@@ -191,21 +195,47 @@ class TestGeometryGuards < Minitest::Test
 
   # ---------- transform_component ----------
 
-  def test_transform_rejects_a_face
-    # Only an unguarded handler gets as far as building a translation; with
-    # this stub that shows up as a recorded transform!.
+  # Arms every branch of transform_component that touches the entity. Only an
+  # unguarded handler gets as far as building a transformation; with these
+  # stubs that shows up as a recorded transform!, however late the guard
+  # sits, not as a NoMethodError. apply_rotation is stubbed whole: it builds
+  # Geom::Vector3d, a class other files define for themselves, and a stand-in
+  # defined here at load time would hide theirs.
+  def arm_transform_branches
     stub_singleton(Geom::Transformation, :translation) do |point|
       Translation.new(point.x, point.y, point.z)
     end
+    stub_singleton(Geom::Transformation, :scaling) do |_center, x, y, z|
+      Translation.new(x, y, z)
+    end
+    stub_singleton(GEO, :apply_rotation) { |entity, _degrees| entity.transform!(:rotation) }
+  end
+
+  # transform_component on a face with just `change` (position, rotation or
+  # scale) is refused, and the face is not moved.
+  def assert_transform_refused(change)
+    arm_transform_branches
     face = @model.register(FakeFace.new(11))
 
     err = assert_raises(StructuredError) do
-      GEO.transform_component("id" => "11", "position" => [100.0, 0.0, 0.0])
+      GEO.transform_component({ "id" => "11" }.merge(change))
     end
 
     assert_equal(-32602, err.code)
     assert_equal "entity must be a Group or ComponentInstance, got #{face.class.name}", err.message
     assert_empty face.transforms, "nothing may be moved"
     assert_equal [[:start, "Transform Component"], :abort], @model.log
+  end
+
+  def test_transform_rejects_a_face_with_a_position
+    assert_transform_refused("position" => [100.0, 0.0, 0.0])
+  end
+
+  def test_transform_rejects_a_face_with_only_a_rotation
+    assert_transform_refused("rotation" => [0.0, 0.0, 90.0])
+  end
+
+  def test_transform_rejects_a_face_with_only_a_scale
+    assert_transform_refused("scale" => [2.0, 2.0, 2.0])
   end
 end
