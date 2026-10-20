@@ -1,8 +1,35 @@
 """Shared pytest fixtures."""
 import asyncio
+import re
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 import pytest_asyncio
+
+_COMPAT_RB = (
+    Path(__file__).resolve().parent.parent
+    / "mcp_for_sketchup" / "mcp_for_sketchup" / "core" / "compat.rb"
+)
+
+
+@pytest.fixture
+def ruby_const():
+    """``ruby_const(name, path=compat.rb)``: read a constant such as
+    ``SERVER_VERSION = "0.3.1"`` or ``EDGE_OP_BUDGET_S = 30.0`` from a Ruby file
+    (compat.rb unless ``path`` names another): the text of its string or number
+    literal.
+
+    A fixture, not a function that one test module imports from another: that
+    import works only while pytest puts ``tests/`` on ``sys.path`` (its default
+    import mode)."""
+    def read(name: str, path: Path = _COMPAT_RB) -> str:
+        source = path.read_text(encoding="utf-8")
+        m = re.search(rf'^\s*{name}\s*=\s*(?:"([^"]*)"|([\d_.]+))', source, re.M)
+        assert m, f"{name} not found in {path}"
+        return m.group(1) if m.group(1) is not None else m.group(2)
+
+    return read
 
 
 @pytest_asyncio.fixture

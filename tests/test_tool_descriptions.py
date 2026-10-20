@@ -6,7 +6,6 @@ from pathlib import Path
 
 from sketchup_mcp.app import mcp
 import sketchup_mcp.tools  # noqa: F401 — регистрация тулов
-from test_compat import _ruby_const
 
 _OPERATIONS_RB = (
     Path(__file__).resolve().parent.parent
@@ -70,12 +69,12 @@ async def test_returns_lines_pin_top_response_shapes():
         assert frag in desc, f"{name}: Returns-пин «{frag}» не найден в докстринге"
 
 
-async def test_edge_op_docstrings_name_the_ruby_budget():
+async def test_edge_op_docstrings_name_the_ruby_budget(ruby_const):
     """T3-d: «30 s» в докстрингах chamfer_edge/fillet_edge — это
     EDGE_OP_BUDGET_S из operations.rb. Бюджет проверяется перед каждым резом,
     поэтому докстринг обещает не «не дольше 30 s», а «после 30 s новый рез не
     начинается». Смена константы без правки докстрингов ловится здесь."""
-    budget = float(_ruby_const("EDGE_OP_BUDGET_S", _OPERATIONS_RB))
+    budget = float(ruby_const("EDGE_OP_BUDGET_S", _OPERATIONS_RB))
     phrase = f"starts no new cut after {budget:g} s"
     tools = {t.name: t for t in await mcp.list_tools()}
     for name in ("chamfer_edge", "fillet_edge"):
