@@ -18,10 +18,10 @@ from sketchup_mcp.errors import IncompatibleVersionError
 # changed response shapes), and a one-sided requirement — say, a new tool that
 # calls a new Ruby handler — raises this one alone. A hotfix leaves it put,
 # which is what lets a Python-only or plugin-only release talk to the
-# counterpart the user already has. Releases up to 0.3.1 still cap the
-# counterpart at their own version, so the first release under this rule ships
-# both sides.
-MIN_RUBY = "0.3.0"
+# counterpart the user already has. Releases up to 0.3.1 cap the counterpart at
+# their own version, so 0.4.0, the first release under this rule, ships both
+# sides and raises both floors to its own version.
+MIN_RUBY = "0.4.0"
 
 # JSON-RPC application-error code returned by the Ruby handler when the
 # eval gate is closed. Single source of truth for Python callers — see

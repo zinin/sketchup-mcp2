@@ -201,4 +201,4 @@ slash menu.
 
 ## Releasing
 
-For the step-by-step PyPI + GitHub release workflow (version bump → build → TestPyPI → PyPI → tag → release), see [`docs/release.md`](docs/release.md).
+For the step-by-step PyPI + GitHub release workflow (version bump → build → sign and check live → TestPyPI → PyPI → tag → release), see [`docs/release.md`](docs/release.md).

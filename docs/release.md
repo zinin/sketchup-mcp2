@@ -80,6 +80,14 @@ rm -f mcp_for_sketchup/*.rbz
 
 `package.rb` needs the `rubyzip` gem: `gem install --user-install rubyzip`.
 
+### Sign the plugin and check the pair live
+
+Do this before anything is uploaded. TestPyPI and PyPI both refuse a second upload of `X.Y.Z`, so a defect found after [§4](#4-testpypi-rehearsal) costs a version, while one found here costs only a rebuild. Every release runs it, one-sided ones included.
+
+1. **Sign.** A release that ships the plugin sends the `.rbz` through the [Trimble signing service](https://extensions.sketchup.com/developer/sign-extension): an unsigned extension is flagged as unidentified, and SketchUp blocks it outright under the strictest loading policy (*Identified Extensions Only*). **The service hands back a different file from the one you upload.** It appends a `-signed` suffix to the name and encrypts every `.rb` under the extension folder to `.rbe`, adding `mcp_for_sketchup.susig`; the root loader and `settings.html` stay in the clear, and `main.rb`'s `LOAD_ORDER` names paths without an extension precisely so `Sketchup.require` picks up the `.rbe`. Install and attach **that** file; the unsuffixed artifact is the unsigned one and must not be published. A Python-only release uses the current signed plugin of `vPREV` instead ([§6](#6-git-tag--github-release) shows how to fetch it).
+2. **Install.** In SketchUp's Extension Manager, uninstall the installed version and restart SketchUp, then install the signed `.rbz` and start the server (`Plugins → MCP Server → Start Server`). Installing over a signed version would leave its `.rbe` files and signature beside the new ones.
+3. **Smoke-check the pair.** `uv run python examples/smoke_check.py` runs the client from this commit against the installed plugin; set `SKETCHUP_MCP_HOST`, and `SKETCHUP_MCP_SMOKE_REMOTE=1` behind a tunnel, as `CLAUDE.md` describes. All 26 steps must pass, and step 26 must show the client and the plugin you are about to ship. The run leaves the layer "MCP Test", the material "red", the group its undo step brings back and the PNG it exported under `%TEMP%\sketchup_exports`; remove them. An MCP client started before the bump still runs the previous version, and a plugin whose floor moved rejects it: restart that client.
+
 ## 4. TestPyPI rehearsal
 
 Python releases only.
@@ -134,9 +142,7 @@ rm -f mcp_for_sketchup/*.rbz && gh release download vPREV -p '*-signed.rbz' -D m
 rm -rf dist/ && gh release download vPREV -p 'sketchup_mcp2-*' -D dist
 ```
 
-The `.rbz` must already be self-signed via the [Trimble signing service](https://extensions.sketchup.com/developer/sign-extension) — an unsigned extension is flagged as unidentified, and SketchUp blocks it outright under the strictest loading policy (*Identified Extensions Only*).
-
-**The service hands back a different file from the one you upload.** It appends a `-signed` suffix to the name and encrypts every `.rb` under the extension folder to `.rbe`, adding `mcp_for_sketchup.susig`; the root loader and `settings.html` stay in the clear, and `main.rb`'s `LOAD_ORDER` names paths without an extension precisely so `Sketchup.require` picks up the `.rbe`. Attach **that** file. The unsuffixed artifact §3 produced is the unsigned one and must not be published:
+Attach the signed `.rbz` you checked in [§3](#sign-the-plugin-and-check-the-pair-live), `mcp_for_sketchup_vX.Y.Z-signed.rbz`. The unsuffixed artifact §3 built is unsigned and must not be published:
 
 ```bash
 git tag vX.Y.Z -m "Release X.Y.Z" && git push origin vX.Y.Z
@@ -175,5 +181,6 @@ discover the hard way. For `0.3.1`:
 ## Notes
 
 - `LICENSE` and `NOTICE` ship inside the wheel via `license-files` in `pyproject.toml` — no manual copying needed.
+- Uploads run from the maintainer's machine with the tokens in `~/.pypirc`. Publishing from GitHub Actions (Trusted Publishing) may be added later; if it is, this path stays as a second way to publish.
 - After the first publish, swap the account-wide PyPI tokens in `~/.pypirc` for **project-scoped** ones (PyPI → Settings → API tokens → Scope: `Project: sketchup-mcp2`). Compromise of a scoped token only affects that project.
 - **The Extension Warehouse is not a distribution channel for this project.** Trimble denied the v0.2.0 submission in August 2026 on policy grounds, not on fixable defects: they publish no externally developed MCP servers, reserving the catalogue for tools they build and secure themselves. Do not spend another two-month review cycle on it. GitHub Releases is the only channel — the `.rbz` still goes through the [Trimble signing service](https://extensions.sketchup.com/developer/sign-extension), which is a separate, self-serve flow with no review.
