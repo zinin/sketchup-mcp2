@@ -337,3 +337,36 @@ class TestSettingsDialogOnSaveEvalConfirm < Minitest::Test
     assert dialog.closed, "the dialog should close after a normal save"
   end
 end
+
+# The warning under the "Enable Ruby evaluation" checkbox (#eval-warning in
+# settings.html) is what the user reads before saving the setting on or off. It
+# is HTML, so nothing else runs it; the confirm shown on an off→on save is
+# pinned the same way in test_eval_gate.rb (TestConfirmEvalEnable). Its
+# wording stays true to what the gate does: who can reach the port, what they
+# get, and that it is on until the user unchecks it.
+class TestSettingsHtmlEvalWarning < Minitest::Test
+  S = MCPforSketchUp::UI::SettingsDialog
+  C = MCPforSketchUp::Core::Config
+
+  # The text of the #eval-warning div, tags dropped and whitespace collapsed.
+  def eval_warning_text
+    html = File.read(S::HTML_PATH, encoding: "UTF-8")
+    div = html[%r{<div[^>]*\bid="eval-warning"[^>]*>(.*?)</div>}m, 1]
+    refute_nil div, "settings.html has no #eval-warning div"
+    div.gsub(/<[^>]*>/, "").gsub(/\s+/, " ").strip
+  end
+
+  def test_eval_warning_says_who_can_connect_and_what_they_get
+    text = eval_warning_text
+    assert_match(/any local process/, text, "the warning must say who can connect, not only MCP clients")
+    assert_match(/other machines/, text, "the warning must say a non-loopback Host reaches other machines")
+    assert_match(/arbitrary Ruby/, text, "the warning must say what the gate lets run")
+    assert_match(%r{file/shell access}, text, "the warning must say what eval grants")
+  end
+
+  def test_eval_warning_states_the_shipped_default
+    state = C::DEFAULTS[:eval_enabled] ? "ON" : "OFF"
+    assert_includes eval_warning_text, "#{state} by default",
+      "the warning must state the default of Config::DEFAULTS[:eval_enabled] (#{state})"
+  end
+end
