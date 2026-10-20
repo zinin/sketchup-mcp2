@@ -48,7 +48,7 @@ class TestTransformAbsolute < Minitest::Test
   # красит тест; обновить пин осознанно, не «чинить» стиль под форматтер.
   def test_transform_component_translates_via_position_delta
     src = File.read(File.expand_path(
-      "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb", __dir__))
+      "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb", __dir__), encoding: "UTF-8")
     body = src[/def self\.transform_component.*?(?=\n      def self\.)/m]
     refute_nil body, "transform_component body not found"
     assert_match(/position_delta\(entity\.bounds\.min,\s*position\)/, body,

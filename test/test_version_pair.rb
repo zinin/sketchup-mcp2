@@ -20,7 +20,7 @@ class TestVersionPair < Minitest::Test
   end
 
   def test_package_rb_version_matches_server_version
-    src = File.read(File.join(ROOT, "mcp_for_sketchup", "package.rb"))
+    src = File.read(File.join(ROOT, "mcp_for_sketchup", "package.rb"), encoding: "UTF-8")
     m = src.match(/^VERSION = '([^']+)'/)
     refute_nil m, "package.rb: строка VERSION = '...' не найдена"
     assert_equal server_version, m[1],

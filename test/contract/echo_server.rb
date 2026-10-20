@@ -58,7 +58,7 @@ end
 DISPATCH_RB = File.join(PLUGIN_DIR, "handlers", "dispatch.rb")
 # [module name, method name] for each Handlers::<Module>.<method>(params) in
 # call_handler's `case tool` table.
-ROUTES = File.read(DISPATCH_RB)[/def self\.call_handler\b.*?\bcase tool\b(.*?)^\s*else\b/m, 1]
+ROUTES = File.read(DISPATCH_RB, encoding: "UTF-8")[/def self\.call_handler\b.*?\bcase tool\b(.*?)^\s*else\b/m, 1]
              .to_s.scan(/\bHandlers::(\w+)\.(\w+)\(params\)/).uniq
 abort "echo_server: no Handlers::<Module>.<method>(params) in #{DISPATCH_RB}" if ROUTES.empty?
 

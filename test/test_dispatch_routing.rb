@@ -36,7 +36,7 @@ class TestDispatchRouting < Minitest::Test
 
   HANDLER_DIR = File.expand_path("../mcp_for_sketchup/mcp_for_sketchup/handlers", __dir__)
 
-  DISPATCH_SOURCE = File.read(File.join(HANDLER_DIR, "dispatch.rb"))
+  DISPATCH_SOURCE = File.read(File.join(HANDLER_DIR, "dispatch.rb"), encoding: "UTF-8")
 
   # The text of call_handler's `case tool` table, from `case tool` to `else`.
   TABLE = DISPATCH_SOURCE[/def self\.call_handler\b.*?\bcase tool\b(.*?)^\s*else\b/m, 1].to_s
