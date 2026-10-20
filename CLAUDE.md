@@ -26,7 +26,7 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   between clients on the model are the user's responsibility** (no
   server-side locking). Half-open sockets detected via `SO_KEEPALIVE`
   (OS default ~2h).
-- **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; incoming ids are parsed strictly with `Integer(id.to_s, 10)` — never `.to_i`, because `"abc".to_i == 0` silently addresses entity 0.
+- **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; incoming ids are parsed strictly with `Integer(id.to_s, 10)` — never `.to_i`, which silently mis-targets: `"12abc".to_i == 12` and `"12.9".to_i == 12` address entity 12 (`"abc".to_i == 0` at least fails loudly as "entity 0 not found").
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
@@ -91,7 +91,7 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 521 runs / 1487 assertions
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 532 runs / 1527 assertions
 uv run pytest tests/ -q        # Python (pytest) — 205 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
@@ -164,11 +164,11 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Category | Tools |
 |---|---|
 | Geometry | `create_component`, `delete_component`, `transform_component` |
-| Materials | `set_material` (named colors + hex `#rrggbb`) |
+| Materials | `set_material` (groups, component instances, faces, edges; existing material names, named colors, hex `#rrggbb`) |
 | Booleans | `boolean_operation` (union / difference / intersection) |
 | Edge ops | `chamfer_edge`, `fillet_edge` (Ruby-side names are plural — `chamfer_edges`/`fillet_edges`) |
 | Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
-| Export | `export_scene` (skp / obj / dae / stl / png / jpg) |
+| Export | `export_scene` (skp / obj / dae / stl / png / jpg; skp refused for an untitled model) |
 | Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | View | `get_viewport_screenshot` (returns MCP Image + JSON metadata text block; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |
 | Lifecycle | `undo` |
