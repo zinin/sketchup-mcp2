@@ -2,11 +2,12 @@
 # Duck-typed edges, faces and vertices for the edge ops of
 # Handlers::Operations, reusable by any test that feeds a body's edges to
 # them: the feature-edge selection (seam_edge?, concave_edge?,
-# curved_rim_edges, select_feature_edges) and the side of a cut
-# (in_face_perp_inward, edge_spec). What they model:
+# curved_rim_edges, select_feature_edges), the side of a cut
+# (in_face_perp_inward, edge_spec) and the inside-out check
+# (signed_volume). What they model:
 #   Edge#faces, #vertices, #start, #end, #other_vertex, #reversed_in?
 #   Vertex#position
-#   Face#normal, #classify_point, #bounds, #reverse!
+#   Face#normal, #area, #vertices, #classify_point, #bounds, #reverse!
 #   Point3d#-, #offset, #x, #y, #z
 #   Vector3d#angle_between, #cross, #dot, #length, #length=, #reverse
 # Nothing else: no entity IDs, no materials, no transformations.
@@ -21,8 +22,9 @@
 # constructor refuses a loop wound the other way, so no fixture holds a face
 # whose normal disagrees with its loops, and two faces of a body built that
 # way run every edge they share in opposite directions. What a face answers
-# comes from its loops: #classify_point, #bounds, and Edge#reversed_in?
-# (true when the face's loop runs the edge from its end to its start).
+# comes from its loops: #classify_point, #bounds, #area, #vertices, and
+# Edge#reversed_in? (true when the face's loop runs the edge from its end to
+# its start).
 # #reverse! turns a face inside out as Face#reverse! does: the normal flips
 # and every loop runs the other way. A face built from a normal alone has
 # nothing to probe and raises if asked.
@@ -150,6 +152,19 @@ module EdgeFakes
         raise ArgumentError, "loop #{k} of a face with normal #{normal.to_a} is wound the wrong " \
                              "way: the outer loop runs counterclockwise around the normal, a hole clockwise"
       end
+    end
+
+    # Like Face#area: what the outer loop encloses, less its holes. A hole
+    # winds the other way, so its vector area counts against the outer one.
+    def area
+      geometry.sum { |loop| EdgeFakes.vector_area(loop).dot(@normal) } / @normal.length
+    end
+
+    # Like Face#vertices: one per corner of each loop, in loop order. They
+    # are made afresh over the loop points and shared with no edge, so only
+    # their positions mean anything.
+    def vertices
+      geometry.flatten(1).map { |point| FakeVertex.new(point) }
     end
 
     # Like Face#bounds: the bounding box of the outer loop.

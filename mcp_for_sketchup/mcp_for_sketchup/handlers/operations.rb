@@ -165,9 +165,11 @@ module MCPforSketchUp
       #
       # Only convex feature edges are cut (select_feature_edges): never the
       # seams of a curved surface or a concave edge, and with skip_curved
-      # (fillet) not a curved rim either. A body the subtract destroyed and a
-      # breach of EDGE_OP_BUDGET_S raise like any other failure, so the whole
-      # call rolls back.
+      # (fillet) not a curved rim either. A closed target that is inside-out
+      # is refused before the selection, which would read its every edge as
+      # concave. A body the subtract destroyed and a breach of
+      # EDGE_OP_BUDGET_S raise like any other failure, so the whole call
+      # rolls back.
       def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in, skip_curved: false)
         # Type-guard edge_indices BEFORE start_operation: a non-Array (String/
         # Integer/Hash from a direct/malformed TCP client that bypasses the
@@ -189,6 +191,15 @@ module MCPforSketchUp
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
           target_entities = E.mutable_entity_collection(entity)
+          # A body whose faces all point into it reads concave at every edge,
+          # and the selection would refuse it for the wrong cause. Only a
+          # closed body has an inside: an open shell's volume has no sign
+          # worth reading.
+          if entity.manifold? && signed_volume(target_entities.grep(Sketchup::Face)) < 0
+            raise Core::StructuredError.new(-32602,
+              "target_id=#{entity_id} is inside-out: its faces point into the body; " \
+              "reverse its faces in SketchUp (Reverse Faces / Orient Faces) and retry")
+          end
           edges = target_entities.grep(Sketchup::Edge)
           edges = filter_edges(edges, edge_indices) if edge_indices
           if edges.empty?
@@ -612,8 +623,9 @@ module MCPforSketchUp
       # edge, +sin for a concave one), so they always agree on a well-oriented
       # body. With one face turned inside out only one of them flips, and that
       # face's convex edges are kept, whichever face the edge lists first. A
-      # body turned inside out as a whole still reads as concave all over. The
-      # second perpendicular is worked out only when the first one says concave.
+      # body turned inside out as a whole still reads as concave all over
+      # (run_edge_op refuses a closed one before the selection). The second
+      # perpendicular is worked out only when the first one says concave.
       def self.concave_edge?(edge)
         faces = edge.faces
         return false unless faces.length == 2
@@ -667,6 +679,31 @@ module MCPforSketchUp
           skipped_seam: edges.length - non_seam.length,
           skipped_concave: non_seam.length - convex.length,
           skipped_curved: curved.length }
+      end
+
+      # ----- inside-out bodies -------------------------------------------------
+
+      # Signed volume of a closed body from its faces, in their own frame:
+      # the sum over the faces of (n · (p − c)) · area / 3, with n a face's
+      # unit normal, p any of its vertices and c the centre of the bounds of
+      # all their vertices. Positive when the faces point out of the body,
+      # negative when it is inside-out. On a closed body whose faces agree, c
+      # changes nothing: their area-weighted normals sum to zero. Measured
+      # from c, one reversed face cannot outweigh the rest; measured from the
+      # frame's origin it can, on a body far from that origin.
+      def self.signed_volume(faces)
+        return 0.0 if faces.empty?
+        corners = faces.map { |face| face.vertices.map(&:position) }
+        centre = %i[x y z].map do |axis|
+          low, high = corners.flat_map { |points| points.map(&axis) }.minmax
+          (low + high) / 2.0
+        end
+        faces.zip(corners).sum(0.0) do |face, points|
+          n = face.normal
+          point = points.first
+          (n.x * (point.x - centre[0]) + n.y * (point.y - centre[1]) +
+            n.z * (point.z - centre[2])) * face.area / 3.0
+        end
       end
     end
   end

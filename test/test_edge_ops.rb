@@ -2,17 +2,18 @@
 # M-01, M-07: chamfer_edges / fillet_edges end to end over fakes.
 #
 # run_edge_op cuts convex feature edges only (select_feature_edges, real
-# here: no seam, no concave edge), refuses a body with nothing left to cut,
-# rolls back with a clear error when SketchUp's subtract destroys the body,
-# and stops at the 30 s budget.
+# here: no seam, no concave edge), refuses a closed body that is inside-out
+# and a body with nothing left to cut, rolls back with a clear error when
+# SketchUp's subtract destroys the body, and stops at the 30 s budget.
 #
 # Measured in SketchUp 2026.1 on a default cylinder: the subtract on the
 # first vertical seam returned nil and invalidated both the cutter and the
 # body; the next iteration touched the deleted group and the whole call
 # failed with -32603 "reference to deleted Group".
 #
-# Fakes: a recording model, bodies over EdgeFakes edges, and cutters whose
-# subtract follows a per-test script (see FakeCutter). The geometry builders
+# Fakes: a recording model, bodies over EdgeFakes edges and the faces they
+# bound, and cutters whose subtract follows a per-test script (see
+# FakeCutter). The geometry builders
 # (edge_spec, find_current_edge_spec, the two profiles, reconstruct_edge)
 # need Geom and are stubbed, as is Entities.active_model!; every stub is
 # restored in teardown.
@@ -101,12 +102,12 @@ class TestEdgeOps < Minitest::Test
       @script = outcomes.dup
     end
 
-    def body(edges)
-      @model.register(FakeBody.new(self, edges))
+    def body(edges, manifold: true)
+      @model.register(FakeBody.new(self, edges, manifold: manifold))
     end
 
-    def instance(edges)
-      @model.register(FakeInstance.new(self, edges))
+    def instance(edges, manifold: true)
+      @model.register(FakeInstance.new(self, edges, manifold: manifold))
     end
 
     def next_id
@@ -144,19 +145,27 @@ class TestEdgeOps < Minitest::Test
   # What FakeBody and FakeInstance share. Like a SketchUp entity, a deleted
   # one raises TypeError on everything but valid?. entityID stays readable so
   # that :ok_stale can model a result that goes stale after run_edge_op
-  # cached its ID; `edges` is the test's own view of the body.
+  # cached its ID; `edges` is the test's own view of the body. Its entities
+  # are those edges and the faces they bound. `manifold` is what manifold?
+  # answers: true for the closed bodies of EdgeFakes.
   module FakeSolid
     attr_reader :entityID, :edges
 
-    def initialize(scene, edges)
+    def initialize(scene, edges, manifold: true)
       @scene = scene
       @edges = edges
+      @manifold = manifold
       @entityID = scene.next_id
       @valid = true
     end
 
     def valid?
       @valid
+    end
+
+    def manifold?
+      alive!
+      @manifold
     end
 
     # What SketchUp's subtract does to its operands.
@@ -194,6 +203,11 @@ class TestEdgeOps < Minitest::Test
     def alive!
       raise TypeError, "reference to deleted #{typename}" unless @valid
     end
+
+    # The edges, then the faces they bound, as entities holds them.
+    def contents
+      @edges + @edges.flat_map(&:faces).uniq
+    end
   end
 
   class FakeBody < Sketchup::Group
@@ -205,11 +219,11 @@ class TestEdgeOps < Minitest::Test
 
     def entities
       alive!
-      @edges
+      contents
     end
   end
 
-  # No entities of its own: the edges live in the definition.
+  # No entities of its own: the edges and faces live in the definition.
   class FakeInstance < Sketchup::ComponentInstance
     include FakeSolid
 
@@ -219,7 +233,7 @@ class TestEdgeOps < Minitest::Test
 
     def definition
       alive!
-      FakeDefinition.new(@edges)
+      FakeDefinition.new(contents)
     end
   end
 
@@ -451,6 +465,77 @@ class TestEdgeOps < Minitest::Test
                  "(all 72 edges are surface seams, curved rims or concave edges)", err.message
     assert_equal [[:start, "Fillet Edges"], :abort], @scene.model.log
     assert_equal 0, @scene.subtract_calls
+  end
+
+  # ---------- an inside-out body ----------
+
+  # A box with every face turned to point into it, as cones and spheres of
+  # earlier builds came out.
+  def inside_out_box
+    edges = EdgeFakes.box
+    edges.flat_map(&:faces).uniq.each(&:reverse!)
+    edges
+  end
+
+  def inside_out_message(body)
+    "target_id=#{body.entityID} is inside-out: its faces point into the body; " \
+      "reverse its faces in SketchUp (Reverse Faces / Orient Faces) and retry"
+  end
+
+  def test_chamfer_refuses_an_inside_out_body_by_name
+    # Every edge of it reads concave, so it was refused as a body of seams or
+    # concave edges: the wrong cause.
+    body = @scene.body(inside_out_box)
+    err = assert_raises(StructuredError) { chamfer(body) }
+    assert_equal(-32602, err.code)
+    assert_equal inside_out_message(body), err.message
+    assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
+    assert_equal 0, @scene.subtract_calls
+  end
+
+  def test_fillet_refuses_an_inside_out_instance_by_name
+    body = @scene.instance(inside_out_box)
+    err = assert_raises(StructuredError) { fillet(body) }
+    assert_equal(-32602, err.code)
+    assert_equal inside_out_message(body), err.message
+    assert_equal [[:start, "Fillet Edges"], :abort], @scene.model.log
+    assert_equal 0, @scene.subtract_calls
+  end
+
+  def test_one_reversed_face_is_not_refused
+    # One face turned inside out leaves a closed body's volume positive,
+    # wherever the body sits: each face of a box in turn, then the top of a
+    # box 1000 above its frame's origin, where the top's (n · p) alone would
+    # outweigh the rest.
+    bodies = Array.new(6) do |k|
+      edges = EdgeFakes.box
+      edges.flat_map(&:faces).uniq[k].reverse!
+      edges
+    end
+    raised = EdgeFakes.prism(4, z0: 1000, z1: 1100)
+    raised[4].faces[0].reverse!  # its top
+    (bodies << raised).each_with_index do |edges, k|
+      assert_equal 12, chamfer(@scene.body(edges))["stats"]["succeeded"], "body #{k}"
+    end
+    assert_equal [[:start, "Chamfer Edges"], :commit] * 7, @scene.model.log
+  end
+
+  def test_a_body_that_is_not_closed_is_not_checked
+    # An open shell has no inside, so the sign of its volume means nothing.
+    # This one is inside-out all the same: unchecked, it reaches the
+    # selection, which reads every edge as concave.
+    volumes = []
+    stub_singleton(OPS, :signed_volume) do |faces|
+      volumes << faces
+      -1.0
+    end
+    body = @scene.body(inside_out_box, manifold: false)
+    err = assert_raises(StructuredError) { chamfer(body) }
+    assert_empty volumes, "the inside-out check ran on a body that is not closed"
+    assert_equal(-32602, err.code)
+    assert_equal "no feature edges to chamfer on target_id=#{body.entityID} " \
+                 "(all 12 edges are surface seams or concave edges)", err.message
+    assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
   end
 
   # ---------- a subtract that fails ----------

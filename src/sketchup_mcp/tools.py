@@ -506,9 +506,10 @@ async def chamfer_edge(
     surfaces are chamfered segment by segment. Concave (inside-corner) edges,
     such as the base of a post or the inner corner of an L-shaped block, are
     skipped too: chamfering them would need added material. A body with no
-    feature edges fails with -32602. One call runs at most 30 s inside
-    SketchUp; past that it rolls back and changes nothing. Unreliable on
-    non-manifold geometry.
+    feature edges fails with -32602, as does an inside-out body (faces
+    pointing inward): reverse its faces first. One call runs at most 30 s
+    inside SketchUp; past that it rolls back and changes nothing. Unreliable
+    on non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_chamfered,
     stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
@@ -540,8 +541,10 @@ async def fillet_edge(
     tessellated curve. Also skips concave (inside-corner) edges, such as the
     base of a post or the inner corner of an L-shaped block: rounding them would
     need added material. A body with no straight feature edges (cylinder, cone,
-    sphere) fails with -32602. One call runs at most 30 s inside SketchUp; past
-    that it rolls back and changes nothing. Unreliable on non-manifold geometry.
+    sphere) fails with -32602, as does an inside-out body (faces pointing
+    inward): reverse its faces first. One call runs at most 30 s inside
+    SketchUp; past that it rolls back and changes nothing. Unreliable on
+    non-manifold geometry.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_filleted,
     stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,

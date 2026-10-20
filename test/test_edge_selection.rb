@@ -13,6 +13,9 @@
 # into the face from the edge's midpoint (Face#classify_point), not from the
 # face's bounds centre, which lies in the hole on a face with an inner loop.
 #
+# Before any of that, a closed body that is inside-out as a whole (its signed
+# volume is negative) is refused: every edge of it reads concave.
+#
 # All of this is pure geometry over duck-typed edges
 # (test/support/edge_fakes.rb) and needs no SketchUp.
 #
@@ -410,6 +413,48 @@ class TestEdgeSelection < Minitest::Test
         assert_equal [12, 0, 0, 0], counts(sel), "face #{k} reversed, skip_curved: #{skip_curved}"
       end
     end
+  end
+
+  # ---------- inside-out bodies ----------
+
+  def test_signed_volume_of_an_outward_body_is_its_volume
+    # A 24-gon of radius 20, the post's footprint and the hole's section.
+    ngon = 0.5 * 24 * 20.0**2 * Math.sin(2 * Math::PI / 24)
+    {
+      "box (a square prism of radius 50)" => [EdgeFakes.box, 500_000.0],
+      "L-block" => [EdgeFakes.l_block, 750_000.0],
+      "box ∪ cylinder" => [EdgeFakes.box_with_post(24), 1_000_000.0 + ngon * 50],
+      "box − cylinder" => [EdgeFakes.box_with_hole(24), 1_000_000.0 - ngon * 100]
+    }.each do |name, (edges, volume)|
+      assert_in_delta volume, OPS.signed_volume(faces_of(edges)), 1e-6, name
+    end
+    { "cylinder" => EdgeFakes.prism(24), "cone" => EdgeFakes.cone, "sphere" => EdgeFakes.sphere }.each do |name, edges|
+      assert_operator OPS.signed_volume(faces_of(edges)), :>, 0, name
+    end
+  end
+
+  def test_signed_volume_turns_negative_only_inside_out
+    faces = faces_of(EdgeFakes.box)
+    faces.each(&:reverse!)
+    assert_in_delta(-500_000.0, OPS.signed_volume(faces), 1e-6)
+
+    # One reversed face keeps the sign, wherever the body sits. Measured
+    # from the frame's origin, the reversed top of the box 1000 above it
+    # would outweigh the rest; measured from the body's own centre, it
+    # cannot.
+    { "box" => EdgeFakes.box,
+      "box 1000 above the origin" => EdgeFakes.prism(4, z0: 1000, z1: 1100),
+      "cylinder" => EdgeFakes.prism(24) }.each do |name, edges|
+      faces_of(edges).each_with_index do |face, k|
+        face.reverse!
+        assert_operator OPS.signed_volume(faces_of(edges)), :>, 0, "#{name}, face #{k} reversed"
+        face.reverse!
+      end
+    end
+  end
+
+  def test_signed_volume_of_no_faces_is_zero
+    assert_equal 0.0, OPS.signed_volume([])
   end
 
   # ---------- the side of a cut ----------
