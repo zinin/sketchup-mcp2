@@ -177,10 +177,10 @@ module MCPforSketchUp
       # seams of a curved surface or a concave edge, and with skip_curved
       # (fillet) not a curved rim either. A closed target turned inside out
       # as a whole (its faces agree and its signed volume is negative) is
-      # refused before the selection, which would read its every edge as
-      # concave. A body the subtract destroyed and a breach of
-      # EDGE_OP_BUDGET_S raise like any other failure, so the whole call
-      # rolls back.
+      # refused before the selection, which would read every edge the wrong
+      # way round: a convex edge as concave, a concave one as convex. A body
+      # the subtract destroyed and a breach of EDGE_OP_BUDGET_S raise like
+      # any other failure, so the whole call rolls back.
       def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in, skip_curved: false)
         # Type-guard edge_indices BEFORE start_operation: a non-Array (String/
         # Integer/Hash from a direct/malformed TCP client that bypasses the
@@ -200,12 +200,14 @@ module MCPforSketchUp
           E.require_group_or_component!(entity, "#{op_name} target")
           target_entities = E.mutable_entity_collection(entity)
           edges = target_entities.grep(Sketchup::Edge)
-          # A body whose faces all point into it reads concave at every edge,
-          # and the selection would refuse it for the wrong cause. It is
-          # refused here when it is closed (an open shell has no inside), its
-          # faces agree and its signed volume is negative. With some faces
-          # reversed the sign means little (one large reversed face can turn
-          # it), and the selection takes such a body as it is.
+          # A body whose faces all point into it reads every edge the wrong
+          # way round: a convex edge as concave, a concave one as convex. The
+          # selection would refuse a body of convex edges for the wrong cause
+          # (all of them concave) and cut into the concave edges of another.
+          # It is refused here when it is closed (an open shell has no
+          # inside), its faces agree and its signed volume is negative. With
+          # some faces reversed the sign means little (one large reversed
+          # face can turn it), and the selection takes such a body as it is.
           if entity.manifold? && consistently_oriented?(edges) &&
              signed_volume(target_entities.grep(Sketchup::Face)) < 0
             raise Core::StructuredError.new(-32602,
@@ -695,7 +697,11 @@ module MCPforSketchUp
       # with exactly two faces runs one way in one face's loop and the other
       # way in the other's (Edge#reversed_in? differs). A body turned inside
       # out as a whole agrees too; one with some of its faces reversed does
-      # not. Edges with fewer or more faces have no pair to compare.
+      # not. Edges with fewer or more faces have no pair to compare. The test
+      # is per edge, so shells that share no edge are never compared with each
+      # other: a solid of several shells, one of them wholly reversed, passes
+      # it, and the sign of the net volume (signed_volume) decides for them
+      # all.
       def self.consistently_oriented?(edges)
         edges.all? do |edge|
           faces = edge.faces
