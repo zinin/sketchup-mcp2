@@ -40,7 +40,10 @@ jobs:
           # 3.10: the oldest supported Python. Not 3.14: there mcp 1.30 itself
           # requires pydantic >= 2.12, so the pydantic floor cannot be installed.
           python-version: '3.10'
-      - run: uv venv
+      # setup-uv v5 has already created and activated .venv for python-version
+      # (later majors do not), and uv refuses to replace an existing venv
+      # without --clear.
+      - run: uv venv --clear
       # The two pins are the floors in pyproject.toml (mcp>=1.30, pydantic>=2.11;
       # 2.11.0 is also mcp 1.30's own floor below Python 3.14): change them
       # together. They go into the venv with `uv pip install`; `uv sync` would
