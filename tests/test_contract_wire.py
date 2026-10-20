@@ -12,6 +12,9 @@ It needs ruby on PATH, so it runs only when asked; CI runs it in the
 `contract` job:
 
     SKETCHUP_MCP_CONTRACT=1 uv run --locked pytest tests/test_contract_wire.py -q
+
+Asked for without ruby on PATH, it fails rather than skips, so that job
+cannot turn green without running it.
 """
 import json
 import os
@@ -28,8 +31,8 @@ from sketchup_mcp.app import mcp
 from sketchup_mcp.connection import SketchUpConnection
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("SKETCHUP_MCP_CONTRACT") != "1" or not shutil.which("ruby"),
-    reason="wire contract: needs SKETCHUP_MCP_CONTRACT=1 and ruby on PATH",
+    os.environ.get("SKETCHUP_MCP_CONTRACT") != "1",
+    reason="wire contract: runs only with SKETCHUP_MCP_CONTRACT=1 (needs ruby on PATH)",
 )
 
 _ECHO_SERVER = (
@@ -142,8 +145,16 @@ def _text_of(result) -> str:
 
 
 async def test_every_mcp_tool_reaches_ruby_with_the_arguments_it_sent(
-    echo_server, monkeypatch
+    request, monkeypatch
 ):
+    # Checked before the echo_server fixture starts ruby, so that a missing
+    # ruby fails this test with a message rather than erroring in setup.
+    if not shutil.which("ruby"):
+        pytest.fail(
+            "SKETCHUP_MCP_CONTRACT=1 is set but ruby is not on PATH: the wire "
+            "contract test needs it to run test/contract/echo_server.rb"
+        )
+    echo_server = request.getfixturevalue("echo_server")
     conn = SketchUpConnection("127.0.0.1", echo_server.port, timeout=5)
     sent = []
     send_command = conn.send_command
