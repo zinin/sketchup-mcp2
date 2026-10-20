@@ -16,7 +16,8 @@
 # Constructors: FakeVertex.new(position), FakeFace.new(normal, loops),
 # FakeEdge.new(start_vertex, end_vertex, faces). A face answers #classify_point
 # and #bounds from its loops (the outer loop, then its holes); one built from a
-# normal alone has nothing to probe and raises if asked.
+# normal alone has nothing to probe and raises if asked. #reverse! turns a face
+# inside out, as Face#reverse! does, for a body with a wrongly oriented face.
 #
 # The Sketchup stubs are guarded: other test files define their own empty
 # Sketchup::Edge / Sketchup::Face, and under run_all every file loads before
@@ -136,6 +137,13 @@ module EdgeFakes
       else
         Sketchup::Face::PointOutside
       end
+    end
+
+    # Like Face#reverse!: the face's normal points the other way. The loops
+    # stay as they are; nothing here reads their order.
+    def reverse!
+      @normal = @normal.reverse
+      self
     end
 
     # True when points `a` and `b` are the two ends of a side of a loop.

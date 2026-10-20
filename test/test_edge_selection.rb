@@ -57,6 +57,11 @@ class TestEdgeSelection < Minitest::Test
     subset.map { |picked| all.index { |e| e.equal?(picked) } }
   end
 
+  # The distinct faces of a body, in the order its edges first list them.
+  def faces_of(edges)
+    edges.flat_map(&:faces).uniq
+  end
+
   def pt(x, y, z = 0.0)
     FakePt.new(x.to_f, y.to_f, z.to_f)
   end
@@ -307,6 +312,27 @@ class TestEdgeSelection < Minitest::Test
     refute OPS.concave_edge?(edge_on), "loose edge, no faces"
     refute OPS.concave_edge?(edge_on(UP)), "boundary edge"
     refute OPS.concave_edge?(edge_on(UP, tilted(10.0), tilted(20.0))), "three faces"
+  end
+
+  def test_one_reversed_face_does_not_make_convex_edges_concave
+    # A face turned inside out has its normal pointing into the body. Judged
+    # from one direction alone, an edge whose second face was the reversed one
+    # read as concave: 3 of a box's 12 edges were skipped, and which ones
+    # depended on the order of the edge's face list. Both directions must say
+    # so, and with a single bad face one of them always says no.
+    concave = ->(list) { list.each_index.select { |i| OPS.concave_edge?(list[i]) } }
+    assert_equal 6, faces_of(EdgeFakes.box).size, "a box has six faces"
+    6.times do |k|
+      edges = EdgeFakes.box
+      faces_of(edges)[k].reverse!
+      swapped = edges.map { |edge| FakeEdge.new(edge.start, edge.end, edge.faces.reverse) }
+      assert_empty concave.call(edges), "face #{k} reversed: edges read as concave"
+      assert_empty concave.call(swapped), "face #{k} reversed, faces swapped: edges read as concave"
+      [false, true].each do |skip_curved|
+        sel = OPS.select_feature_edges(edges, skip_curved: skip_curved)
+        assert_equal [12, 0, 0, 0], counts(sel), "face #{k} reversed, skip_curved: #{skip_curved}"
+      end
+    end
   end
 
   # ---------- the side of a cut ----------

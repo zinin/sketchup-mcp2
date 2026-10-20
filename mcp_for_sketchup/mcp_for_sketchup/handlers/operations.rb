@@ -590,16 +590,27 @@ module MCPforSketchUp
 
       # True for a concave (inside-corner) edge, such as the base of a post or
       # the inner corner of an L-shaped block: the perpendicular from the edge
-      # into one face's material points to the outward side of the other face
+      # into each face's material points to the outward side of the other face
       # (face normals point out of the solid). Chamfering or rounding such an
       # edge would need added material; the subtracted wedge would cut into
       # the body instead. Boundary, loose and non-manifold edges
       # (faces.length != 2) are not concave.
+      #
+      # Both directions must say so. With consistent normals the two dot
+      # products are equal (-sin of the angle between the normals for a convex
+      # edge, +sin for a concave one), so they always agree on a well-oriented
+      # body. With one face turned inside out only one of them flips, and that
+      # face's convex edges are kept, whichever face the edge lists first. A
+      # body turned inside out as a whole still reads as concave all over. The
+      # second perpendicular is worked out only when the first one says concave.
       def self.concave_edge?(edge)
         faces = edge.faces
         return false unless faces.length == 2
         edge_mid, edge_dir = edge_mid_and_dir(edge)
-        in_face_perp_inward(faces[0], edge_mid, edge_dir).dot(faces[1].normal) > 0
+        perp_a = in_face_perp_inward(faces[0], edge_mid, edge_dir)
+        return false unless perp_a.dot(faces[1].normal) > 0
+        perp_b = in_face_perp_inward(faces[1], edge_mid, edge_dir)
+        perp_b.dot(faces[0].normal) > 0
       end
 
       # Segments of a polygonized curve, e.g. a cylinder rim: edges of `edges`
