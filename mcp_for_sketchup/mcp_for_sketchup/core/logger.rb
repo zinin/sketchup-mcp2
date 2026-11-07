@@ -7,6 +7,19 @@ module MCPforSketchUp
       # User-visible identifier prepended to every log line so multiple
       # extensions sharing the SketchUp Ruby console can be distinguished.
       LINE_PREFIX = "[MCPforSU]".freeze
+      RECENT_LOG_LIMIT = 200
+      RECENT_LOG_TEXT_LIMIT = 4000
+
+      # Bounded diagnostic history for the existing settings window. This uses
+      # the same severity-filtered emission path as the console and log file.
+      def self.recent_logs(after_id = 0)
+        cursor = Integer(after_id.to_s, 10)
+        cursor = 0 if cursor < 0 || cursor > (@log_sequence || 0)
+        entries = (@recent_logs || []).select { |entry| entry[:id] > cursor }
+        { entries: entries.map(&:dup), cursor: @log_sequence || 0 }
+      rescue ArgumentError, TypeError
+        recent_logs(0)
+      end
 
       def self.log(level, msg)
         return if Config.level_value_for(level) < Config.level_value
@@ -70,14 +83,29 @@ module MCPforSketchUp
                       "logging to console only until the next successful file write")
       end
 
+      def self.remember_line(line)
+        @log_sequence = (@log_sequence || 0) + 1
+        @recent_logs ||= []
+        @recent_logs << {
+          id: @log_sequence,
+          level: line[/\[(DEBUG|INFO|WARN|ERROR)\]/, 1] || "DEBUG",
+          text: line.to_s.encode("UTF-8", invalid: :replace, undef: :replace)[0, RECENT_LOG_TEXT_LIMIT],
+        }
+        @recent_logs.shift while @recent_logs.length > RECENT_LOG_LIMIT
+      rescue StandardError
+        # History is optional; a bad diagnostic must not break console output.
+        nil
+      end
+
       def self._emit_console(line)
+        remember_line(line)
         if defined?(SKETCHUP_CONSOLE) && SKETCHUP_CONSOLE
           SKETCHUP_CONSOLE.write(line + "\n")
         else
           $stdout.puts(line)
         end
       end
-      private_class_method :_emit, :append_to_file, :_emit_console
+      private_class_method :_emit, :append_to_file, :_emit_console, :remember_line
     end
   end
 end

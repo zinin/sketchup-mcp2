@@ -94,6 +94,13 @@ All dimensions in **millimeters**; angles in **degrees**. Every entity-returning
 
 Open `Plugins → MCP Server → Settings...` to change **Host**, **Port**, **Log Level**, the **Ruby evaluation** gate, and **log-to-file** options. Values persist in SketchUp's preferences under section `MCPforSketchUp`. No environment variables are read on the Ruby side.
 
+The same settings window includes **Live logs**, updated twice per second while visible.
+It shows up to 200 recent console events with severity colors, a severity selector,
+and text search. **Clear** clears only the displayed history, leaving the Ruby Console
+and log file untouched. The saved Log Level controls which events are emitted;
+selecting “All levels” in the viewer cannot recover events suppressed by that setting.
+Entries are limited to 4,000 characters in this view; console and file output remain unchanged.
+
 The Ruby side logs at **`WARN` by default**, so it stays quiet in SketchUp's shared Ruby console; any line it does print is prefixed `[MCPforSU]` with a UTC timestamp. Enable **Log to file** to mirror every line to a UTF-8 log file **in addition to** the console (`Plugins → MCP Server → Show Log` opens it). The file is written append-only — there is no automatic rotation or size cap, so rotate or clean it up yourself for long-lived sessions.
 
 `eval_ruby` — the arbitrary-Ruby escape hatch — is **enabled by default**. Uncheck **Enable Ruby evaluation** in the Settings dialog to close the gate; the setting persists across SketchUp restarts, and re-enabling it pops a blocking confirmation spelling out the risk (arbitrary Ruby ⇒ full filesystem / network / shell access). With the gate closed, a client's `eval_ruby` call comes back as a plain message telling the user how to re-open it.
