@@ -10,6 +10,15 @@ permissions:
   contents: read
 
 jobs:
+  settings-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: node test/settings_ui_test.js
+
   ruby:
     runs-on: ubuntu-latest
     steps:
