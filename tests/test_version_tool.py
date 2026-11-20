@@ -188,3 +188,24 @@ async def test_get_version_ignores_released_plugin_max(monkeypatch):
     assert set(payload) == PAYLOAD_KEYS
     assert payload["compatible"] is True
     assert payload["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_missing_token_is_in_the_payload(monkeypatch):
+    """M-06: without SKETCHUP_MCP_TOKEN, get_version answers with the
+    instruction and opens no socket."""
+    from unittest.mock import patch
+
+    from sketchup_mcp import config
+    from sketchup_mcp import connection as conn_module
+
+    monkeypatch.setattr(conn_module, "_connection", None)
+    monkeypatch.setattr(config, "TOKEN", None)
+    with patch(
+        "sketchup_mcp.connection.asyncio.open_connection",
+        side_effect=AssertionError("no socket without a token"),
+    ):
+        payload = _extract_payload(await mcp.call_tool("get_version", {}))
+    assert payload["compatible"] is False
+    assert payload["ruby_version"] is None
+    assert payload["error"].startswith("SKETCHUP_MCP_TOKEN is not set.")

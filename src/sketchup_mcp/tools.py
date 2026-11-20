@@ -18,7 +18,12 @@ from sketchup_mcp import compat, config
 from sketchup_mcp.annotations import TOOL_ANNOTATIONS
 from sketchup_mcp.app import mcp
 from sketchup_mcp.connection import get_connection
-from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError, format_error
+from sketchup_mcp.errors import (
+    AuthenticationError,
+    IncompatibleVersionError,
+    SketchUpError,
+    format_error,
+)
 
 logger = logging.getLogger("sketchup_mcp.tools")
 
@@ -69,7 +74,13 @@ def _tool_error(e: SketchUpError, tool_name: str) -> CallToolResult:
     """``format_error``'s "[code] message" as an error result. Locally raised
     transport errors (timeout, stale socket, oversize) carry no ``tool`` in
     data, and format_error would render ``tool=?``: backfill it. setdefault
-    never overrides a Ruby-origin error that carries its own ``tool``."""
+    never overrides a Ruby-origin error that carries its own ``tool``.
+
+    An ``AuthenticationError`` is the exception: its message is an instruction
+    only the user can carry out (copy the token), so it goes out verbatim, like
+    the eval-gate message (M-06)."""
+    if isinstance(e, AuthenticationError):
+        return _error(e.message)
     e.data.setdefault("tool", tool_name)
     return _error(format_error(e, debug=config.LOG_LEVEL == "DEBUG"))
 

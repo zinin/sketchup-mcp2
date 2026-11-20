@@ -79,6 +79,18 @@ def _msg_ruby_too_old(rv: str) -> str:
     )
 
 
+def _msg_ruby_unauthenticated(rv: str) -> str:
+    # M-06: a hello reply without server_nonce and server_proof comes from a
+    # plugin that predates socket authentication — like an old version, it must
+    # be upgraded (spec §7.2: the version message, not an authentication error).
+    return (
+        f"SketchUp plugin v{rv} pre-dates socket authentication, which "
+        f"sketchup-mcp2 v{CLIENT_VERSION} requires. "
+        "Install the latest mcp_for_sketchup .rbz from the GitHub releases page. "
+        "Call `get_version` to inspect handshake state."
+    )
+
+
 def _msg_ruby_missing() -> str:
     return (
         "SketchUp plugin pre-dates version-compat checking. "
