@@ -711,3 +711,26 @@ The first live look showed the window too tall: on the user's screen at their sc
 - [ ] **Step 3: Re-lay out `settings.html` and size the dialog**
 - [ ] **Step 4: Run the Ruby suite; build the `.rbz` for Task 9**
 - [ ] **Step 5: Commit** (`feat: a compact Settings window`)
+
+---
+
+### Task 11: The token in a file of its own (after the live check of Task 9)
+
+The live check found that a regenerated token does not survive a crash: SketchUp writes `Sketchup.write_default` preferences to disk only when it closes normally, so after Regenerate and a forced kill the old token came back and the new one was refused. The user chose a file of the plugin's own; no migration from the preference (it never shipped). Spec §7.1 updated.
+
+**Files:**
+- Modify: `mcp_for_sketchup/mcp_for_sketchup/core/config.rb`
+- Test: `test/test_config_token.rb` (rewritten for the file)
+- Docs: `CLAUDE.md`, `README.md`
+
+**Interfaces:**
+- `Config.token_path(env: ENV, platform: RUBY_PLATFORM, home: Dir.home) -> String`: `<base>/MCPforSketchUp/auth_token`, base `%APPDATA%` (Windows), `~/Library/Application Support` (macOS), `~/.config` (anything else).
+- `Config.load_token!(path = token_path)` and `Config.regenerate_token!(path = token_path)` keep their contracts (a valid token is kept; a missing or malformed one is replaced and written, a failed write still serves the session; Regenerate writes before the token takes effect and raises on a failed write). A read error other than a missing file gives this session a new token and leaves the file alone. `TOKEN_KEY` goes.
+- The write: directory `0700`, temporary file `0600` next to the target, flushed and fsynced, then renamed over it; a failed write leaves no temporary file.
+
+- [ ] **Step 1: Rewrite `test/test_config_token.rb` for the file** (temporary directory per test): creates and writes; keeps a valid token (a trailing newline is fine, the file stays as it was); replaces a malformed one and warns with the path, not the contents; keeps the token when the write fails; leaves a file it cannot read alone; regenerate writes before it takes effect, leaves no temporary file; a failed rename keeps the old token in memory and on disk; file `0600` and directory `0700` (POSIX); `token_path` per platform.
+- [ ] **Step 2: Run it to verify it fails**
+- [ ] **Step 3: Implement in `config.rb`**
+- [ ] **Step 4: Run the Ruby suite; update CLAUDE.md and README; build the `.rbz`**
+- [ ] **Step 5: Commit** (`fix: keep the token in a file written at once, so Regenerate survives a crash`)
+- [ ] **Step 6: Live: Regenerate, kill SketchUp, restart — the new token is accepted, the old one refused.**
