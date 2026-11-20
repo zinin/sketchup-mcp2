@@ -86,11 +86,15 @@ module MCPforSketchUp
       # `position` — АБСОЛЮТНАЯ цель (T-04, решение 2026-07-02): entity
       # переносится так, чтобы минимальный угол его bbox оказался ровно в
       # заданной точке (тот же якорь, что у create_component.position).
-      # rotation/scale остаются относительными, вокруг центра bbox.
+      # Block A (M-03): цель и bbox — МИРОВЫЕ, и для вложенных entity тоже.
+      # rotation/scale остаются относительными: вокруг мировых осей X/Y/Z
+      # через центр мирового bbox. Каждое мировое действие W применяется в
+      # системе родителя как P⁻¹·W·P (Frames.conjugate), где P — матрица
+      # родителей (walk); на верхнем уровне P — единичная.
       # Порядок применения: rotation → scale → position (ПОСЛЕДНЕЙ, и он
       # намеренно не совпадает с порядком аргументов) — дельта берётся от
-      # пост-трансформационного bounds.min, итоговый bbox-min равен цели
-      # даже в комбинированных вызовах (ревью iter-1, CRIT-5).
+      # пост-трансформационного мирового bbox-min, итоговый bbox-min равен
+      # цели даже в комбинированных вызовах (ревью iter-1, CRIT-5).
       def self.transform_component(params)
         id = V.require_id(params)
         # position/scale in mm (rotation in degrees — not a size)
@@ -111,18 +115,18 @@ module MCPforSketchUp
         O.run(model, "Transform Component") do
           entity = E.find!(id)
           E.require_group_or_component!(entity, "entity #{id}")
-          F.require_unshared!(entity, "entity #{id}")
+          parent = F.require_unshared!(entity, "entity #{id}").matrix
           if rotation
-            apply_rotation(entity, rotation)
+            apply_rotation(entity, rotation, parent)
           end
           if scale
-            center = entity.bounds.center
-            entity.transform!(Geom::Transformation.scaling(center, scale[0], scale[1], scale[2]))
+            center = F.center(F.world_box(entity.bounds, parent))
+            entity.transform!(F.transformation(F.conjugate(F.scaling(center, *scale), parent)))
           end
           if position
-            delta = position_delta(entity.bounds.min, position)
-            entity.transform!(Geom::Transformation.translation(
-              Geom::Point3d.new(delta[0], delta[1], delta[2])))
+            world_min = F.world_box(entity.bounds, parent)[0]
+            delta = position_delta(world_min, position)
+            entity.transform!(F.transformation(F.conjugate(F.translation(*delta), parent)))
           end
           describe_entity(entity)
         end
@@ -131,11 +135,12 @@ module MCPforSketchUp
       # ----- private builders ----------------------------------------------
 
       # Pure math (юнит-тестится без SketchUp): вектор переноса, доставляющий
-      # bbox-min `current_min` в точку `target`. Оба аргумента — в дюймах.
-      def self.position_delta(current_min, target)
-        [target[0] - current_min.x,
-         target[1] - current_min.y,
-         target[2] - current_min.z]
+      # мировой bbox-min `world_min` в точку `target`. Оба — [x, y, z] в
+      # дюймах.
+      def self.position_delta(world_min, target)
+        [target[0] - world_min[0],
+         target[1] - world_min[1],
+         target[2] - world_min[2]]
       end
 
       def self.default_segments_for(type)
@@ -292,13 +297,14 @@ module MCPforSketchUp
         group
       end
 
-      def self.apply_rotation(entity, rot_degrees)
-        center = entity.bounds.center
-        axes = [Geom::Vector3d.new(1, 0, 0), Geom::Vector3d.new(0, 1, 0), Geom::Vector3d.new(0, 0, 1)]
+      # Turns about the world X, then Y, then Z axis through the centre of the
+      # world bbox, taken once before the first turn; zero angles are skipped.
+      # `parent` is the matrix of the entity's parents (Frames.placement).
+      def self.apply_rotation(entity, rot_degrees, parent)
+        center = F.center(F.world_box(entity.bounds, parent))
         rot_degrees.each_with_index do |deg, i|
           next if deg == 0
-          rad = deg * Math::PI / 180
-          entity.transform!(Geom::Transformation.rotation(center, axes[i], rad))
+          entity.transform!(F.transformation(F.conjugate(F.rotation(center, i, deg), parent)))
         end
       end
     end
