@@ -33,29 +33,4 @@ class TestJointsValidation < Minitest::Test
     assert_equal(-32602, err.code)
     assert_match(/offset_x/, err.message)
   end
-
-  private
-
-  def assert_rejected(field)
-    err = assert_raises(MCPforSketchUp::Core::StructuredError) { yield }
-    assert_equal(-32602, err.code)
-    assert_match(/#{field}/, err.message)
-  end
-
-  # Явный сигнал вместо NoMethodError (M-04): стаб active_model! кидает
-  # маркер — тест не станет ложно-зелёным, если валидация переедет ниже по
-  # методу. Method сохраняется: под run_all Entities реальный (def self. =
-  # singleton-метод), remove_method без сохранения удалил бы его насовсем.
-  # remove перед повторным define — чтобы `ruby -w` не ругался на redefine.
-  def assert_passes_validation
-    e = MCPforSketchUp::Helpers::Entities
-    orig = e.respond_to?(:active_model!) ? e.method(:active_model!) : nil
-    e.singleton_class.send(:remove_method, :active_model!) if orig
-    e.define_singleton_method(:active_model!) { raise "validation passed" }
-    err = assert_raises(RuntimeError) { yield }
-    assert_equal "validation passed", err.message
-  ensure
-    e.singleton_class.send(:remove_method, :active_model!)
-    e.define_singleton_method(:active_model!, orig) if orig
-  end
 end

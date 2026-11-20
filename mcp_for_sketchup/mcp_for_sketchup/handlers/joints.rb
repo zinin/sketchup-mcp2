@@ -15,6 +15,12 @@ module MCPforSketchUp
       # and converted to inches before SketchUp API. Defaults sized for
       # visibility on a 100mm cube — old monolith default of 1.0 inch becomes
       # invisibly small (1mm) under mm-conversion.
+      #
+      # The boards touch face to face in one parent, and the joint is centred
+      # on their contact area (contact_area, joint_box). One operation cuts
+      # the mortise and joins the tenon, and commits only when verify_joint!
+      # accepts both results; anything else rolls back, so no half-built
+      # joint reaches the model.
 
       def self.create_mortise_tenon(params)
         mortise_id = V.require_id(params, "mortise_id")
@@ -29,26 +35,35 @@ module MCPforSketchUp
         model = E.active_model!
         model.start_operation("Mortise and Tenon", true)
         begin
-          reset_joint_stats!
           mortise_board = E.find!(mortise_id)
           tenon_board   = E.find!(tenon_id)
           E.require_group_or_component!(mortise_board, "mortise board")
           E.require_group_or_component!(tenon_board,   "tenon board")
+          require_joinable!(mortise_board, tenon_board)
 
-          direction = (tenon_board.bounds.center - mortise_board.bounds.center)
-          mortise_face = closest_face(direction)
-          tenon_face   = closest_face(direction.reverse)
+          contact = contact_area(board_box(mortise_board), board_box(tenon_board))
+          box     = joint_box(contact, width, height, depth, [ox, oy, oz])
 
-          mortise_board = place_mortise(mortise_board, width, height, depth, mortise_face, ox, oy, oz)
-          place_tenon(tenon_board,    width, height, depth, tenon_face,   ox, oy, oz)
+          mortise_before   = mortise_board.volume
+          tenon_before     = tenon_board.volume
+          mortise_identity = E.identity_of(mortise_board)
+          tenon_identity   = E.identity_of(tenon_board)
 
-          assert_some_cut!("Mortise and Tenon")
-          model.commit_operation
-          {
-            "mortise" => MCPforSketchUp::Handlers::Geometry.describe_entity(mortise_board),
-            "tenon"   => MCPforSketchUp::Handlers::Geometry.describe_entity(tenon_board),
-            "boolean_cuts" => joint_cut_stats
+          mortise = cut_mortise(mortise_board, box)
+          tenon   = attach_tenon(tenon_board, box)
+          verify_joint!(mortise, tenon, width * height * depth, mortise_before, tenon_before)
+          E.restore_identity!(mortise, mortise_identity)
+          E.restore_identity!(tenon,   tenon_identity)
+
+          # The response is built before commit_operation: commit has been
+          # seen to invalidate the proxies of solid-operation results
+          # (operations.rb, run_edge_op).
+          response = {
+            "mortise" => MCPforSketchUp::Handlers::Geometry.describe_entity(mortise),
+            "tenon"   => MCPforSketchUp::Handlers::Geometry.describe_entity(tenon)
           }
+          model.commit_operation
+          response
         rescue StandardError
           MCPforSketchUp::Handlers::Geometry.safe_abort(model)
           raise
@@ -161,151 +176,121 @@ module MCPforSketchUp
         format("%.1f", cubic_inches * U::MM**3)
       end
 
-      # ===== Internal geometry helpers (carved from monolith) ================
+      # ===== Building and checking the joint (SketchUp) ======================
 
-      # --- Boolean-cut failure tracking (codex review) -----------------------
-      # Group#subtract returns nil when a boolean cut fails — routine on
-      # non-manifold geometry (see CLAUDE.md). The joint builders used to
-      # swallow that nil and fall back to the UNCUT board, so the handler
-      # reported success for a joint that produced no geometry. These helpers
-      # count attempts + failures (single-threaded UI model ⇒ module ivars are
-      # safe, same pattern as operations.rb @_last_stats) so the public handlers
-      # can (a) raise on a COMPLETE no-op instead of faking success and
-      # (b) surface partial failures via "boolean_cuts" in the response.
-      def self.reset_joint_stats!
-        @_joint_cuts_attempted = 0
-        @_joint_cuts_failed    = 0
+      # What to try when SketchUp's solid tools fail on a joint or give a
+      # result the post-check refuses.
+      SOLID_TOOLS_ADVICE =
+        "A face of the joint that lies in a face of a board can defeat SketchUp's solid " \
+        "tools: make the depth differ from the mortise board's thickness, keep the joint " \
+        "off the edge of the contact area, or build this joint with eval_ruby"
+
+      # The board's bounding box in its parent's frame, as plain Floats: a
+      # SketchUp Length compares within SketchUp's tolerance, and the pure
+      # functions above apply their own.
+      def self.board_box(board)
+        b = board.bounds
+        [[b.min.x.to_f, b.min.y.to_f, b.min.z.to_f], [b.max.x.to_f, b.max.y.to_f, b.max.z.to_f]]
       end
 
-      def self.subtract_tracked(cutter, target)
-        result = cutter.subtract(target)
-        @_joint_cuts_attempted += 1
-        @_joint_cuts_failed    += 1 if result.nil?
-        result
-      end
-
-      def self.assert_some_cut!(op_name)
-        return unless @_joint_cuts_attempted.positive?
-        return unless @_joint_cuts_failed == @_joint_cuts_attempted
-        raise Core::StructuredError.new(-32603,
-          "#{op_name} produced no geometry: all #{@_joint_cuts_attempted} boolean " \
-          "cut(s) failed (likely non-manifold input geometry)")
-      end
-
-      def self.joint_cut_stats
-        { "attempted" => @_joint_cuts_attempted, "failed" => @_joint_cuts_failed }
-      end
-
-      def self.closest_face(vector)
-        # Совпавшие центры досок дают нулевой вектор: normalize! на нём либо
-        # кидает, либо молча оставляет мусор, и «ближайшая грань» выбирается
-        # произвольно. Отклоняем до нормализации.
-        if vector.length < 1e-9
-          raise Core::StructuredError.new(-32602,
-            "cannot infer joint direction: board centers coincide — " \
-            "separate the boards or reposition them")
+      # What lets the bounding boxes stand for the boards: one parent (the
+      # boxes share its frame), axes parallel to the parent's (only then does
+      # a box fit its board) and closed solids (the solid operations and the
+      # volume check need them).
+      def self.require_joinable!(mortise, tenon)
+        unless mortise.parent == tenon.parent
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the mortise and tenon boards are not in the same group; move them into one " \
+            "group or component, or both to the top level of the model")
         end
-        v = vector.clone
-        v.normalize!
-        ax, ay, az = v.x.abs, v.y.abs, v.z.abs
-        if ax >= ay && ax >= az then v.x > 0 ? :east  : :west
-        elsif ay >= az          then v.y > 0 ? :north : :south
-        else                          v.z > 0 ? :top   : :bottom
+        boards = { "mortise board" => mortise, "tenon board" => tenon }
+        boards.each do |label, board|
+          t = board.transformation
+          next if axis_aligned?([t.xaxis.to_a, t.yaxis.to_a, t.zaxis.to_a])
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the #{label} is rotated by an angle that is not a multiple of 90°, and the joint " \
+            "is placed from bounding boxes; rotate the board to a multiple of 90° or build " \
+            "this joint with eval_ruby")
+        end
+        boards.each do |label, board|
+          next if board.manifold?
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the #{label} is not a solid, and the joint is built with SketchUp's solid tools; " \
+            "close its holes and remove stray faces and edges until Entity Info calls it a " \
+            "solid, then try again")
         end
       end
 
-      def self.face_origin(face_dir, bounds, w, h, ox, oy, oz)
-        case face_dir
-        when :east   then [bounds.max.x,                bounds.center.y - w/2 + oy, bounds.center.z - h/2 + oz]
-        when :west   then [bounds.min.x,                bounds.center.y - w/2 + oy, bounds.center.z - h/2 + oz]
-        when :north  then [bounds.center.x - w/2 + ox,  bounds.max.y,                bounds.center.z - h/2 + oz]
-        when :south  then [bounds.center.x - w/2 + ox,  bounds.min.y,                bounds.center.z - h/2 + oz]
-        when :top    then [bounds.center.x - w/2 + ox,  bounds.center.y - h/2 + oy,  bounds.max.z]
-        when :bottom then [bounds.center.x - w/2 + ox,  bounds.center.y - h/2 + oy,  bounds.min.z]
-        end
+      # make_box's x, y, z, w, d, h for the box [[min], [max]].
+      def self.make_box_args(box)
+        min, max = box
+        min + (0..2).map { |a| max[a] - min[a] }
       end
 
-      def self.place_mortise(board, w, h, d, face_dir, ox, oy, oz)
-        origin = face_origin(face_dir, board.bounds, w, h, ox, oy, oz)
-        # Cutter must be a SIBLING of board (in board.parent.entities) for
-        # Group#subtract to work. board.bounds returns coords in the parent
-        # frame, so the cutter built from `origin` lands in the same frame.
-        # For nested boards parent != model.active_entities, so we must NOT
-        # use active_entities here.
-        cutter = board.parent.entities.add_group
-        push_cutter_face(cutter.entities, origin, w, h, d, face_dir)
-        # Group#subtract: A.subtract(B) returns "B - A" (verified empirically).
-        # To cut a mortise out of board, we call cutter.subtract(board), which
-        # returns board - cutter (board with mortise hole). Both groups erased;
-        # new group returned.
-        result = subtract_tracked(cutter, board)
-        result || board                    # if subtract returned nil, fall back to original (still valid)
+      # The mortise: a cutter of the joint's box, cut out of the board with
+      # the reversed Group#subtract — cutter.subtract(board) returns
+      # board − cutter and erases both. The cutter is the board's sibling
+      # (board.parent.entities, not active_entities): Group#subtract needs
+      # siblings, and the box is in the parent's frame. Returns the new
+      # mortise board.
+      def self.cut_mortise(board, box)
+        cutter = MCPforSketchUp::Helpers::Geometry.make_box(board.parent.entities, *make_box_args(box))
+        result = cutter.subtract(board)
+        solid_result!(result, "cut the mortise into the mortise board")
       end
 
-      def self.place_tenon(board, w, h, d, face_dir, ox, oy, oz)
-        # NB: same origin construction as mortise but extrudes outward instead
-        # of cutting inward. Implementation detail kept compatible with monolith.
-        #
-        # Frames in play:
-        #   - origin:                board.parent frame (because board.bounds
-        #                            is parent-frame for Group/ComponentInstance)
-        #   - prot.definition.entities: parent frame (we build the face there)
-        #   - target collection:     board.entities (board's LOCAL frame)
-        #
-        # We need the new instance to land at `origin` in board.parent's frame,
-        # NOT origin in board's local frame. World position of an instance
-        # added to board.entities is parent_t * T_board * T_inst * geom; with
-        # T_inst = T_board.inverse the T_board's cancel and we get
-        # parent_t * geom — correctly placing geometry at parent-frame origin
-        # for both top-level boards (T_board=identity, T_inst=identity) and
-        # nested/transformed boards.
-        #
-        # `prot.transform!` accumulates T_inv into prot.transformation but does
-        # NOT rewrite the geometry inside prot.definition. So we read back
-        # prot.transformation (= T_inv) and pass it to add_instance.
-        entities = E.mutable_entity_collection(board)
-        origin   = face_origin(face_dir, board.bounds, w, h, ox, oy, oz)
-        prot     = MCPforSketchUp::Helpers::Entities.active_model!.active_entities.add_group
-        begin
-          push_cutter_face(prot.entities, origin, w, h, d, face_dir, outward: true)
-          prot.transform!(board.transformation.inverse)
-          # Sketchup::Group#definition is documented public API — no respond_to? guard.
-          entities.add_instance(prot.definition, prot.transformation) if prot.valid?
-        ensure
-          # Always erase prot, even if any step raised — otherwise we leak an
-          # orphan group into active_entities.
-          prot.erase! if prot && prot.valid?
-        end
+      # The tenon: a piece of the joint's box, the board's sibling like the
+      # cutter, joined to it with union so the board stays one solid (a
+      # nested group would not be part of its body). Returns the new tenon
+      # board.
+      def self.attach_tenon(board, box)
+        piece = MCPforSketchUp::Helpers::Geometry.make_box(board.parent.entities, *make_box_args(box))
+        result = piece.union(board)
+        solid_result!(result, "join the tenon to the tenon board")
       end
 
-      def self.push_cutter_face(entities, o, w, h, d, face_dir, outward: false)
-        # `outward` controls which side of the face is extruded:
-        #   - mortise (cut inward):  outward=false → push into the board (negative)
-        #   - tenon (extrude outward): outward=true → push out of the board (positive)
-        # face_dir gives the axis sign convention; outward flips it.
-        case face_dir
-        when :east, :west
-          face = entities.add_face(
-            [o[0], o[1],     o[2]],
-            [o[0], o[1]+w,   o[2]],
-            [o[0], o[1]+w,   o[2]+h],
-            [o[0], o[1],     o[2]+h])
-          face.pushpull((face_dir == :east ? -d : d) * (outward ? -1 : 1))
-        when :north, :south
-          face = entities.add_face(
-            [o[0],   o[1], o[2]],
-            [o[0]+w, o[1], o[2]],
-            [o[0]+w, o[1], o[2]+h],
-            [o[0],   o[1], o[2]+h])
-          face.pushpull((face_dir == :north ? -d : d) * (outward ? -1 : 1))
-        when :top, :bottom
-          face = entities.add_face(
-            [o[0],   o[1],   o[2]],
-            [o[0]+w, o[1],   o[2]],
-            [o[0]+w, o[1]+h, o[2]],
-            [o[0],   o[1]+h, o[2]])
-          face.pushpull((face_dir == :top ? -d : d) * (outward ? -1 : 1))
-        end
+      # A solid operation's result, or -32603 when it returned nil or a group
+      # that is already gone.
+      def self.solid_result!(result, what)
+        return result if result && result.valid?
+        raise MCPforSketchUp::Core::StructuredError.new(-32603,
+          "SketchUp could not #{what}; the operation was rolled back and the model is " \
+          "unchanged. #{SOLID_TOOLS_ADVICE}")
+      end
+
+      # True when the group's faces make one connected shell: every face is
+      # among the first face's all_connected. A tenon that misses the board's
+      # real face comes out of the union as a second shell.
+      def self.single_shell?(group)
+        faces = E.entity_collection(group).grep(Sketchup::Face)
+        return false if faces.empty?
+        (faces - faces.first.all_connected).empty?
+      end
+
+      # The post-check, before anything is committed. The bounding boxes
+      # cannot see a board that does not fill its box where the boards touch
+      # (an L-shape, a notch, a taper), geometry rotated inside an unrotated
+      # group, or the empty group subtract returns when the cutter shares face
+      # planes with the board; the results show all of them. -32603 unless
+      # both results are solids, their volumes changed as joint_volume_problem
+      # expects and the tenon is one shell with its board.
+      def self.verify_joint!(mortise, tenon, expected, mortise_before, tenon_before)
+        problem =
+          if !mortise.manifold?
+            "the mortise board is no longer a solid"
+          elsif !tenon.manifold?
+            "the tenon board is no longer a solid"
+          elsif (volume = joint_volume_problem(expected, mortise_before, mortise.volume, tenon_before, tenon.volume))
+            volume
+          elsif !single_shell?(tenon)
+            "the tenon did not join the tenon board's body (it is a separate shell)"
+          end
+        return if problem.nil?
+
+        raise MCPforSketchUp::Core::StructuredError.new(-32603,
+          "the joint was not committed: #{problem}; the operation was rolled back and the " \
+          "model is unchanged. Each board must fill its bounding box where the boards touch " \
+          "(no notch, taper or L-shape). #{SOLID_TOOLS_ADVICE}")
       end
     end
   end

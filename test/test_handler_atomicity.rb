@@ -4,10 +4,11 @@
 # The nine mutating handlers wrap their edits in model.start_operation ...
 # model.commit_operation and answer any StandardError with
 # Geometry.safe_abort(model) and a re-raise, so one call is one undo step and
-# a call that fails leaves the model as it was. ROWS holds all nine, so a
-# handler that stops aborting fails here whatever its own tests cover. The
-# last tests read the handler files and find every method that calls
-# start_operation, so a new site without a row fails too, and pin that scan.
+# a call that fails leaves the model as it was.
+# ROWS holds all nine, so a handler that stops aborting fails here
+# whatever its own tests cover. The last tests read the handler files and
+# find the methods that call start_operation, within the limits listed
+# above the scan, so a new site without a row fails too, and pin that scan.
 # They also keep operation handlers and eval_ruby out of READ_ONLY_TOOLS.
 #
 # A row names the handler, a call that passes validation, the model call that
@@ -191,8 +192,8 @@ class TestHandlerAtomicity < Minitest::Test
   # Success-to-commit checks elsewhere: chamfer_edges/fillet_edges in
   # test/test_edge_ops.rb; create_component in test/test_geometry_builders.rb;
   # transform_component in test/test_transform_absolute.rb; boolean_operation
-  # in test/test_boolean_direction.rb. The joinery handlers have none until
-  # joinery is rewritten (part 3).
+  # in test/test_boolean_direction.rb. create_mortise_tenon in
+  # test/test_mortise_tenon.rb.
   COMMITTING = %i[delete_component set_material create_layer].freeze
 
   ROWS.each do |handler, name, params, failing_call, label|
@@ -226,7 +227,9 @@ class TestHandlerAtomicity < Minitest::Test
   # A paren-less call fails loudly in two other cases: every caller of the
   # helper is paren-less (the helper is listed without a row), or a handler
   # that has a row switches to one (its row names a handler the scan no
-  # longer finds). None of the silent patterns is in handlers/ today.
+  # longer finds).
+  # None of the silent patterns was in handlers/ when this was written;
+  # check again when you add a handler.
 
   HANDLER_DIR = File.expand_path("../mcp_for_sketchup/mcp_for_sketchup/handlers", __dir__)
 
