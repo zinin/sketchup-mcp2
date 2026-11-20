@@ -1177,9 +1177,18 @@ async def test_deeply_nested_hello_reply_is_a_parse_error(auth_vectors, monkeypa
     assert "handshake parse error" in ei.value.message
 
 
-async def test_deeply_nested_tool_reply_is_a_parse_error(make_connection, fake_streams):
+async def test_deeply_nested_tool_reply_is_a_parse_error(make_connection, fake_streams, monkeypatch):
+    """A reply nested past the parser's depth raises RecursionError, which the
+    client turns into a parse error and a disconnect. How deep the parser goes
+    depends on the interpreter (Python 3.14 parses 100 000 levels), so the
+    parser is made to raise it."""
+    def too_deep(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("sketchup_mcp.connection.json",
+                        types.SimpleNamespace(loads=too_deep, dumps=json.dumps))
     reader, _writer = fake_streams
-    reader.feed_data(encode_frame(b"[" * 100_000 + b"]" * 100_000))
+    reader.feed_data(encode_frame(b"[[[]]]"))
     conn = make_connection()
     with pytest.raises(SketchUpError) as ei:
         await conn.send_command("get_model_info", {})
