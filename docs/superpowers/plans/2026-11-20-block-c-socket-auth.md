@@ -674,3 +674,40 @@ Expected: one `.rbz` in `mcp_for_sketchup/`.
   9. **Smoke.** `SKETCHUP_MCP_TOKEN=<token> SKETCHUP_MCP_HOST=192.168.20.20 uv run --locked python examples/smoke_check.py` passes all steps.
   10. **Clean start and transport.** The plugin loads with no error in the Ruby console (clean start: the hot-reload blind spot from block A), and `get_viewport_screenshot` returns an image (a frame larger than 4 KiB after the handshake).
 - [ ] **Step 4: Report the results in the ledger; leave the model as it was found (empty template; probes named `probe_*` and erased).**
+
+---
+
+### Task 10: A compact Settings window (after the live check of Task 7)
+
+The first live look showed the window too tall: on the user's screen at their scaling, Save and Cancel fell below its edge (a blank error line reserved under every field, three multi-line warnings, a separate status block, height 780). The user chose the compact single column from three mockups (compact column, tabs, two columns). The checkpoint plan: this task, then a new build, then Task 9.
+
+**Files:**
+- Modify: `mcp_for_sketchup/mcp_for_sketchup/ui/settings.html`, `ui/settings_dialog.rb`
+- Test: `test/test_settings_dialog.rb`
+
+**Layout** (the chosen mockup):
+- **Window and frame.**
+  - The window is `DIALOG_WIDTH = 580` × `DIALOG_HEIGHT = 440`. `build_dialog` also calls `dialog.set_size` with them, because SketchUp may otherwise restore the size it remembered under `preferences_key`.
+  - The body is a column: `<main>` (scrolls when it has to) above a `<footer>` holding Cancel and Save, which always stays in view.
+- **Rows inside `<main>`, top to bottom:**
+  1. The status line: `● Running on host:port`, plus ` — saved settings differ; restart to apply` when they do, or `○ Stopped`.
+  2. One row: Host, then Port.
+  3. One row: Token (read-only, monospace, ellipsis), Copy, Regenerate, (?).
+  4. One row: Log level, then ☐ Also to file. The file path row appears only while that box is checked.
+  5. ☑ Ruby evaluation — any client with the token can run arbitrary Ruby, then (?).
+- **Showing text only on demand.**
+  - An error or note line takes no space until it has text (`:empty { display: none }`).
+  - A non-loopback host shows one warning line, `⚠ Other machines can connect (they need the token); the traffic is not encrypted`, and its (?) opens the full text.
+  - Each (?) is a button with `data-toggle="<id>"` that shows or hides the element with that id. The targets are `host-warning-text`, `token-help` and `eval-warning`; `#eval-warning` keeps its text.
+
+- [ ] **Step 1: Write the failing tests** (`test_settings_dialog.rb`)
+  - `test_errors_and_notes_take_no_space_until_shown`
+  - `test_buttons_sit_in_a_footer_outside_the_scrolling_content`
+  - `test_host_and_port_share_a_row`
+  - `test_log_path_shows_only_when_logging_to_file`
+  - `test_long_texts_open_on_demand`
+  - `test_build_dialog_sets_the_compact_size`, with a fake `UI::HtmlDialog` that records its options and `set_size`
+- [ ] **Step 2: Run them to verify they fail**
+- [ ] **Step 3: Re-lay out `settings.html` and size the dialog**
+- [ ] **Step 4: Run the Ruby suite; build the `.rbz` for Task 9**
+- [ ] **Step 5: Commit** (`feat: a compact Settings window`)
