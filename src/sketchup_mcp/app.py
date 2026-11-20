@@ -47,9 +47,21 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
         await close_connection()
 
 
+# M-12 (spec §6.6): what a client shows the model before any tool call — a
+# condensed sketchup_modeling_strategy.
+INSTRUCTIONS = """\
+SketchUp modeling over MCP. Lengths are millimeters and angles degrees; every
+position, bbox_mm and transform target is in world (model) coordinates, nested
+entities included. Prefer the typed tools; use eval_ruby (inches, no undo step
+of its own) only when none fits. After each change read the returned bbox_mm.
+Boolean, edge and joinery results get new ids and keep their names. Edits
+inside a component or group placed more than once are refused; new objects go
+into a group open for editing. A refused call says what to change. The
+sketchup_modeling_strategy prompt has the full guide."""
+
 mcp = FastMCP(
     "MCP Server for SketchUp",
-    instructions="Sketchup integration through the Model Context Protocol",
+    instructions=INSTRUCTIONS,
     lifespan=server_lifespan,
 )
 # serverInfo.version (M-12): FastMCP 1.30 takes no version argument, and

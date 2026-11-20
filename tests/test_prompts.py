@@ -35,6 +35,9 @@ async def test_prompt_anchor_phrases():
         "eval_ruby",
         "boolean_operation",
         "bbox_mm",
+        "world (model) coordinates",
+        "placed more than once",
+        "shared undo stack",
     ]:
         assert anchor in text, f"missing anchor phrase: {anchor!r}"
 

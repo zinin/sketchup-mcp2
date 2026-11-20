@@ -30,7 +30,8 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
 - **Request IDs round-trip**: both sides preserve the JSON-RPC `id` so async responses can be matched.
-- **Mutating handlers wrap edits in `model.start_operation`/`commit_operation`** so `undo` rolls back atomically.
+- **Mutating handlers run their edits through `Helpers::Operation.run(model, label) { … }`** — `start_operation`, the block (which builds the response, so it exists before the commit), `commit_operation`, and an abort on any exception — so `undo` rolls back atomically. No handler calls `start/commit/abort_operation` itself (`test/test_operation_names.rb` checks).
+- **World coordinates and shared definitions** (block A): every `bbox_mm` and `transform_component.position` is in world coordinates. `Helpers::Frames.placement` walks up from `entity.parent` (a definition → its first instance → …) and multiplies the instances' transformations into the matrix that maps the entity's bounds to the world; while a group is open SketchUp reports the open path with identity transformations and its contents in world coordinates, so the walk gives the same answer open or closed. Matrices are 16 Floats, column-major as `Geom::Transformation#to_a`. An entity is **shared** when the walk meets a definition with more than one instance: every mutating tool refuses it (`Frames.require_unshared!`, -32602 with the number of copies), `create_component` refuses while a shared group is open (`Frames.require_open_path_unshared!`), and read-only rows carry `shared`.
 - **`.skp` export of an untitled model is refused on purpose** (-32602, before any file or directory is made). The old T-27 behaviour saved it to `%TEMP%/sketchup_exports/…` with `Model#save` and returned a `warning`, but `save` re-points the open document there: the user's next Ctrl+S wrote to `%TEMP%`, and a temp cleanup could delete the only copy. `Model#save_copy` would leave the document alone but raises on an untitled model. `save_skp` only ever calls `save_copy` — do not add a `save` branch. Other formats are unaffected.
 - **eval gate**: `eval_ruby` is gated by the `eval_enabled` pref, which
   ships **on** (`Config::DEFAULTS[:eval_enabled] = true`) and is closed from
@@ -91,8 +92,8 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 597 runs / 2079 assertions
-uv run pytest tests/ -q        # Python (pytest) — 207 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 675 runs / 2739 assertions
+uv run pytest tests/ -q        # Python (pytest) — 224 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 28-step end-to-end (covers every tool category; 18 of 20 tools)
@@ -154,7 +155,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
 | `core/` | `application.rb`, `server.rb`, `client_state.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
 | `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb`, `system.rb` |
-| `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb` |
+| `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb`, `operation.rb` (the one undo-step wrapper), `frames.rb` (world matrices, the walk up the parents, shared definitions) |
 | `ui/` | Settings dialog: `settings_dialog.rb`, `settings_validator.rb`, `settings.html` |
 
 All created geometry lives inside SketchUp **Groups** so it can be selected/moved/deleted as a unit.
@@ -183,7 +184,7 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 > SketchUp builds are not tested and not officially supported by this
 > tool. All other tools target the same baseline as the rest of the plugin.
 
-All entity-returning handlers respond `{id, name, type, bbox_mm}` so Claude can re-locate entities by bounding box if their IDs become stale after destructive operations.
+All entity-returning handlers respond `{id, name, type, bbox_mm}`, with `bbox_mm` in world coordinates, so Claude can re-locate entities by bounding box if their IDs become stale after destructive operations.
 
 ## Working with eval_ruby
 

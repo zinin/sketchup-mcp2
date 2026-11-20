@@ -167,10 +167,17 @@ async def create_component(
     All linear values are millimeters (mm). Minimum size per dimension:
     0.1 mm for cube (thin stock like veneer is fine), 1.0 mm for sphere /
     cylinder / cone (tessellated types degenerate earlier). position is the
-    bounding-box MIN corner (not the center); the same anchor is used by
-    transform_component.position. Per-type dimensions: cube uses [x, y, z];
-    cylinder and cone use [0]=diameter, [2]=height ([1] is ignored); sphere
-    uses [0]=diameter only. New geometry is wrapped in a SketchUp Group.
+    bounding-box MIN corner (not the center), in world (model) coordinates;
+    the same anchor is used by transform_component.position. Per-type
+    dimensions: cube uses [x, y, z]; cylinder and cone use [0]=diameter,
+    [2]=height ([1] is ignored); sphere uses [0]=diameter only. New geometry
+    is wrapped in a SketchUp Group.
+
+    When the user has a group or component open for editing in SketchUp, the
+    new object goes inside it, as with SketchUp's own tools
+    (get_model_info.editing shows the open path). If that group or component
+    is placed more than once in the model, the call is refused with -32602:
+    the object would appear in every copy.
 
     Returns: JSON {id, name, type, bbox_mm{min,max}|null}. Read bbox_mm to
     verify the result before the next step.
@@ -189,6 +196,10 @@ async def delete_component(
     """Delete a group or component instance by entity ID. Raw faces, edges and
     other entities fail with -32602.
 
+    An entity inside a component or group that is placed more than once is
+    refused with -32602: deleting it would delete it from every copy. A
+    top-level copy itself can be deleted.
+
     Returns: JSON {ok: true}.
     """
     return await _call(ctx, "delete_component", id=str(id))
@@ -200,19 +211,20 @@ async def transform_component(
     id: EntityId,
     position: Annotated[
         Optional[Annotated[list[float], Field(min_length=3, max_length=3)]],
-        Field(description="ABSOLUTE target for the bbox-min corner, mm"),
+        Field(description="ABSOLUTE world target for the bbox-min corner, mm"),
     ] = None,
     rotation: Annotated[
         Optional[Annotated[list[float], Field(min_length=3, max_length=3)]],
-        Field(description="relative degrees around bbox center, "
-                          "applied X then Y then Z"),
+        Field(description="relative degrees about the world axes through the "
+                          "world bbox center, applied X then Y then Z"),
     ] = None,
     scale: Annotated[
         Optional[
             Annotated[list[float], Field(min_length=3, max_length=3),
                       AfterValidator(_validate_scale_nonzero)]
         ],
-        Field(description="relative factors about bbox center, each |s| > 1e-9"),
+        Field(description="relative factors along the world axes about the world "
+                          "bbox center, each |s| > 1e-9"),
     ] = None,
 ) -> str | CallToolResult:
     """Move, rotate and/or scale a group or component (mm / degrees).
@@ -220,13 +232,18 @@ async def transform_component(
     Groups and component instances only; other entities fail with -32602.
 
     - position: ABSOLUTE target for the entity's bounding-box MIN corner,
-      in mm — the same anchor create_component uses. Applied LAST (after
-      rotation/scale), so the final bbox-min lands exactly at [x, y, z]
-      even in combined calls. It is NOT a relative offset: repeating the
-      same position is idempotent.
-    - rotation: RELATIVE rotation in degrees around the bbox center,
-      applied sequentially about world X, then Y, then Z.
-    - scale: RELATIVE scale factors about the bbox center.
+      in world (model) coordinates, in mm — the same anchor create_component
+      uses and the same frame bbox_mm reports, for nested entities too.
+      Applied LAST (after rotation/scale), so the final bbox-min lands
+      exactly at [x, y, z] even in combined calls. It is NOT a relative
+      offset: repeating the same position is idempotent.
+    - rotation: RELATIVE rotation in degrees about the world X, then Y,
+      then Z axis, through the center of the world bbox.
+    - scale: RELATIVE scale factors along the world axes, about the center
+      of the world bbox.
+
+    An entity inside a component or group that is placed more than once is
+    refused with -32602: moving it would move it in every copy.
 
     These validations (3-element lists, non-zero scale) apply only to this
     typed tool — raw Ruby driven through eval_ruby bypasses them.
@@ -249,8 +266,9 @@ async def get_selection(ctx: Context) -> str | CallToolResult:
     """Get the entities currently selected in the SketchUp UI.
 
     Returns: JSON {entities: [...]} — groups/components are {id, name, type,
-    layer, depth, bbox_mm|null}; other selected entities (edges, faces, ...)
-    are {id, type} only.
+    layer, depth, shared, definition (components only), bbox_mm|null}, as
+    get_component_info reports them, with bbox_mm in world coordinates; other
+    selected entities (edges, faces, ...) are {id, type} only.
     """
     return await _call(ctx, "get_selection")
 
@@ -274,12 +292,14 @@ async def set_material(
     white, black, brown, wood, orange, gray, grey — or a 6-digit hex string like
     "#a05030" (#rrggbb), in any case, maps to one lower-case material, found or
     created. Anything else fails with -32602. Painting a group/component affects
-    only this instance (it is made unique first); painting a raw face/edge id
-    (obtainable via get_selection) colors the shared definition — all instances
-    show it.
+    only this instance (it is made unique first). A face or edge (an id from
+    get_selection) is painted where it is; one inside a component or group that
+    is placed more than once is refused with -32602, since every copy would
+    change.
 
-    Returns: JSON {id, name, type, bbox_mm{min,max}|null}. For a face or edge,
-    type is "face" or "edge" and name is null.
+    Returns: JSON {id, name, type, bbox_mm{min,max}|null}, bbox_mm in world
+    coordinates. For a face or edge, type is "face" or "edge" and name is
+    null.
     """
     return await _call(ctx, "set_material", id=str(id), material=material)
 
@@ -328,8 +348,13 @@ async def create_mortise_tenon(
     """Create a mortise-and-tenon joint between two boards that touch face to face.
 
     All dimensions in millimeters. The boards must be solid groups or
-    component instances in the same parent, rotated only by multiples of 90
-    degrees, and touch along one face: no gap and no overlap. The joint is centred on
+    component instances in the same parent and touch along one face: no gap
+    and no overlap. Each board's rotation in the model — its own and that of
+    any group or component holding it — must be a multiple of 90°: the joint
+    follows the model's X, Y and Z axes, the same axes bbox_mm uses, whether
+    or not a group is open for editing. A board that is itself open for
+    editing is refused (close it first), and so are boards inside a
+    component or group that is placed more than once. The joint is centred on
     the area where they touch; offsets move it along the two axes across the
     joint (the offset along the joint axis is ignored). width runs along the
     first cross axis and height along the second: for a joint along X, width
@@ -344,8 +369,8 @@ async def create_mortise_tenon(
     operations can fail on (-32603): avoid both when possible. The mortise
     board must fill its bounding box where the boards touch, and the pocket
     must not meet an earlier one (its tenon would run into the earlier
-    tenon); otherwise the joint is refused (-32603). Defaults are sized for
-    ~100 mm boards.
+    tenon); otherwise the joint is refused (-32603) with advice: a shallower
+    joint, or the offsets. Defaults are sized for ~100 mm boards.
 
     The mortise is cut into the mortise board and the tenon is joined to the
     tenon board as one solid. Both boards come back as new groups with new
@@ -387,6 +412,11 @@ async def eval_ruby(
     This tool returns that message as an error result, verbatim — without
     the `[code]` prefix that other errors carry — so the LLM can repeat it
     to the user.
+
+    Code works in inches (SketchUp's internal unit), not mm, and opens no
+    undo operation of its own: wrap edits in model.start_operation(...) /
+    model.commit_operation to make them one undo step. Its def and constant
+    definitions become global in SketchUp's Ruby session and stay there.
 
     Returns the .to_s of the LAST evaluated expression; stdout (puts) is NOT
     captured. End scripts with an explicit expression — e.g. a final
@@ -430,6 +460,12 @@ async def boolean_operation(
     definition consumes only that instance — the result is a new group,
     sibling instances are untouched. Unreliable on non-manifold geometry.
 
+    The result is a new group with a new id. With delete_originals=true it
+    takes the target's name, tag and material; otherwise the target stays and
+    the result keeps SketchUp's name (Union, Difference or Intersection). An
+    operand inside a component or group that is placed more than once is
+    refused with -32602.
+
     Returns: JSON {id, name, type, bbox_mm{min,max}|null}. Read bbox_mm to
     verify the result; it is null for empty geometry (e.g. a difference that
     consumed the whole body).
@@ -466,7 +502,9 @@ async def chamfer_edge(
     feature edges fails with -32602, as does an inside-out body (faces
     pointing inward): reverse its faces first. A call starts no new cut after
     30 s inside SketchUp and then rolls back, changing nothing. Unreliable on
-    non-manifold geometry.
+    non-manifold geometry. The body comes back as a new group with a new id
+    and keeps its name, tag and material. A body inside a component or group
+    that is placed more than once is refused with -32602.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_chamfered,
     stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
@@ -501,7 +539,9 @@ async def fillet_edge(
     sphere) fails with -32602, as does an inside-out body (faces pointing
     inward): reverse its faces first. A call starts no new cut after 30 s
     inside SketchUp and then rolls back, changing nothing. Unreliable on
-    non-manifold geometry.
+    non-manifold geometry. The body comes back as a new group with a new id
+    and keeps its name, tag and material. A body inside a component or group
+    that is placed more than once is refused with -32602.
 
     Returns: JSON {id, name, type, bbox_mm|null, edges_filleted,
     stats{attempted, succeeded, subtract_failed, skipped_no_match, skipped_seam,
@@ -643,10 +683,15 @@ def _screenshot_content(raw: object) -> list:
 
 @_tool
 async def get_model_info(ctx: Context) -> str | CallToolResult:
-    """Get current SketchUp model info: file path, title, units, bounding box, entity count, layer list.
+    """Get current SketchUp model info: file path, title, units, bounding box, entity count, layer list, open edit path.
+
+    entity_count counts top-level entities only. editing lists the groups and
+    components open for editing in SketchUp, outermost first, as
+    [{id, name, shared}]: create_component puts new objects into the last
+    one, and refuses while any of them is shared (placed more than once).
 
     Returns: JSON {path, title, units: "mm", bounding_box_mm|null,
-    entity_count, layers[]}.
+    entity_count, layers[], editing[]}.
     """
     return await _call(ctx, "get_model_info")
 
@@ -679,10 +724,14 @@ async def list_components(
 ) -> str | CallToolResult:
     """List groups and component instances in the model (paginated).
 
-    Each component is {id, name, type, layer, depth, bbox_mm} (detailed) or
-    {id, name, type, layer, depth} (concise); bounds are world-coordinate mm.
-    Set recursive=true to descend into nested components (bounded by
-    max_depth, default 3).
+    Each component is {id, name, type, layer, depth, shared, definition,
+    bbox_mm} (detailed) or the same without bbox_mm (concise); bounds are
+    world-coordinate mm. shared is true for an entity inside a component or
+    group placed more than once: typed edits to it are refused. definition,
+    on component rows only, is the component's definition name. Set
+    recursive=true to descend into nested components (bounded by max_depth,
+    default 3); a component placed several times lists its contents once per
+    placement.
 
     Returns: JSON {components[], total, offset, truncated} — if truncated,
     request the next page with offset += limit.
@@ -699,7 +748,13 @@ async def get_component_info(
 ) -> str | CallToolResult:
     """Detailed info for a single group or component instance by entity ID.
 
-    Returns: JSON {id, name, type, layer, depth, bbox_mm|null}.
+    bbox_mm is in world coordinates, worked out through the entity's parents,
+    whether or not a group is open for editing. For an entity inside a
+    component or group placed more than once, shared is true and bbox_mm is
+    its first placement's.
+
+    Returns: JSON {id, name, type, layer, depth, shared, definition
+    (components only), bbox_mm|null}.
     """
     return await _call(ctx, "get_component_info", id=str(id))
 
@@ -709,8 +764,8 @@ async def find_components(
     ctx: Context,
     name: Annotated[
         Annotated[str, Field(min_length=1)] | None,
-        Field(description="Case-insensitive substring to match against "
-                          "component names"),
+        Field(description="Case-insensitive substring to match against the "
+                          "instance name or a component's definition name"),
     ] = None,
     layer: Annotated[
         Annotated[str, Field(min_length=1)] | None,
@@ -741,10 +796,12 @@ async def find_components(
 ) -> str | CallToolResult:
     """Find components matching name substring, layer, and/or type.
 
-    Name matching is case-insensitive substring; layer must match exactly.
-    Searches recursively (bounded by max_depth). With no filters it returns
-    all components up to max_depth (paginated) — same traversal as
-    list_components.
+    Name matching is a case-insensitive substring of the instance name or,
+    for component instances, the definition name — the name the Outliner
+    shows for components from the 3D Warehouse or an import; layer must match
+    exactly. Searches recursively (bounded by max_depth). With no filters it
+    returns all components up to max_depth (paginated) — same traversal and
+    rows as list_components: world-coordinate bounds, shared, definition.
 
     Returns: JSON {components[], total, offset, truncated} — if truncated,
     request the next page with offset += limit.
@@ -785,7 +842,12 @@ async def create_layer(
 
 @_tool
 async def undo(ctx: Context) -> str | CallToolResult:
-    """Undo the last atomic operation in SketchUp. One MCP tool-call = one undo step.
+    """Undo the last step of SketchUp's shared undo stack.
+
+    One MCP tool-call is one undo step, but the stack is shared with the
+    user: the last step may be the user's own edit rather than the last MCP
+    call. undo answers before SketchUp has processed it, so check the model
+    afterwards (get_component_info / list_components).
 
     Returns: JSON {ok: true}.
     """
