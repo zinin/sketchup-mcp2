@@ -12,15 +12,17 @@
 # wide, 40 high and 20 deep (8 000 mm³).
 #
 # Fakes: a recording model whose log holds [:start, label], :commit and :abort
-# and nothing else, and which finds the boards by id; a parent whose entities
-# are a sentinel; boards that subclass the guarded Sketchup::Group or
-# Sketchup::ComponentInstance (the handler checks is_a?); results whose faces
-# answer all_connected. make_box is stubbed: it records its arguments and
-# returns the cutter, then the tenon piece, whose subtract / union record
-# their operand and return the configured result (or nil). Lengths are
-# written in mm and converted with mm / mm3. Under run_all every test file
-# loads before any test runs and some reopen the Sketchup stubs, so the
-# fakes define every method the handler calls on them.
+# and nothing else, and which finds the boards by id (nothing is open for
+# editing unless a test sets active_path, active_entities and
+# edit_transform); a parent whose entities are a sentinel; boards that
+# subclass the guarded Sketchup::Group or Sketchup::ComponentInstance (the
+# handler checks is_a?); results whose faces answer all_connected. make_box
+# is stubbed: it records its arguments and returns the cutter, then the
+# tenon piece, whose subtract / union record their operand and return the
+# configured result (or nil). Lengths are written in mm and converted with
+# mm / mm3. Under run_all every test file loads before any test runs and
+# some reopen the Sketchup stubs, so the fakes define every method the
+# handler calls on them.
 require "minitest/autorun"
 
 require_relative "support/singleton_stubs"
@@ -53,16 +55,24 @@ class TestMortiseTenon < Minitest::Test
   FakeBounds = Struct.new(:min, :max)
   # Struct#to_a is [x, y, z], as Geom::Vector3d#to_a is.
   FakeVector = Struct.new(:x, :y, :z)
-  FakeTransformation = Struct.new(:xaxis, :yaxis, :zaxis)
+  FakeTransformation = Struct.new(:xaxis, :yaxis, :zaxis, :origin)
 
-  def self.axes(x, y, z)
-    FakeTransformation.new(FakeVector.new(*x), FakeVector.new(*y), FakeVector.new(*z))
+  def self.axes(x, y, z, origin = [0, 0, 0])
+    FakeTransformation.new(FakeVector.new(*x), FakeVector.new(*y), FakeVector.new(*z),
+                           FakePoint.new(*origin))
   end
 
   C45 = Math.sqrt(0.5)
+  C30 = Math.sqrt(3) / 2
   UNROTATED  = axes([1, 0, 0], [0, 1, 0], [0, 0, 1])
   ROTATED_90 = axes([0, 1, 0], [-1, 0, 0], [0, 0, 1])
   ROTATED_45 = axes([C45, C45, 0], [-C45, C45, 0], [0, 0, 1])
+  ROTATED_30 = axes([C30, 0.5, 0], [-0.5, C30, 0], [0, 0, 1])
+  MOVED      = axes([1, 0, 0], [0, 1, 0], [0, 0, 1], [1000 / 25.4, 0, 0])  # 1000 mm along X
+
+  # model.active_entities: its parent is the context open for editing (the
+  # model when nothing is open).
+  FakeEntities = Struct.new(:parent)
 
   # The boards' parent (the model, or a group's definition). make_box must
   # build the cutter and the tenon piece in its entities, beside the boards.
@@ -151,13 +161,18 @@ class TestMortiseTenon < Minitest::Test
   end
 
   # Logs [:start, label], :commit and :abort, and nothing else; finds the
-  # registered boards by id.
+  # registered boards by id. Nothing is open for editing: active_path is nil,
+  # as SketchUp's is at the top level.
   class RecordingModel
     attr_reader :log
+    attr_accessor :active_path, :edit_transform, :active_entities
 
     def initialize
       @log = []
       @by_id = {}
+      @active_path = nil
+      @edit_transform = UNROTATED
+      @active_entities = FakeEntities.new(self)
     end
 
     def register(*entities)
@@ -414,6 +429,55 @@ class TestMortiseTenon < Minitest::Test
 
   def test_joint_too_big_for_the_contact_area_is_refused
     assert_unsuitable(/does not fit/, "width" => 30)  # the rail is 20 mm wide
+  end
+
+  # ---------- a group open for editing ----------
+  #
+  # While a group is open, SketchUp reports the transformations and bounds
+  # of its entities in world coordinates, and model.edit_transform holds the
+  # group's own transformation. A board that is itself open reports an
+  # identity transformation.
+
+  def test_board_open_for_editing_is_refused
+    [[@leg, "mortise board"], [@rail, "tenon board"]].each do |open_board, label|
+      @model.log.clear
+      @model.active_path = [open_board]
+      err = assert_unsuitable(/the #{label} is open for editing/)
+      assert_match(/close it and try again/, err.message)
+    end
+  end
+
+  def test_boards_in_an_open_rotated_group_are_refused_with_close_advice
+    @model.active_path = [Object.new]  # the instance of @parent, opened
+    @model.active_entities = FakeEntities.new(@parent)
+    @model.edit_transform = ROTATED_30
+    @leg.transformation = ROTATED_30   # the boards, seen in world coordinates
+    @rail.transformation = ROTATED_30
+
+    err = assert_unsuitable(/group or component that holds the boards is open for editing/)
+    assert_match(/close it and try again/, err.message)
+    refute_match(/rotate the board/, err.message)
+  end
+
+  def test_boards_in_an_open_axis_aligned_group_still_join
+    @model.active_path = [Object.new]
+    @model.active_entities = FakeEntities.new(@parent)
+    @model.edit_transform = MOVED
+
+    joint
+
+    assert_committed
+  end
+
+  # The open group's rotation only matters to the entities it holds.
+  def test_boards_outside_an_open_rotated_group_still_join
+    @model.active_path = [Object.new]
+    @model.active_entities = FakeEntities.new(FakeParent.new)  # another group is open
+    @model.edit_transform = ROTATED_30
+
+    joint
+
+    assert_committed
   end
 
   # ---------- a solid operation fails: all or nothing ----------

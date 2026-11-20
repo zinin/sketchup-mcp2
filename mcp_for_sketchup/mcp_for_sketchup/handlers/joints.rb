@@ -39,7 +39,7 @@ module MCPforSketchUp
           tenon_board   = E.find!(tenon_id)
           E.require_group_or_component!(mortise_board, "mortise board")
           E.require_group_or_component!(tenon_board,   "tenon board")
-          require_joinable!(mortise_board, tenon_board)
+          require_joinable!(model, mortise_board, tenon_board)
 
           contact = contact_area(board_box(mortise_board), board_box(tenon_board))
           box     = joint_box(contact, width, height, depth, [ox, oy, oz])
@@ -197,16 +197,37 @@ module MCPforSketchUp
       # boxes share its frame), axes parallel to the parent's (only then does
       # a box fit its board) and closed solids (the solid operations and the
       # volume check need them).
-      def self.require_joinable!(mortise, tenon)
+      #
+      # An open group comes first. While a group is open, SketchUp reports
+      # the transformations and bounds of its entities in world coordinates
+      # (model.edit_transform holds the group's own), so in a rotated open
+      # group the boards look rotated, and the board check would tell the
+      # user to rotate boards that are placed correctly: that case is refused
+      # with the advice to close the group. An open group that is only moved
+      # keeps working. A board that is itself open reports an identity
+      # transformation, and the solid operations would erase the group the
+      # user is working in.
+      def self.require_joinable!(model, mortise, tenon)
+        boards = { "mortise board" => mortise, "tenon board" => tenon }
+        open_path = model.active_path || []
+        boards.each do |label, board|
+          next unless open_path.include?(board)
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the #{label} is open for editing; close it and try again")
+        end
         unless mortise.parent == tenon.parent
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
             "the mortise and tenon boards are not in the same group; move them into one " \
             "group or component, or both to the top level of the model")
         end
-        boards = { "mortise board" => mortise, "tenon board" => tenon }
+        if !open_path.empty? && mortise.parent == model.active_entities.parent &&
+           !aligned_transformation?(model.edit_transform)
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the group or component that holds the boards is open for editing and rotated " \
+            "by an angle that is not a multiple of 90°; close it and try again")
+        end
         boards.each do |label, board|
-          t = board.transformation
-          next if axis_aligned?([t.xaxis.to_a, t.yaxis.to_a, t.zaxis.to_a])
+          next if aligned_transformation?(board.transformation)
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
             "the #{label} is rotated by an angle that is not a multiple of 90°, and the joint " \
             "is placed from bounding boxes; rotate the board to a multiple of 90° or build " \
@@ -219,6 +240,11 @@ module MCPforSketchUp
             "close its holes and remove stray faces and edges until Entity Info calls it a " \
             "solid, then try again")
         end
+      end
+
+      # True when the transformation keeps its axes parallel to its parent's.
+      def self.aligned_transformation?(t)
+        axis_aligned?([t.xaxis.to_a, t.yaxis.to_a, t.zaxis.to_a])
       end
 
       # make_box's x, y, z, w, d, h for the box [[min], [max]].
