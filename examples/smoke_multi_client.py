@@ -8,7 +8,10 @@ a short scripted workload. Asserts all workers complete without error.
 Pre-conditions:
   1. SketchUp is running with the multi-client Ruby plugin installed
      and started via Plugins → MCP Server → Start.
-  2. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT env vars.
+  2. SKETCHUP_MCP_TOKEN is set to the token from the plugin's Settings
+     (Copy); the workers inherit it. Without it the script stops before
+     starting them.
+  3. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT env vars.
 
 Other clients (e.g. an attached Claude Code MCP session) may coexist
 with this smoke run — the new multi-client server multiplexes them on
@@ -59,7 +62,8 @@ LABEL    = %(label)r
 
 async def main():
     conn = SketchUpConnection(
-        host=config.HOST, port=config.PORT, timeout=config.TIMEOUT)
+        host=config.HOST, port=config.PORT, timeout=config.TIMEOUT,
+        token=config.TOKEN)
     await conn.connect()
     try:
         for step in WORKLOAD:
@@ -97,7 +101,8 @@ LABEL = %(label)r
 
 async def main():
     conn = SketchUpConnection(
-        host=config.HOST, port=config.PORT, timeout=config.TIMEOUT)
+        host=config.HOST, port=config.PORT, timeout=config.TIMEOUT,
+        token=config.TOKEN)
     await conn.connect()
     try:
         ids = []
@@ -173,6 +178,15 @@ def main() -> int:
         help="number of concurrent workers (default: 2; max practical: 4)",
     )
     args = parser.parse_args()
+
+    # M-06: without a well-formed token every worker would fail its handshake.
+    from sketchup_mcp import auth, config
+    from sketchup_mcp.errors import AuthenticationError
+    try:
+        auth.check_token(config.TOKEN)
+    except AuthenticationError as e:
+        print(e.message)
+        return 2
 
     # Worker 0 is light/read-only; the rest run the heavier sequence so
     # we get a real mix of contention on Ruby's per-connection

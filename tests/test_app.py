@@ -1,8 +1,10 @@
 """Tests for the FastMCP app lifespan (app.py) — review F6."""
+import asyncio
 import logging
 
 import pytest
 
+from sketchup_mcp import __version__, config
 from sketchup_mcp import app as app_module
 from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError
 
@@ -121,3 +123,54 @@ sketchup_modeling_strategy prompt has the full guide."""
 
 async def test_server_instructions_are_the_condensed_strategy():
     assert app_module.mcp.instructions == INSTRUCTIONS
+
+
+async def test_startup_connect_is_bounded(monkeypatch, caplog):
+    """§7.4: the eager connect has 5 s of its own, apart from
+    SKETCHUP_MCP_TIMEOUT, so the server starts within Claude Code's 30-second
+    window even when SketchUp hangs; the first tool call connects later."""
+    class SlowConnection:
+        async def ensure_connected(self):
+            await asyncio.sleep(10)
+
+    async def slow_connection():
+        return SlowConnection()
+
+    async def fake_close():
+        pass
+
+    monkeypatch.setattr(app_module, "setup_logging", lambda: None)
+    monkeypatch.setattr(app_module, "get_connection", slow_connection)
+    monkeypatch.setattr(app_module, "close_connection", fake_close)
+    monkeypatch.setattr(app_module, "STARTUP_CONNECT_TIMEOUT", 0.05)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with caplog.at_level(logging.WARNING, logger="sketchup_mcp.app"):
+        async with app_module.server_lifespan(app_module.mcp) as state:
+            assert state == {}
+    assert loop.time() - started < 1.0
+    assert app_module.STARTUP_CONNECT_TIMEOUT == 0.05
+    assert any("did not answer" in r.getMessage() and "startup" in r.getMessage()
+               for r in caplog.records), [r.getMessage() for r in caplog.records]
+
+
+async def test_startup_bound_is_five_seconds():
+    assert app_module.STARTUP_CONNECT_TIMEOUT == 5.0
+
+
+async def test_startup_logs_version_host_and_port(monkeypatch, caplog):
+    """M-21: one line at start says which version runs and where it looks."""
+    async def refused():
+        raise ConnectionError("refused")
+
+    async def fake_close():
+        pass
+
+    monkeypatch.setattr(app_module, "setup_logging", lambda: None)
+    monkeypatch.setattr(app_module, "get_connection", refused)
+    monkeypatch.setattr(app_module, "close_connection", fake_close)
+    with caplog.at_level(logging.INFO, logger="sketchup_mcp.app"):
+        async with app_module.server_lifespan(app_module.mcp):
+            pass
+    lines = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any(__version__ in line and f"{config.HOST}:{config.PORT}" in line for line in lines), lines

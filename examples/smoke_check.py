@@ -8,6 +8,8 @@ Pre-conditions:
      Start. The plugin version must be at least MIN_RUBY from
      src/sketchup_mcp/compat.py; step 28 verifies this.
   3. Run with the same Python venv used by the MCP server.
+  3a. SKETCHUP_MCP_TOKEN is set to the token from the plugin's Settings
+     (Copy); without it the script stops before connecting.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
      When SketchUp runs remotely, step 18 (export_scene) degrades to asserting
      Ruby returned a non-empty path — the file lives on the SketchUp host.
@@ -47,8 +49,8 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sketchup_mcp.connection import SketchUpConnection  # noqa: E402
-from sketchup_mcp.errors import SketchUpError  # noqa: E402
-from sketchup_mcp import compat, config  # noqa: E402
+from sketchup_mcp.errors import AuthenticationError, SketchUpError  # noqa: E402
+from sketchup_mcp import auth, compat, config  # noqa: E402
 from sketchup_mcp.compat import EVAL_DISABLED_CODE  # noqa: E402  iter-1 SUGGESTION-1: shared constant
 
 
@@ -209,7 +211,13 @@ def _assert_bbox(bbox: dict, lo: list, hi: list, what: str, tol: float = 0.01) -
         f"{what}: bbox_mm {bbox}, expected min {lo} max {hi}")
 
 async def main() -> int:
-    conn = SketchUpConnection(host=config.HOST, port=config.PORT, timeout=30.0)
+    try:
+        auth.check_token(config.TOKEN)
+    except AuthenticationError as e:
+        print(e.message)
+        return 2
+    conn = SketchUpConnection(host=config.HOST, port=config.PORT, timeout=30.0,
+                              token=config.TOKEN)
     await conn.connect()
     step = 0
     eval_skipped = [0]   # mutable container — see iter-2 CONCERN-12 note
