@@ -20,8 +20,9 @@ from sketchup_mcp.errors import IncompatibleVersionError
 # which is what lets a Python-only or plugin-only release talk to the
 # counterpart the user already has. Releases up to 0.3.1 cap the counterpart at
 # their own version, so 0.4.0, the first release under this rule, ships both
-# sides and raises both floors to its own version.
-MIN_RUBY = "0.4.0"
+# sides and raises both floors to its own version. 0.5.0 is a contract break
+# (the token handshake; world coordinates), so both floors rise to it.
+MIN_RUBY = "0.5.0"
 
 # JSON-RPC application-error code returned by the Ruby handler when the
 # eval gate is closed. Single source of truth for Python callers — see

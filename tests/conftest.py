@@ -8,10 +8,26 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-_COMPAT_RB = (
-    Path(__file__).resolve().parent.parent
-    / "mcp_for_sketchup" / "mcp_for_sketchup" / "core" / "compat.rb"
-)
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent / "mcp_for_sketchup"
+_COMPAT_RB = _PLUGIN_DIR / "mcp_for_sketchup" / "core" / "compat.rb"
+
+# The sdist ships the Python side only. A test that compares it with the
+# plugin's source or the repository's docs needs the checkout: it is marked
+# `checkout` (or reads the plugin through ruby_const) and is skipped without
+# the plugin's folder, which a checkout always has.
+_NEEDS_CHECKOUT = "needs the repository checkout; the sdist ships the Python side only"
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", f"checkout: {_NEEDS_CHECKOUT}")
+
+
+def pytest_collection_modifyitems(config, items):
+    if _PLUGIN_DIR.is_dir():
+        return
+    for item in items:
+        if "checkout" in item.keywords:
+            item.add_marker(pytest.mark.skip(reason=_NEEDS_CHECKOUT))
 
 
 @pytest.fixture
@@ -24,6 +40,9 @@ def ruby_const():
     A fixture, not a function that one test module imports from another: that
     import works only while pytest puts ``tests/`` on ``sys.path`` (its default
     import mode)."""
+    if not _PLUGIN_DIR.is_dir():
+        pytest.skip(_NEEDS_CHECKOUT)
+
     def read(name: str, path: Path = _COMPAT_RB) -> str:
         source = path.read_text(encoding="utf-8")
         m = re.search(rf'^\s*{name}\s*=\s*(?:"([^"]*)"|([\d_.]+))', source, re.M)

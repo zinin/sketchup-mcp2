@@ -1,0 +1,4 @@
+# The sdist's tests run from the sdist: their fixtures and the smoke script
+# they test (spec §8).
+include tests/conftest.py
+include examples/smoke_check.py
