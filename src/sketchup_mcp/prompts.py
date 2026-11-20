@@ -20,9 +20,8 @@ Follow this strategy to be effective and avoid common pitfalls.
 # 2. Tool priority
 1. Typed tools first — create_component, transform_component,
    set_material, boolean_operation, chamfer_edge, fillet_edge,
-   create_mortise_tenon, create_dovetail, create_finger_joint,
-   create_layer, delete_component. They handle units, transactions,
-   and edge cases.
+   create_mortise_tenon, create_layer, delete_component. They handle
+   units, transactions, and edge cases.
 2. eval_ruby ONLY when typed tools cannot express the operation
    (custom curves, Follow Me, complex transformations,
    ComponentDefinition manipulation, layer attributes).
@@ -55,10 +54,10 @@ Follow this strategy to be effective and avoid common pitfalls.
   an error. When bbox_mm is present, read it to confirm the result matches
   the intent before the next step (and to relocate the entity if its id
   becomes stale after destructive operations).
-- Joinery tools return ONE OBJECT PER BOARD — {mortise, tenon} /
-  {tail, pin} / {board1, board2}, each {id, name, type, bbox_mm} — plus
-  boolean_cuts {attempted, failed}: treat failed > 0 as a partial failure
-  and verify via bbox_mm.
+- create_mortise_tenon returns {mortise, tenon}, each {id, name, type,
+  bbox_mm}. Both boards come back with new ids and keep their names. The
+  boards must touch face to face; a joint that cannot be built is
+  refused, and nothing is half-built.
 - Other tools — delete_component, create_layer, undo, list/find
   queries, get_model_info, get_selection — have their own response
   shapes; see the tool docs.
@@ -82,7 +81,8 @@ Follow this strategy to be effective and avoid common pitfalls.
   entity to a layer doesn't move it in the hierarchy.
 
 # 7. Joinery defaults
-For mortise/tenon/dovetail/finger joints, when the user doesn't
+For mortise-and-tenon joints (create_mortise_tenon) and for joints
+built with eval_ruby (dovetails, finger joints), when the user doesn't
 specify:
 - joint dimensions ≈ 0.3-0.5 × board thickness;
 - number of fingers/tails: 3-5 for typical drawer-width boards

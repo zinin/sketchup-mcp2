@@ -117,8 +117,6 @@ module MCPforSketchUp
         when "chamfer_edges"         then Handlers::Operations.chamfer_edges(params)
         when "fillet_edges"          then Handlers::Operations.fillet_edges(params)
         when "create_mortise_tenon"  then Handlers::Joints.create_mortise_tenon(params)
-        when "create_dovetail"       then Handlers::Joints.create_dovetail(params)
-        when "create_finger_joint"   then Handlers::Joints.create_finger_joint(params)
         when "eval_ruby"             then Handlers::Eval.eval_ruby(params)
         when "get_model_info"        then Handlers::Model.get_model_info(params)
         when "list_components"       then Handlers::Model.list_components(params)

@@ -23,7 +23,7 @@ require_relative "support/singleton_stubs"
 
 # export.rb aliases these at load time (V/E). Export.export calls
 # require_enum and active_model!, which with_export_stubs supplies, so empty
-# modules suffice (mirrors test_joint_cut_stats.rb).
+# modules suffice.
 module MCPforSketchUp
   module Helpers
     module Validation; end

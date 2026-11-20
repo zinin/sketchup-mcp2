@@ -61,7 +61,7 @@ def test_ruby_only_wire_names_are_pinned():
 
 async def test_each_mcp_tool_sends_exactly_one_wire_name():
     sent = _sent_wire_names()
-    tools = await mcp.list_tools()   # 22 today
+    tools = await mcp.list_tools()   # 20 today
     assert len(sent) == len(set(sent)) == len(tools), (
         f"{len(tools)} MCP tools, {len(sent)} wire names sent "
         f"({len(set(sent))} distinct): {sorted(sent)}"

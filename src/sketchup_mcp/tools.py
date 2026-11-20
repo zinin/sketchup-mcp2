@@ -60,8 +60,8 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     strategies for unavailable-server (string-returning tools surface a
     graceful string, Image-returning tools raise). Centralising the
     conversion here would introduce brittle string-based detection in
-    callers and lose the canonical error text shared by the 22 existing
-    text-returning tools.
+    callers and lose the canonical error text shared by the text-returning
+    tools.
 
     See the design's §5.8 for the rationale on error-handling asymmetry
     between text-returning and Image-returning tools.
@@ -94,8 +94,8 @@ def _extract_text(result: object) -> str:
 async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
 
-    Same external contract as before — kept for compatibility with the 22
-    existing string-returning tools. Now delegates to :func:`_raw_call`
+    Same external contract as before — kept for compatibility with the
+    string-returning tools. Now delegates to :func:`_raw_call`
     for connection acquisition and converts the result to a string.
     Connection failures surface as the canonical legacy string so the LLM
     sees a stable, actionable hint.
@@ -295,21 +295,43 @@ async def create_mortise_tenon(
     height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 25.0,
     depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 10.0,
     offset_x: Annotated[float, Field(
-        description="Joint offset from the board face's center along X, mm")] = 0.0,
+        description="Joint offset from the center of the contact area along X, mm")] = 0.0,
     offset_y: Annotated[float, Field(
-        description="Joint offset from the board face's center along Y, mm")] = 0.0,
+        description="Joint offset from the center of the contact area along Y, mm")] = 0.0,
     offset_z: Annotated[float, Field(
-        description="Joint offset from the board face's center along Z, mm")] = 0.0,
+        description="Joint offset from the center of the contact area along Z, mm")] = 0.0,
 ) -> str:
-    """Create a mortise-and-tenon joint between two boards.
+    """Create a mortise-and-tenon joint between two boards that touch face to face.
 
-    All dimensions in millimeters; offsets shift the joint from the board
-    face's center. Defaults are sized for ~100 mm boards. The two boards must
-    already touch/overlap along the joint axis.
+    All dimensions in millimeters. The boards must be solid groups or
+    component instances in the same parent, rotated only by multiples of 90
+    degrees, and touch along one face: no gap and no overlap. The joint is centred on
+    the area where they touch; offsets move it along the two axes across the
+    joint (the offset along the joint axis is ignored). width runs along the
+    first cross axis and height along the second: for a joint along X, width
+    is along Y and height along Z; along Y, width along X and height along Z;
+    along Z, width along X and height along Y. depth is how far the tenon
+    reaches into the mortise board; a depth beyond its thickness makes a
+    through mortise, and the tenon then sticks out past the mortise board's
+    far face by depth minus the thickness. The joint must fit inside the
+    contact area and may reach its edge. A depth equal to the mortise
+    board's thickness, or a joint that reaches the edge of the contact area,
+    puts a face of the cut in a face of the board, which SketchUp's solid
+    operations can fail on (-32603): avoid both when possible. The mortise
+    board must fill its bounding box where the boards touch, and the pocket
+    must not meet an earlier one (its tenon would run into the earlier
+    tenon); otherwise the joint is refused (-32603). Defaults are sized for
+    ~100 mm boards.
 
-    Returns: JSON {mortise: {id, name, type, bbox_mm|null}, tenon: {...},
-    boolean_cuts: {attempted, failed}} — non-zero failed means some cuts did
-    not apply (likely non-manifold geometry); verify via bbox_mm.
+    The mortise is cut into the mortise board and the tenon is joined to the
+    tenon board as one solid. Both boards come back as new groups with new
+    ids and keep their names, tags and the group's own material; the faces
+    the joint adds (the pocket's walls and the tenon) carry no material of
+    their own. A joint that cannot be built is refused: -32602 for boards
+    that do not suit, -32603 when SketchUp's solid operations fail. Nothing
+    is half-built.
+
+    Returns: JSON {mortise: {id, name, type, bbox_mm|null}, tenon: {...}}.
     """
     return await _call(
         ctx,
@@ -319,95 +341,6 @@ async def create_mortise_tenon(
         width=width,
         height=height,
         depth=depth,
-        offset_x=offset_x,
-        offset_y=offset_y,
-        offset_z=offset_z,
-    )
-
-
-@mcp.tool()
-async def create_dovetail(
-    ctx: Context,
-    tail_id: EntityId,
-    pin_id: EntityId,
-    width: Annotated[float, Field(gt=0, description="Joint width in mm")] = 50.0,
-    height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 50.0,
-    depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 15.0,
-    angle: Annotated[float, Field(
-        gt=0, le=60,
-        description="Dovetail flare angle in degrees, 0 < angle <= 60")] = 15.0,
-    num_tails: Annotated[int, Field(
-        gt=0, le=25, description="Number of tails, 1–25")] = 3,
-    offset_x: Annotated[float, Field(
-        description="Joint offset from the board face's center along X, mm")] = 0.0,
-    offset_y: Annotated[float, Field(
-        description="Joint offset from the board face's center along Y, mm")] = 0.0,
-    offset_z: Annotated[float, Field(
-        description="Joint offset from the board face's center along Z, mm")] = 0.0,
-) -> str:
-    """Create a dovetail joint between two boards.
-
-    All dimensions in millimeters; angle is in degrees, valid range (0, 60].
-    Offsets shift the joint from the board face's center. Defaults are sized
-    for ~100 mm boards. The two boards must already touch/overlap along the
-    joint axis.
-
-    Returns: JSON {tail: {id, name, type, bbox_mm|null}, pin: {...},
-    boolean_cuts: {attempted, failed}} — non-zero failed means some cuts did
-    not apply (likely non-manifold geometry); verify via bbox_mm.
-    """
-    return await _call(
-        ctx,
-        "create_dovetail",
-        tail_id=str(tail_id),
-        pin_id=str(pin_id),
-        width=width,
-        height=height,
-        depth=depth,
-        angle=angle,
-        num_tails=num_tails,
-        offset_x=offset_x,
-        offset_y=offset_y,
-        offset_z=offset_z,
-    )
-
-
-@mcp.tool()
-async def create_finger_joint(
-    ctx: Context,
-    board1_id: EntityId,
-    board2_id: EntityId,
-    width: Annotated[float, Field(gt=0, description="Joint width in mm")] = 50.0,
-    height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 25.0,
-    depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 10.0,
-    num_fingers: Annotated[int, Field(
-        gt=0, le=50, description="Number of fingers, 1–50")] = 5,
-    offset_x: Annotated[float, Field(
-        description="Joint offset from the board face's center along X, mm")] = 0.0,
-    offset_y: Annotated[float, Field(
-        description="Joint offset from the board face's center along Y, mm")] = 0.0,
-    offset_z: Annotated[float, Field(
-        description="Joint offset from the board face's center along Z, mm")] = 0.0,
-) -> str:
-    """Create a finger joint (box joint) between two boards.
-
-    All dimensions in millimeters; offsets shift the joint from the board
-    face's center. Defaults are sized for ~100 mm boards. The two boards must
-    already touch/overlap along the joint axis.
-
-    Returns: JSON {board1: {id, name, type, bbox_mm|null}, board2: {...},
-    boolean_cuts: {attempted, failed}} — non-zero failed means some cuts did
-    not apply (likely non-manifold geometry); verify via bbox_mm.
-    """
-    return await _call(
-        ctx,
-        "create_finger_joint",
-        board1_id=str(board1_id),
-        board2_id=str(board2_id),
-        width=width,
-        height=height,
-        depth=depth,
-        num_fingers=num_fingers,
         offset_x=offset_x,
         offset_y=offset_y,
         offset_z=offset_z,

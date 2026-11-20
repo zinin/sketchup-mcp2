@@ -53,8 +53,6 @@ class TestOperationNames < Minitest::Test
   def test_joints_labels_are_title_case
     src = source(HANDLERS, "joints.rb")
     assert_op_label src, /start_operation\("Mortise and Tenon"/, "mortise_tenon"
-    assert_op_label src, /start_operation\("Dovetail Joint"/, "dovetail"
-    assert_op_label src, /start_operation\("Finger Joint"/, "finger_joint"
   end
 
   def test_materials_label_is_title_case
@@ -117,23 +115,11 @@ class TestOperationNames < Minitest::Test
   def test_joints_subtract_call_sites_keep_cutter_first
     src = source(HANDLERS, "joints.rb")
     [
-      /subtract_tracked\(cutter,\s*board\)/,
-      /subtract_tracked\(cutter,\s*pin_group\)/,
-      /subtract_tracked\(cutter,\s*group\)/,
-      /subtract_tracked\(cutter,\s*current\)/,
+      /result = cutter\.subtract\(board\)/,
     ].each do |pattern|
       assert_match(pattern, src,
-        "joints must keep the CUTTER as subtract_tracked's first arg " \
-        "(receiver of the reversed Group#subtract): missing #{pattern.inspect}")
+        "joints must keep the CUTTER as the receiver of the reversed Group#subtract " \
+        "(cutter.subtract(board) == board - cutter): missing #{pattern.inspect}")
     end
-  end
-
-  def test_subtract_tracked_body_receiver_is_cutter
-    # Call-site-guard'ы выше пинят аргументы вызовов; этот пинит receiver
-    # ВНУТРИ самого хелпера — флип там прошёл бы все остальные guard'ы.
-    src = source(HANDLERS, "joints.rb")
-    assert_match(/result = cutter\.subtract\(target\)/, src,
-      "subtract_tracked itself must call cutter.subtract(target): reversed " \
-      "Group#subtract makes that target - cutter")
   end
 end

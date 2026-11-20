@@ -125,6 +125,36 @@ end
 """
 
 
+# Ruby for step 21: the y and z extent (mm) of the leg's face at x = 830 mm that
+# looks along +X — the bottom of the pocket.
+_POCKET_RUBY = """
+leg = Sketchup.active_model.find_entity_by_id(__ID__)
+t = leg.transformation
+face = leg.entities.grep(Sketchup::Face).find do |f|
+  f.normal.transform(t).x > 0.99 &&
+    f.vertices.all? { |v| ((t * v.position).x * 25.4 - 830.0).abs < 0.01 }
+end
+raise "no face at x = 830 mm looks along +X: the pocket is not where step 21 expects it" unless face
+pts = face.vertices.map { |v| t * v.position }
+[pts.map(&:y).min, pts.map(&:y).max, pts.map(&:z).min, pts.map(&:z).max].map { |v| (v * 25.4).round(1) }.to_json
+"""
+
+
+# Ruby for step 21: the y and z extent (mm) of the rail's face at x = 830 mm that
+# looks along -X — the end of the tenon.
+_TENON_RUBY = """
+rail = Sketchup.active_model.find_entity_by_id(__ID__)
+t = rail.transformation
+face = rail.entities.grep(Sketchup::Face).find do |f|
+  f.normal.transform(t).x < -0.99 &&
+    f.vertices.all? { |v| ((t * v.position).x * 25.4 - 830.0).abs < 0.01 }
+end
+raise "no face at x = 830 mm looks along -X: the tenon is not where step 21 expects it" unless face
+pts = face.vertices.map { |v| t * v.position }
+[pts.map(&:y).min, pts.map(&:y).max, pts.map(&:z).min, pts.map(&:z).max].map { |v| (v * 25.4).round(1) }.to_json
+"""
+
+
 async def main() -> int:
     conn = SketchUpConnection(host=config.HOST, port=config.PORT, timeout=30.0)
     await conn.connect()
@@ -197,22 +227,37 @@ async def main() -> int:
 
         step = 12; print(f"[{step}] create_component for joint board — 200×200×50mm")
         b_mortise = parse(await call(conn, "create_component",
-                                     type="cube", dimensions=[200, 200, 50]))["id"]
+                                     type="cube", dimensions=[200, 200, 50],
+                                     name="smoke_mortise"))["id"]
 
-        step = 13; print(f"[{step}] create_component for joint board — 50×50×200mm")
+        step = 13; print(f"[{step}] create_component for joint board — 50×50×200mm on its top face")
+        # The boards must touch face to face: the tenon board stands on the top
+        # face (z=50) of the mortise board, inside its footprint.
         b_tenon = parse(await call(conn, "create_component",
-                                   type="cube", dimensions=[50, 50, 200]))["id"]
+                                   type="cube", position=[75, 75, 50],
+                                   dimensions=[50, 50, 200],
+                                   name="smoke_tenon"))["id"]
 
         step = 14; print(f"[{step}] create_mortise_tenon — width=20mm, height=30mm, depth=15mm")
-        # Group#subtract erases the original mortise board and returns a NEW
-        # group; the handler reports the new ID via "mortise"/"tenon" keys.
-        # Re-bind b_mortise/b_tenon so subsequent assertions and cleanup target
-        # the post-subtract entities.
+        # Both boards are replaced by NEW groups (new ids, same names); the
+        # handler reports the new ids via "mortise"/"tenon". Re-bind b_mortise/
+        # b_tenon so later steps and cleanup target the new entities.
         mt = parse(await call(conn, "create_mortise_tenon",
                               mortise_id=b_mortise, tenon_id=b_tenon,
                               width=20, height=30, depth=15))
         b_mortise = mt["mortise"]["id"]
         b_tenon   = mt["tenon"]["id"]
+        assert mt["mortise"]["name"] == "smoke_mortise", f"mortise name lost: {mt['mortise']}"
+        assert mt["tenon"]["name"] == "smoke_tenon", f"tenon name lost: {mt['tenon']}"
+        # The mortise board keeps its outer size (the pocket is inside it); the
+        # tenon board grows 15 mm into the pocket: z from 50 - 15 = 35 to 250.
+        mb = mt["mortise"]["bbox_mm"]
+        for got, want in ((mb["min"], [0, 0, 0]), (mb["max"], [200, 200, 50])):
+            assert all(abs(g - w) < 0.5 for g, w in zip(got, want)), \
+                f"mortise board bbox changed: {mb}"
+        tb = mt["tenon"]["bbox_mm"]
+        assert abs(tb["min"][2] - 35) < 0.5 and abs(tb["max"][2] - 250) < 0.5, \
+            f"tenon board must run z 35..250 mm: {tb}"
 
         step = 15; print(f"[{step}] eval_ruby — count entities")
         ev_raw = await _maybe_skip_eval(
@@ -294,36 +339,67 @@ async def main() -> int:
                                target_id=id_sph, tool_id=id_cub, operation="union"))
         id_sph_union = uni["id"]  # операнды копируются; originals живы
 
-        step = 21; print(f"[{step}] dovetail on a TRANSLATED board (T-03)")
-        b_tail = parse(await call(conn, "create_component",
-                                  type="cube", dimensions=[120, 100, 20]))["id"]
+        step = 21; print(f"[{step}] mortise-tenon on a moved leg and an offset rail")
+        b_leg = parse(await call(conn, "create_component",
+                                 type="cube", dimensions=[50, 50, 300],
+                                 name="smoke_leg"))["id"]
         moved = parse(await call(conn, "transform_component",
-                                 id=b_tail, position=[800, 0, 0]))
+                                 id=b_leg, position=[800, 0, 0]))
         assert abs(moved["bbox_mm"]["min"][0] - 800) < 0.5, f"move failed: {moved}"
         # Идемпотентность absolute-семантики (T-04): повтор того же position
         # не смещает доску (старый relative-баг дал бы суммарно 1600).
         again = parse(await call(conn, "transform_component",
-                                 id=b_tail, position=[800, 0, 0]))
+                                 id=b_leg, position=[800, 0, 0]))
         assert abs(again["bbox_mm"]["min"][0] - 800) < 0.5, \
             f"absolute position must be idempotent (T-04): {again['bbox_mm']}"
-        b_pin = parse(await call(conn, "create_component",
-                                 type="cube", position=[800, 120, 0],
-                                 dimensions=[120, 100, 20]))["id"]
-        dv = parse(await call(conn, "create_dovetail",
-                              tail_id=b_tail, pin_id=b_pin,
-                              width=50, height=50, depth=15))
-        assert dv["boolean_cuts"]["failed"] == 0, f"dovetail cuts failed: {dv['boolean_cuts']}"
-        # До фикса T-03 хвосты улетали на величину сдвига (живьём: x до 1704
-        # при доске 800..920) — bbox обеих досок обязан остаться в объёме
-        # доски ± глубина соединения.
-        # DoD намеренно bbox-containment (ловит класс бага «улёт на |T|»);
-        # механический контакт досок (зазор 20 мм по Y) не ассертится.
-        for key in ("tail", "pin"):
-            bb = dv[key]["bbox_mm"]
-            assert bb["min"][0] >= 800 - 15 - 1 and bb["max"][0] <= 920 + 15 + 1, (
-                f"{key} board bbox {bb} escaped the board volume — "
-                f"frame-compensation regression (T-03)")
-        b_tail, b_pin = dv["tail"]["id"], dv["pin"]["id"]
+        # The rail touches the leg's +X face (x=850), flush with its front face
+        # (y=0) and 200 mm up: the contact area is y 0..20, z 200..280.
+        b_rail = parse(await call(conn, "create_component",
+                                  type="cube", position=[850, 0, 200],
+                                  dimensions=[200, 20, 80],
+                                  name="smoke_rail"))["id"]
+        mt2 = parse(await call(conn, "create_mortise_tenon",
+                               mortise_id=b_leg, tenon_id=b_rail,
+                               width=10, height=40, depth=20))
+        b_leg, b_rail = mt2["mortise"]["id"], mt2["tenon"]["id"]
+        assert mt2["mortise"]["name"] == "smoke_leg", f"leg name lost: {mt2['mortise']}"
+        assert mt2["tenon"]["name"] == "smoke_rail", f"rail name lost: {mt2['tenon']}"
+        # The leg keeps its x extent 800..850; the rail grows 20 mm into the leg
+        # and starts at x = 830.
+        lb = mt2["mortise"]["bbox_mm"]
+        assert abs(lb["min"][0] - 800) < 0.5 and abs(lb["max"][0] - 850) < 0.5, \
+            f"leg x extent changed: {lb}"
+        rb = mt2["tenon"]["bbox_mm"]
+        assert abs(rb["min"][0] - 830) < 0.5, f"rail must start at x=830 mm: {rb}"
+        # The pocket is centred on the contact area (centre y=10, z=240), not on
+        # the leg's face: its bottom, a face at x=830 looking along +X, spans
+        # y 5..15 and z 220..260.
+        raw = await _maybe_skip_eval(
+            "eval_ruby step 21 (pocket position)",
+            call(conn, "eval_ruby",
+                 code=_POCKET_RUBY.replace("__ID__", str(b_leg))),
+        )
+        if raw is None:
+            eval_skipped[0] += 1
+        else:
+            pocket = parse(raw)
+            assert pocket == [5.0, 15.0, 220.0, 260.0], (
+                f"pocket must be centred on the contact area, "
+                f"[y min, y max, z min, z max] mm: {pocket}")
+        # The tenon fills the pocket: its end, a face of the rail at x=830
+        # looking along -X, spans the same y 5..15 and z 220..260.
+        raw = await _maybe_skip_eval(
+            "eval_ruby step 21 (tenon position)",
+            call(conn, "eval_ruby",
+                 code=_TENON_RUBY.replace("__ID__", str(b_rail))),
+        )
+        if raw is None:
+            eval_skipped[0] += 1
+        else:
+            tenon_end = parse(raw)
+            assert tenon_end == [5.0, 15.0, 220.0, 260.0], (
+                f"the tenon must coincide with the pocket, "
+                f"[y min, y max, z min, z max] mm: {tenon_end}")
 
         step = 22; print(f"[{step}] eval_ruby syntax error — fast diagnostic, not a 60s hang (T-01)")
         t0 = time.monotonic()
@@ -385,7 +461,7 @@ async def main() -> int:
         # of the modeling steps: `delete_component` is itself an undoable
         # operation, so after the loop below step 25's undo rolls back the
         # LAST delete — resurrecting the most recently deleted ID — not the
-        # last modeling op (the step-21 dovetail). One resurrected group is expected to remain
+        # last modeling op (the step-21 mortise-tenon). One resurrected group is expected to remain
         # in the model after the run. Running undo before cleanup would
         # instead revert the last modeling operation and stale-ify IDs held
         # by the cleanup loop.
@@ -394,7 +470,7 @@ async def main() -> int:
         # consumed copies, not the originals. Same for id_sph/id_cub in step 20.
         step = 24; print(f"[{step}] cleanup: delete created components")
         for cid in [id1, id2, id_bool, b_mortise, b_tenon,
-                    id_sph, id_cub, id_sph_union, b_tail, b_pin]:
+                    id_sph, id_cub, id_sph_union, b_leg, b_rail]:
             try:
                 await call(conn, "delete_component", id=cid)
             except Exception as e:

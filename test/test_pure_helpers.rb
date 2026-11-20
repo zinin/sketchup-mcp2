@@ -1,7 +1,6 @@
 # test/test_pure_helpers.rb
 # T-23: тривиально тестируемые без SketchUp чистые хелперы не были покрыты
-# вовсе: pick_color (materials), filter_edges (operations), closest_face
-# (joints).
+# вовсе: pick_color (materials), filter_edges (operations).
 require "minitest/autorun"
 
 unless defined?(Sketchup)
@@ -40,12 +39,10 @@ module MCPforSketchUp
 end
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/materials"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
-require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints"
 
 class TestPureHelpers < Minitest::Test
   MAT = MCPforSketchUp::Handlers::Materials
   OPS = MCPforSketchUp::Handlers::Operations
-  J   = MCPforSketchUp::Handlers::Joints
 
   # ---------- pick_color ----------
 
@@ -72,43 +69,5 @@ class TestPureHelpers < Minitest::Test
     assert_equal %w[e1 e3], OPS.filter_edges(edges, [1, 3])
     assert_equal [],        OPS.filter_edges(edges, [])
     assert_equal %w[e0],    OPS.filter_edges(edges, [0, 99])  # несуществующий индекс молча пропущен
-  end
-
-  # ---------- closest_face ----------
-
-  FakeVec = Struct.new(:x, :y, :z) do
-    def clone
-      FakeVec.new(x, y, z)
-    end
-    def normalize!
-      self  # closest_face сравнивает |компоненты| — нормализация не влияет
-    end
-    def length
-      Math.sqrt(x * x + y * y + z * z)
-    end
-  end
-
-  def test_closest_face_picks_dominant_axis
-    assert_equal :east,   J.closest_face(FakeVec.new(5.0, 1.0, 1.0))
-    assert_equal :west,   J.closest_face(FakeVec.new(-5.0, 1.0, 1.0))
-    assert_equal :north,  J.closest_face(FakeVec.new(1.0, 5.0, 1.0))
-    assert_equal :south,  J.closest_face(FakeVec.new(1.0, -5.0, 1.0))
-    assert_equal :top,    J.closest_face(FakeVec.new(1.0, 1.0, 5.0))
-    assert_equal :bottom, J.closest_face(FakeVec.new(1.0, 1.0, -5.0))
-  end
-
-  def test_closest_face_tie_prefers_x_then_y
-    assert_equal :east, J.closest_face(FakeVec.new(1.0, 1.0, 1.0))
-    assert_equal :north, J.closest_face(FakeVec.new(0.0, 1.0, 1.0))
-  end
-
-  def test_closest_face_zero_vector_raises_32602
-    # Совпавшие центры досок: направление стыка не выводится — точный
-    # -32602 вместо произвольно выбранной грани.
-    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
-      J.closest_face(FakeVec.new(0.0, 0.0, 0.0))
-    end
-    assert_equal(-32602, err.code)
-    assert_match(/centers coincide/, err.message)
   end
 end

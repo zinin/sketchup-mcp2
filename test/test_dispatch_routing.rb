@@ -100,6 +100,13 @@ class TestDispatchRouting < Minitest::Test
       "READ_ONLY_TOOLS names a wire name that call_handler does not route"
   end
 
+  def test_withdrawn_joinery_tools_are_unknown
+    %w[create_dovetail create_finger_joint].each do |name|
+      err = assert_raises(MCPforSketchUp::Core::StructuredError) { Dispatch.call_handler(name, {}) }
+      assert_equal(-32601, err.code)
+    end
+  end
+
   def test_an_unknown_tool_is_method_not_found
     err = assert_raises(MCPforSketchUp::Core::StructuredError) do
       Dispatch.call_handler("no_such_tool", {})

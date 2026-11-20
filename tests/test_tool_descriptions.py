@@ -15,7 +15,7 @@ _OPERATIONS_RB = (
 
 async def test_every_tool_parameter_has_description():
     tools = await mcp.list_tools()
-    assert len(tools) == 22
+    assert len(tools) == 20
     missing = []
     for tool in tools:
         for pname, pschema in tool.inputSchema.get("properties", {}).items():
@@ -37,8 +37,7 @@ async def test_dimension_tools_mention_units():
     # (разрешение рендера в пикселях), units-требование к нему неверно.
     tools = {t.name: t for t in await mcp.list_tools()}
     for name in ("create_component", "transform_component", "chamfer_edge",
-                 "fillet_edge", "create_mortise_tenon", "create_dovetail",
-                 "create_finger_joint"):
+                 "fillet_edge", "create_mortise_tenon"):
         desc = tools[name].description or ""
         assert ("mm" in desc) or ("millimeter" in desc.lower()), f"{name}: нет units"
 
@@ -51,7 +50,7 @@ async def test_returns_lines_pin_top_response_shapes():
         "create_component": "{id, name, type, bbox_mm{min,max}|null}",
         "set_material": "{id, name, type, bbox_mm{min,max}|null}",
         "boolean_operation": "bbox_mm",
-        "create_mortise_tenon": "boolean_cuts",
+        "create_mortise_tenon": "{mortise: {id, name, type, bbox_mm|null}, tenon: {...}}",
         "list_components": "truncated",
         # Реальная форма stats из operations.rb::run_edge_op — ключа "failed"
         # не существует; дрейф докстринга от wire-формы ловится здесь.
@@ -116,6 +115,15 @@ async def test_group_only_tools_say_other_entities_fail():
     for name, frag in fragments.items():
         desc = " ".join((tools[name].description or "").split())
         assert frag in desc, f"{name}: в докстринге нет «{frag}»"
+
+
+async def test_mortise_tenon_description_states_the_contact_rules():
+    tools = {t.name: t for t in await mcp.list_tools()}
+    desc = " ".join((tools["create_mortise_tenon"].description or "").split())
+    for fragment in ("touch face to face", "multiples of 90 degrees",
+                     "new ids", "Nothing is half-built"):
+        assert fragment in desc, fragment
+    assert "boolean_cuts" not in desc
 
 
 async def test_export_scene_says_an_untitled_model_cannot_export_skp():
