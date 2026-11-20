@@ -145,9 +145,11 @@ module MCPforSketchUp
       # partial write may still leave the NON-security keys (host/port/log_level/
       # log_to_file/log_file_path) in a mixed new/old state; that is reconciled
       # on the next SketchUp restart when load_from_defaults! re-reads each pref.
-      # eval_enabled is exempt: it is persisted LAST (see the writes array
-      # below) so it never reaches disk unless every other key already
-      # succeeded — the gate is fail-closed on disk too, not just in-session.
+      # eval_enabled is exempt, both ways fail-closed (see the writes array
+      # below): opening the gate is persisted LAST, so it never reaches disk
+      # unless every other key already succeeded; closing it (M-31) is
+      # persisted FIRST and never rolled back, so a save that fails later
+      # cannot reopen it, in the session or on disk.
       # write_default==false is a vanishingly-rare fault (corrupt prefs, disk
       # full); the rollback + raise paths are covered by FailingWriter tests in
       # test_config.rb.
@@ -174,8 +176,13 @@ module MCPforSketchUp
           self.eval_enabled   = (eval_enabled == true) unless eval_enabled.nil?
           self.log_to_file    = !!log_to_file    unless log_to_file.nil?
           self.log_file_path  = log_file_path    unless log_file_path.nil?
+          closing = !eval_enabled.nil? && self.eval_enabled == false
 
-          writes = [
+          writes = []
+          # M-31: closing the gate is persisted FIRST — before any write that
+          # could fail — and the rescue below keeps it closed.
+          writes << ["eval_enabled",  false] if closing
+          writes += [
             ["host",          host],
             ["port",          port_int],
             ["log_level",     log_level],
@@ -187,7 +194,7 @@ module MCPforSketchUp
           # closed: any earlier failure aborts before this write (gate keeps its
           # prior closed value), and if this write itself fails it is likewise
           # never persisted. Disk-level fail-closed for the code-exec gate.
-          writes << ["eval_enabled",  self.eval_enabled]   unless eval_enabled.nil?
+          writes << ["eval_enabled",  true]   if !eval_enabled.nil? && !closing
           writes.each do |key, value|
             raise "Sketchup.write_default failed for #{key}" unless writer.write_default(SECTION, key, value)
           end
@@ -198,7 +205,8 @@ module MCPforSketchUp
           self.host          = snapshot[:host]
           self.port          = snapshot[:port]
           self.log_level     = snapshot[:log_level]
-          self.eval_enabled  = snapshot[:eval_enabled]
+          # A gate this call closed stays closed (M-31).
+          self.eval_enabled  = closing ? false : snapshot[:eval_enabled]
           self.log_to_file   = snapshot[:log_to_file]
           self.log_file_path = snapshot[:log_file_path]
           raise

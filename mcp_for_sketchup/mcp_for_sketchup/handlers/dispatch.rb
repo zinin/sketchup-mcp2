@@ -106,7 +106,48 @@ module MCPforSketchUp
         list_layers get_selection get_viewport_screenshot get_version
       ].freeze
 
+      # M-29 (spec §7.4): the arguments each wire name's handler reads. Any
+      # other argument is refused with -32602 before the handler runs, so a
+      # misspelt option fails loudly instead of being ignored.
+      # tests/test_contract.py checks this table against the parameters of the
+      # MCP tools in tools.py, and pins the arguments only a direct client can
+      # send (segments, edge_indices, width, height).
+      ALLOWED_ARGS = {
+        "create_component"        => %w[type position dimensions name segments],
+        "delete_component"        => %w[id],
+        "transform_component"     => %w[id position rotation scale],
+        "set_material"            => %w[id material],
+        "export"                  => %w[format width height],
+        "export_scene"            => %w[format width height],
+        "boolean_operation"       => %w[target_id tool_id operation delete_originals],
+        "chamfer_edges"           => %w[entity_id distance edge_indices],
+        "fillet_edges"            => %w[entity_id radius segments edge_indices],
+        "create_mortise_tenon"    => %w[mortise_id tenon_id width height depth offset_x offset_y offset_z],
+        "eval_ruby"               => %w[code],
+        "get_model_info"          => %w[],
+        "list_components"         => %w[recursive max_depth limit offset response_format],
+        "get_component_info"      => %w[id],
+        "find_components"         => %w[name layer type max_depth limit offset response_format],
+        "list_layers"             => %w[],
+        "create_layer"            => %w[name],
+        "undo"                    => %w[],
+        "get_selection"           => %w[],
+        "get_viewport_screenshot" => %w[max_size view_preset zoom_extents style restore_view],
+        "get_version"             => %w[],
+      }.freeze
+
+      # Names the first unknown argument in the order the client sent them. A
+      # tool without an entry is left to call_handler's -32601.
+      def self.check_arguments!(tool, params)
+        allowed = ALLOWED_ARGS[tool]
+        return if allowed.nil?
+        unknown = params.keys.find { |name| !allowed.include?(name) }
+        return if unknown.nil?
+        raise Core::StructuredError.new(-32602, "unknown argument '#{unknown}' for #{tool}")
+      end
+
       def self.call_handler(tool, params)
+        check_arguments!(tool, params)
         case tool
         when "create_component"      then Handlers::Geometry.create_component(params)
         when "delete_component"      then Handlers::Geometry.delete_component(params)

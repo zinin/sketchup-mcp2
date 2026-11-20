@@ -357,6 +357,20 @@ class TestConfig < Minitest::Test
     refute C.eval_enabled?, "eval gate must remain closed after a failed save"
   end
 
+  # M-31: closing the eval gate is saved before anything else and never
+  # rolled back — a save that fails later must not reopen arbitrary code
+  # execution, in the session or on disk.
+  def test_closing_the_eval_gate_is_saved_first_and_stays_closed
+    C.eval_enabled = true
+    writer = FailingWriter.new(fail_on_key: "host")
+    assert_raises(RuntimeError) do
+      C.update!(host: "127.0.0.1", port: 9876, log_level: "WARN", eval_enabled: false, writer: writer)
+    end
+    assert_equal ["MCPforSketchUp", "eval_enabled", false], writer.writes.first
+    assert_equal false, C.eval_enabled
+    refute C.eval_enabled?
+  end
+
   def test_load_from_defaults_coerces_non_boolean_eval_enabled_to_false
     # Security (codex 6th-review): a persisted eval_enabled that is NOT a native
     # boolean (tampered or legacy string "true"/"false", an integer, etc.) must

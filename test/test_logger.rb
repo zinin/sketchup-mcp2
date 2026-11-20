@@ -67,6 +67,24 @@ class TestLogger < Minitest::Test
     end
   end
 
+  # M-31: one line is one log record. Control characters in a message (a
+  # model name, an exception message, a peer's input) are escaped, not
+  # emitted, so nothing can forge a line of its own.
+  def test_control_characters_are_escaped
+    MCPforSketchUp::Core::Logger.log("WARN", "a\nb\rc\td\x01e\x7Ff")
+    assert_equal 1, captured_lines.length, captured_lines.inspect
+    assert last_line.end_with?('a\nb\rc\td\x01e\x7Ff'), last_line
+  end
+
+  def test_backtrace_lines_are_escaped
+    MCPforSketchUp::Core::Config.log_level = "DEBUG"
+    err = RuntimeError.new("boom")
+    err.set_backtrace(["evil.rb:1\n[forged] line", "b.rb:2", "c.rb:3"])
+    MCPforSketchUp::Core::Logger.log_error("server.timer", err)
+    assert_equal 4, captured_lines.length, captured_lines.inspect
+    assert_includes captured_lines[1], 'evil.rb:1\n[forged] line'
+  end
+
   def test_log_error_without_client_label_is_unchanged
     err = RuntimeError.new("boom")
     MCPforSketchUp::Core::Logger.log_error("server.timer", err)
