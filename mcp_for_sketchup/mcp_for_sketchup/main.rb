@@ -18,6 +18,7 @@ module MCPforSketchUp
     core/config
     core/errors
     core/compat
+    core/auth
     helpers/units
     core/logger
     helpers/validation
@@ -47,6 +48,8 @@ module MCPforSketchUp
 
   # Hydrate Config from SketchUp preferences (replaces ENV-based config).
   MCPforSketchUp::Core::Config.load_from_defaults!
+  # M-06: the MCP token, made and saved on the first start.
+  MCPforSketchUp::Core::Config.load_token!
 
   def self.install_menu
     menu = ::UI.menu("Plugins").add_submenu("MCP Server")

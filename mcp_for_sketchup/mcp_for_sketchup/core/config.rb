@@ -24,9 +24,14 @@ module MCPforSketchUp
       MAX_HOST_LENGTH = 253
       HOST_CHARSET    = /\A[A-Za-z0-9._\-:]+\z/
 
+      # M-06 (spec §7.1): the preference that keeps the MCP token. The token is
+      # made by Auth.generate_token, never typed: the challenge-response in the
+      # handshake is only as strong as the token.
+      TOKEN_KEY = "auth_token"
+
       class << self
         attr_accessor :host, :port, :log_level,
-                      :eval_enabled, :log_to_file, :log_file_path
+                      :eval_enabled, :log_to_file, :log_file_path, :token
       end
 
       # Read persisted prefs into runtime state. Untrusted input — fall back
@@ -73,6 +78,40 @@ module MCPforSketchUp
         default
       end
       private_class_method :coerce_bool_pref
+
+      # Called once when the plugin loads (main.rb). Keeps a valid saved token;
+      # a missing or malformed one is replaced by a new token, which is saved.
+      # When the save fails the new token still serves this session, and the
+      # next start makes another. The token never reaches a log line.
+      def self.load_token!(store = Sketchup)
+        saved = store.read_default(SECTION, TOKEN_KEY, nil)
+        if Auth.hex64?(saved)
+          self.token = saved
+          return saved
+        end
+        log_warning("config: the saved #{TOKEN_KEY} is not a valid token; making a new one") unless saved.nil?
+        self.token = Auth.generate_token
+        unless store.write_default(SECTION, TOKEN_KEY, token)
+          log_warning("config: could not save the MCP token; a new one will be made at the next start")
+        end
+        token
+      end
+
+      # Settings → Regenerate. The new token is saved before it takes effect: an
+      # unsaved one would give way to the old token at the next start, and the
+      # old token would work again. So a failed save raises and keeps the old one.
+      def self.regenerate_token!(store = Sketchup)
+        fresh = Auth.generate_token
+        raise "Sketchup.write_default failed for #{TOKEN_KEY}" unless store.write_default(SECTION, TOKEN_KEY, fresh)
+        self.token = fresh
+      end
+
+      # Guarded like warn_invalid_pref: config.rb can run before core/logger is
+      # loaded, or in a test that loads config.rb alone.
+      def self.log_warning(message)
+        Logger.log("WARN", message) if defined?(Core::Logger)
+      end
+      private_class_method :log_warning
 
       def self.valid_host?(host)
         !host.empty? && host !~ /\s/ && host.length <= MAX_HOST_LENGTH && host =~ HOST_CHARSET
