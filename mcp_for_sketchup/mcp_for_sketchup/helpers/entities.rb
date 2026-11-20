@@ -49,18 +49,24 @@ module MCPforSketchUp
         entity_collection(group_or_component)
       end
 
-      # Solid-операции (subtract/union) возвращают НОВУЮ группу и теряют имя,
-      # тег (layer) и собственный материал исходной. identity_of снимает их
-      # до операции, restore_identity! возвращает на результат.
-      # Экземпляр компонента без собственного имени (из 3D Warehouse, импорта)
-      # Outliner показывает по имени определения — его и берём. Группа держит
-      # своё имя: её определение названо автоматически («Group#N»).
-      def self.identity_of(entity)
+      # The name the Outliner shows: the entity's own name, or for a component
+      # instance without one (from the 3D Warehouse, an import) its
+      # definition's name. A group keeps its own name: its definition is named
+      # automatically («Group#N»).
+      def self.display_name(entity)
         name = entity.name
         if name.to_s.empty? && entity.is_a?(Sketchup::ComponentInstance)
           name = entity.definition.name
         end
-        { name: name, layer: entity.layer, material: entity.material }
+        name
+      end
+
+      # Solid-операции (subtract/union) возвращают НОВУЮ группу и теряют имя,
+      # тег (layer) и собственный материал исходной. identity_of снимает их
+      # до операции, restore_identity! возвращает на результат; имя — то, что
+      # показывал Outliner (display_name).
+      def self.identity_of(entity)
+        { name: display_name(entity), layer: entity.layer, material: entity.material }
       end
 
       # Material ставится только если он был (nil — не трогаем у цели свой).
