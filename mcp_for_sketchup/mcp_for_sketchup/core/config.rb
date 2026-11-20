@@ -1,4 +1,5 @@
 # mcp_for_sketchup/mcp_for_sketchup/core/config.rb
+require "fileutils"
 require "tmpdir"
 
 module MCPforSketchUp
@@ -28,10 +29,14 @@ module MCPforSketchUp
       MAX_HOST_LENGTH = 253
       HOST_CHARSET    = /\A[A-Za-z0-9._\-:]+\z/
 
-      # M-06 (spec §7.1): the preference that keeps the MCP token. The token is
-      # made by Auth.generate_token, never typed: the challenge-response in the
-      # handshake is only as strong as the token.
-      TOKEN_KEY = "auth_token"
+      # M-06 (spec §7.1): the MCP token lives in a file of its own,
+      # <application data>/MCPforSketchUp/auth_token (token_path). It is made by
+      # Auth.generate_token, never typed: the challenge-response in the handshake
+      # is only as strong as the token. Not in SketchUp's preferences: SketchUp
+      # writes them to disk only when it closes normally, so after a crash a
+      # regenerated token gave way to the old one (Task 11).
+      TOKEN_DIR_NAME  = "MCPforSketchUp"
+      TOKEN_FILE_NAME = "auth_token"
 
       class << self
         attr_accessor :host, :port, :log_level,
@@ -83,32 +88,78 @@ module MCPforSketchUp
       end
       private_class_method :coerce_bool_pref
 
-      # Called once when the plugin loads (main.rb). Keeps a valid saved token;
-      # a missing or malformed one is replaced by a new token, which is saved.
-      # When the save fails the new token still serves this session, and the
-      # next start makes another. The token never reaches a log line.
-      def self.load_token!(store = Sketchup)
-        saved = store.read_default(SECTION, TOKEN_KEY, nil)
-        if Auth.hex64?(saved)
-          self.token = saved
-          return saved
+      # The token file: the user's application data, not the Plugins folder (an
+      # uninstall removes that) — %APPDATA% on Windows, ~/Library/Application
+      # Support on macOS, ~/.config anywhere else (tests, development).
+      def self.token_path(env: ENV, platform: RUBY_PLATFORM, home: Dir.home)
+        base =
+          if platform =~ /mswin|mingw|cygwin/
+            env["APPDATA"] || File.join(home, "AppData", "Roaming")
+          elsif platform.include?("darwin")
+            File.join(home, "Library", "Application Support")
+          else
+            File.join(home, ".config")
+          end
+        File.join(base, TOKEN_DIR_NAME, TOKEN_FILE_NAME)
+      end
+
+      # Called once when the plugin loads (main.rb). Keeps a valid token from the
+      # file; a missing or malformed one is replaced by a new token, which is
+      # written. When the write fails the new token still serves this session,
+      # and the next start makes another. A file that cannot be read is left
+      # alone — the token in it may be fine — and this session gets a new one.
+      # The token never reaches a log line.
+      def self.load_token!(path = token_path)
+        begin
+          saved = File.binread(path).force_encoding(Encoding::UTF_8).scrub("?").strip
+        rescue Errno::ENOENT, Errno::ENOTDIR
+          saved = nil
+        rescue SystemCallError, IOError => e
+          log_warning("config: could not read the MCP token from #{path} (#{e.class}); this session uses a new one")
+          return self.token = Auth.generate_token
         end
-        log_warning("config: the saved #{TOKEN_KEY} is not a valid token; making a new one") unless saved.nil?
+        return self.token = saved if Auth.hex64?(saved)
+        log_warning("config: #{path} does not hold a valid MCP token; making a new one") unless saved.nil?
         self.token = Auth.generate_token
-        unless store.write_default(SECTION, TOKEN_KEY, token)
-          log_warning("config: could not save the MCP token; a new one will be made at the next start")
+        begin
+          write_token_file(path, token)
+        rescue SystemCallError, IOError => e
+          log_warning("config: could not save the MCP token to #{path} (#{e.class}); a new one will be made at the next start")
         end
         token
       end
 
-      # Settings → Regenerate. The new token is saved before it takes effect: an
-      # unsaved one would give way to the old token at the next start, and the
-      # old token would work again. So a failed save raises and keeps the old one.
-      def self.regenerate_token!(store = Sketchup)
+      # Settings → Regenerate. The new token is on disk before it takes effect:
+      # an unwritten one would give way to the old token at the next start, and
+      # the old token would work again. So a failed write raises and keeps the
+      # old one.
+      def self.regenerate_token!(path = token_path)
         fresh = Auth.generate_token
-        raise "Sketchup.write_default failed for #{TOKEN_KEY}" unless store.write_default(SECTION, TOKEN_KEY, fresh)
+        write_token_file(path, fresh)
         self.token = fresh
       end
+
+      # Written where a crash cannot undo it: a temporary file next to the
+      # target, flushed to disk, then renamed over it, so the file holds the old
+      # token or the new one, never part of one. Private to the user: the
+      # directory 0700 and the file 0600 (on Windows the profile's ACL does it).
+      def self.write_token_file(path, token)
+        tmp = "#{path}.tmp"
+        FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
+        File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC | File::BINARY, 0o600) do |file|
+          file.write(token)
+          file.flush
+          file.fsync
+        end
+        File.rename(tmp, path)
+      ensure
+        begin
+          File.delete(tmp) if tmp && File.exist?(tmp)
+        rescue SystemCallError
+          nil
+        end
+      end
+      private_class_method :write_token_file
 
       # Guarded like warn_invalid_pref: config.rb can run before core/logger is
       # loaded, or in a test that loads config.rb alone.

@@ -112,7 +112,7 @@ The Ruby side logs at **`WARN` by default**, so it stays quiet in SketchUp's sha
 
 ## Security model
 
-The plugin's TCP server requires a **token** from every client, on every address, loopback included. The plugin makes the token — 32 random bytes — on its first start and keeps it in SketchUp's preferences. **Settings** shows it read-only, with **Copy** and **Regenerate**; each MCP client gets it through `SKETCHUP_MCP_TOKEN`.
+The plugin's TCP server requires a **token** from every client, on every address, loopback included. The plugin makes the token — 32 random bytes — on its first start and keeps it in a file of its own, `MCPforSketchUp\auth_token` under `%APPDATA%` (macOS: `~/Library/Application Support/MCPforSketchUp/auth_token`), written at once so that a crash cannot bring back a token you regenerated. **Settings** shows it read-only, with **Copy** and **Regenerate**; each MCP client gets it through `SKETCHUP_MCP_TOKEN`.
 
 - **What the token protects: who can connect.** In the handshake each side proves it knows the token with an HMAC over two fresh nonces; the token itself never crosses the wire. A process without it — another user's, a machine on the LAN, a page in a browser — is refused with `-32003 authentication failed` and disconnected before any tool runs. A client refuses a server that cannot prove it knows the token, so a program that took the port cannot pose as the plugin.
 - **What it does not protect: the traffic.** Nothing is encrypted, and the messages after the handshake are not authenticated. Someone who can sit between the client and SketchUp can read the traffic and change it. On a network you do not trust, keep the plugin on `127.0.0.1` and use the SSH tunnel below.

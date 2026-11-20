@@ -1,18 +1,22 @@
 # test/test_config_token.rb
-# M-06 (spec §7.1): the plugin's MCP token in SketchUp's preferences.
+# M-06 (spec §7.1): the plugin's MCP token, in a file of its own.
 #
-# Config.load_token! runs once when the plugin loads. It keeps a valid saved
-# token and replaces a missing or malformed one with a new token, which it
-# saves; when the save fails, the token still serves this session.
-# Config.regenerate_token! (Settings → Regenerate) saves a new token before it
-# takes effect, so a failed save keeps the old one. The token never reaches a
+# Config.load_token! runs once when the plugin loads. It keeps a valid token
+# from the file and replaces a missing or malformed one with a new token, which
+# it writes; when the write fails, the token still serves this session.
+# Config.regenerate_token! (Settings → Regenerate) writes a new token before it
+# takes effect, so a failed write keeps the old one. The token never reaches a
 # log line.
 #
+# Not SketchUp's preferences (Task 11): SketchUp writes them to disk only when
+# it closes normally, so after a crash a regenerated token gave way to the old
+# one. The file is written at once: a temporary file, flushed, then renamed.
+#
 # A file of its own: test_config.rb loads config.rb alone, and these tests need
-# the logger, whose calls they record. Fakes: TokenStore answers
-# read_default / write_default for the token key and records the writes;
-# Core::Logger.log is stubbed per test (SingletonStubs).
+# the logger, whose calls they record (Core::Logger.log is stubbed per test).
 require "minitest/autorun"
+require "tmpdir"
+require "fileutils"
 
 require_relative "support/singleton_stubs"
 require_relative "support/auth_vectors"
@@ -28,66 +32,58 @@ class TestConfigToken < Minitest::Test
   C = MCPforSketchUp::Core::Config
   HEX64 = /\A[0-9a-f]{64}\z/
 
-  class TokenStore
-    attr_reader :writes
-
-    def initialize(saved: nil, saves: true)
-      @saved = saved
-      @saves = saves
-      @writes = []
-    end
-
-    def read_default(_section, key, default)
-      key == "auth_token" && !@saved.nil? ? @saved : default
-    end
-
-    def write_default(section, key, value)
-      @writes << [section, key, value]
-      @saves
-    end
-  end
-
   def setup
     ConfigReset.reset_all!
+    @dir  = Dir.mktmpdir("mcp-token")
+    @path = File.join(@dir, "MCPforSketchUp", "auth_token")
     @logged = []
     logged = @logged
     stub_singleton(MCPforSketchUp::Core::Logger, :log) { |level, msg| logged << [level, msg] }
+  end
+
+  def teardown
+    FileUtils.remove_entry(@dir)
   end
 
   def warnings
     @logged.select { |level, _| level == "WARN" }.map(&:last)
   end
 
-  def test_load_token_creates_and_saves_a_token
-    store = TokenStore.new
-    token = C.load_token!(store)
+  def write(text)
+    FileUtils.mkdir_p(File.dirname(@path))
+    File.binwrite(@path, text)
+  end
+
+  def test_load_token_creates_and_writes_a_token
+    token = C.load_token!(@path)
     assert_match HEX64, token
     assert_equal token, C.token
-    assert_equal [["MCPforSketchUp", "auth_token", token]], store.writes
+    assert_equal token, File.binread(@path)
     assert_empty warnings, "a first start is not a warning"
   end
 
-  def test_load_token_keeps_a_valid_stored_token
-    store = TokenStore.new(saved: AuthVectors::TOKEN)
-    assert_equal AuthVectors::TOKEN, C.load_token!(store)
+  def test_load_token_keeps_a_valid_token
+    write("#{AuthVectors::TOKEN}\n")
+    assert_equal AuthVectors::TOKEN, C.load_token!(@path)
     assert_equal AuthVectors::TOKEN, C.token
-    assert_empty store.writes
+    assert_equal "#{AuthVectors::TOKEN}\n", File.binread(@path), "a kept token is not rewritten"
+    assert_empty warnings
   end
 
-  def test_load_token_replaces_a_malformed_stored_token
-    store = TokenStore.new(saved: "x" * 10)
-    token = C.load_token!(store)
+  def test_load_token_replaces_a_malformed_token
+    write("x" * 10)
+    token = C.load_token!(@path)
     assert_match HEX64, token
-    assert_equal [["MCPforSketchUp", "auth_token", token]], store.writes
+    assert_equal token, File.binread(@path)
     assert_equal 1, warnings.length
-    assert_includes warnings[0], "auth_token"
+    assert_includes warnings[0], @path
     refute_includes warnings[0], "x" * 10
     refute_includes warnings[0], token
   end
 
-  def test_load_token_keeps_the_token_when_saving_fails
-    store = TokenStore.new(saves: false)
-    token = C.load_token!(store)
+  def test_load_token_keeps_the_token_when_writing_fails
+    File.write(File.join(@dir, "MCPforSketchUp"), "a file where the directory should be")
+    token = C.load_token!(@path)
     assert_match HEX64, token
     assert_equal token, C.token
     assert_equal 1, warnings.length
@@ -95,20 +91,51 @@ class TestConfigToken < Minitest::Test
     refute_includes warnings[0], token
   end
 
-  def test_regenerate_token_saves_a_new_token
+  # A read error is not a missing file: the stored token may be fine, so this
+  # session gets a new one and the entry stays as it was.
+  def test_load_token_leaves_an_entry_it_cannot_read
+    FileUtils.mkdir_p(@path)
+    token = C.load_token!(@path)
+    assert_match HEX64, token
+    assert File.directory?(@path)
+    assert_equal 1, warnings.length
+    assert_includes warnings[0], "could not read the MCP token"
+  end
+
+  def test_regenerate_token_writes_the_new_token_before_it_takes_effect
+    write(AuthVectors::TOKEN)
     C.token = AuthVectors::TOKEN
-    store = TokenStore.new
-    token = C.regenerate_token!(store)
+    token = C.regenerate_token!(@path)
     assert_match HEX64, token
     refute_equal AuthVectors::TOKEN, token
     assert_equal token, C.token
-    assert_equal [["MCPforSketchUp", "auth_token", token]], store.writes
+    assert_equal token, File.binread(@path)
+    refute File.exist?("#{@path}.tmp"), "no temporary file is left"
   end
 
-  def test_regenerate_token_keeps_the_old_token_when_saving_fails
+  def test_regenerate_token_keeps_the_old_token_when_writing_fails
+    write(AuthVectors::TOKEN)
     C.token = AuthVectors::TOKEN
-    store = TokenStore.new(saves: false)
-    assert_raises(RuntimeError) { C.regenerate_token!(store) }
+    stub_singleton(File, :rename) { |*_| raise Errno::EACCES, "rename" }
+    assert_raises(Errno::EACCES) { C.regenerate_token!(@path) }
     assert_equal AuthVectors::TOKEN, C.token
+    assert_equal AuthVectors::TOKEN, File.binread(@path), "the file still holds the old token"
+    refute File.exist?("#{@path}.tmp"), "no temporary file is left"
+  end
+
+  def test_the_token_file_is_private
+    skip "POSIX modes" if Gem.win_platform?
+    C.load_token!(@path)
+    assert_equal 0o600, File.stat(@path).mode & 0o777
+    assert_equal 0o700, File.stat(File.dirname(@path)).mode & 0o777
+  end
+
+  def test_token_path_follows_the_platform
+    assert_equal "C:/Users/u/AppData/Roaming/MCPforSketchUp/auth_token",
+                 C.token_path(env: { "APPDATA" => "C:/Users/u/AppData/Roaming" }, platform: "x64-mingw-ucrt", home: "C:/Users/u")
+    assert_equal "/Users/u/Library/Application Support/MCPforSketchUp/auth_token",
+                 C.token_path(env: {}, platform: "arm64-darwin23", home: "/Users/u")
+    assert_equal "/home/u/.config/MCPforSketchUp/auth_token",
+                 C.token_path(env: {}, platform: "x86_64-linux", home: "/home/u")
   end
 end

@@ -82,7 +82,10 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   client_nonce + server_nonce)`, all lowercase hex (`core/auth.rb`,
   `src/sketchup_mcp/auth.py`; both test suites pin one vector). The token
   — 32 random bytes, 64 hex — is made on the plugin's first load
-  (`Config.load_token!`, pref `auth_token`), shown read-only in Settings
+  (`Config.load_token!`) and kept in a file of its own, `MCPforSketchUp/auth_token` under
+  `%APPDATA%` / `~/Library/Application Support` (`Config.token_path`), written at once
+  through a temporary file and a rename — SketchUp writes its preferences to disk only on
+  a clean exit, so a token kept there came back after a crash. Shown read-only in Settings
   (Copy, Regenerate — which disconnects every client), and given to the
   client as `SKETCHUP_MCP_TOKEN`; without a well-formed one the client
   opens no socket. It is never logged, sent, or put in an error. There is
@@ -113,7 +116,7 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 767 runs / 3268 assertions
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 770 runs / 3283 assertions
 uv run pytest tests/ -q        # Python (pytest) — 260 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
@@ -130,7 +133,7 @@ Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load
 |---|---|---|
 | Host | `127.0.0.1` | bind address. **⚠ Security:** a LAN address or `0.0.0.0` lets every machine that can reach the port try to connect: a client still needs the token, but the traffic is **not encrypted** (readable, and changeable after the handshake). On networks you do not trust keep `127.0.0.1` and use the reverse SSH tunnel in README → Security model. Settings warns about any non-loopback host (`Core::Net.loopback?`, the check the server's bind WARN uses too). |
 | Port | `9876` | 1..65535 |
-| Token | made on first load | 64 hex characters (32 random bytes), pref `auth_token`. Shown read-only with **Copy** and **Regenerate**; Regenerate saves a new token, then disconnects every client. Never typed, logged or sent. |
+| Token | made on first load | 64 hex characters (32 random bytes), in the file `MCPforSketchUp/auth_token` (not a preference; see the handshake bullet above). Shown read-only with **Copy** and **Regenerate**; Regenerate saves a new token, then disconnects every client. Never typed, logged or sent. |
 | Log Level | `WARN` | `DEBUG` / `INFO` / `WARN` / `ERROR`. Default `WARN` so info/debug never clutter SketchUp's shared Ruby console; every emitted line is prefixed `[<UTC iso8601>] [MCPforSU] [LEVEL]`. |
 | Enable Ruby evaluation | **on** | Gates `eval_ruby`. Ships enabled; uncheck to close the gate. Re-enabling it pops a blocking security confirm (arbitrary code ⇒ full filesystem/network/shell). |
 | Log to file | `false` | Mirror every console line to a UTF-8 file (written in addition to the console, not instead of it). |
