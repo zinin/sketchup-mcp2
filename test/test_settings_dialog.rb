@@ -42,7 +42,7 @@ end
 
 # Focused on the pure function js_safe_json. (on_save's eval-confirm flow is
 # covered separately below via the UI/Sketchup stubs above; show / build_dialog
-# construct a real UI::HtmlDialog and still require integration tests.)
+# run against a fake UI::HtmlDialog in TestSettingsDialogSize.)
 class TestSettingsDialogJsSafeJson < Minitest::Test
   S = MCPforSketchUp::UI::SettingsDialog
 
@@ -526,5 +526,160 @@ class TestSettingsHtmlEvalWarning < Minitest::Test
     state = C::DEFAULTS[:eval_enabled] ? "ON" : "OFF"
     assert_includes eval_warning_text, "#{state} by default",
       "the warning must state the default of Config::DEFAULTS[:eval_enabled] (#{state})"
+  end
+end
+
+# Task 10, after the first live look: the window was 780 px tall, and Save fell
+# below the edge of the screen. The settings now fit one compact column: an
+# error or a note takes a line only when it has text, longer texts open from a
+# (?) button, and Cancel and Save sit in a footer outside the part that scrolls.
+# The page is HTML and JavaScript that nothing here runs, so its structure is
+# pinned as text, like the eval warning above.
+class TestSettingsHtmlLayout < Minitest::Test
+  S = MCPforSketchUp::UI::SettingsDialog
+
+  def html
+    @html ||= File.read(S::HTML_PATH, encoding: "UTF-8")
+  end
+
+  def css
+    html[%r{<style>(.*?)</style>}m, 1]
+  end
+
+  # The inner HTML of every <div class="row …">; a row holds no nested div.
+  def rows
+    html.scan(%r{<div class="row[^"]*"[^>]*>(.*?)</div>}m).flatten
+  end
+
+  def test_errors_and_notes_take_no_space_until_shown
+    %w[host port log_level log_file_path eval_enabled].each do |key|
+      assert_includes html, %(<div class="error" id="#{key}-error"></div>)
+    end
+    assert_includes html, %(<div class="note" id="token-status"></div>)
+    assert_match(/\.error:empty,\s*\.note:empty\s*\{\s*display:\s*none;/, css)
+    refute_match(/min-height/, css, "no line is kept for an error that is not there")
+  end
+
+  def test_buttons_sit_in_a_footer_outside_the_scrolling_content
+    main   = html[%r{<main>(.*?)</main>}m, 1]
+    footer = html[%r{<footer>(.*?)</footer>}m, 1]
+    refute_nil main
+    refute_nil footer
+    %w[btn-cancel btn-save].each do |id|
+      assert_includes footer, %(id="#{id}")
+      refute_includes main, %(id="#{id}")
+    end
+    assert_match(/body\s*\{[^}]*flex-direction:\s*column/, css)
+    assert_match(/main\s*\{[^}]*overflow-y:\s*auto/, css)
+    assert_match(/footer\s*\{[^}]*flex:\s*0 0 auto/, css)
+  end
+
+  def test_host_and_port_share_a_row
+    row = rows.find { |r| r.include?('id="host"') }
+    refute_nil row
+    assert_includes row, 'id="port"'
+  end
+
+  def test_log_path_shows_only_when_logging_to_file
+    assert_match(%r{<div class="row" id="log-file-row" hidden>\s*<label for="log_file_path">}, html)
+    # A row is display: flex, which would win over the hidden attribute.
+    assert_match(/\[hidden\]\s*\{\s*display:\s*none\s*!important;/, css)
+    assert_includes html,
+      "document.getElementById('log-file-row').hidden = !document.getElementById('log_to_file').checked;"
+    apply = html[/window\.applyState = function \(state\) \{.*?\n    \};/m]
+    refute_nil apply
+    assert_includes apply, "syncLogFileRow();"
+    assert_includes html, "getElementById('log_to_file').addEventListener('change', syncLogFileRow);"
+  end
+
+  def test_long_texts_open_on_demand
+    %w[host-warning-text token-help eval-warning].each do |id|
+      assert_includes html, %(data-toggle="#{id}")
+      assert_match(/<div class="more[^"]*" id="#{id}" hidden>/, html)
+    end
+    assert_includes html, "target.hidden = !target.hidden;"
+    assert_includes html, "⚠ Other machines can connect (they need the token); the traffic is not encrypted"
+  end
+end
+
+# The window opens compact: 560×400 logical pixels of content (SketchUp scales
+# them with the display; width and height would otherwise be the outer frame,
+# title bar included). SketchUp keeps the size a dialog had under its
+# preferences_key — 500×780 from earlier releases — so show sets the size
+# again once the dialog is open.
+class TestSettingsDialogSize < Minitest::Test
+  S = MCPforSketchUp::UI::SettingsDialog
+
+  class FakeHtmlDialog
+    STYLE_DIALOG = 0
+
+    class << self
+      attr_accessor :last
+    end
+
+    attr_reader :options, :calls
+
+    def initialize(options)
+      @options = options
+      @calls   = []
+      self.class.last = self
+    end
+
+    def add_action_callback(_name); end
+    def set_on_closed; end
+    def set_file(_path); end
+
+    def visible?
+      true
+    end
+
+    def show
+      @calls << [:show]
+    end
+
+    def set_content_size(width, height)
+      @calls << [:set_content_size, width, height]
+    end
+
+    def set_size(width, height)
+      @calls << [:set_size, width, height]
+    end
+  end
+
+  # SketchUp before 2021.1: no set_content_size, and width and height are the
+  # outer frame.
+  class OldHtmlDialog < FakeHtmlDialog
+    undef_method :set_content_size
+  end
+
+  def setup
+    @original = ::UI.const_defined?(:HtmlDialog, false) ? ::UI::HtmlDialog : nil
+    S.instance_variable_set(:@dialog, nil)
+  end
+
+  def teardown
+    ::UI.send(:remove_const, :HtmlDialog) if ::UI.const_defined?(:HtmlDialog, false)
+    ::UI.const_set(:HtmlDialog, @original) if @original
+    S.instance_variable_set(:@dialog, nil)
+  end
+
+  def use(dialog_class)
+    ::UI.send(:remove_const, :HtmlDialog) if ::UI.const_defined?(:HtmlDialog, false)
+    ::UI.const_set(:HtmlDialog, dialog_class)
+  end
+
+  def test_show_opens_a_compact_window
+    use(FakeHtmlDialog)
+    S.show
+    dialog = FakeHtmlDialog.last
+    assert_equal true, dialog.options[:use_content_size]
+    assert_equal [560, 400], [dialog.options[:width], dialog.options[:height]]
+    assert_equal [[:show], [:set_content_size, 560, 400]], dialog.calls
+  end
+
+  def test_show_on_sketchup_before_2021_sets_the_outer_size
+    use(OldHtmlDialog)
+    S.show
+    assert_equal [[:show], [:set_size, 560, 400]], OldHtmlDialog.last.calls
   end
 end

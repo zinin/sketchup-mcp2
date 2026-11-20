@@ -5,109 +5,115 @@
   <title>MCP Server for SketchUp Settings</title>
   <style>
     /* Use em / flex-basis instead of fixed px so the dialog survives Windows
-       125–200% display scaling and macOS Retina without overlap. */
-    body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; font-size: 13px; margin: 1em; color: #222; }
-    .row { display: flex; align-items: center; margin-bottom: 0.3em; }
-    .row label { flex: 0 0 10em; }
-    .row input[type="text"], .row select { flex: 1; padding: 0.3em 0.5em; font-size: 1em; box-sizing: border-box; }
-    .row.bool input { flex: 0 0 auto; margin-right: 0.6em; }
-    .row.bool label { flex: 1 1 auto; }
-    .error { color: #c00; font-size: 0.85em; margin: 0 0 0.6em 10em; min-height: 1.1em; }
-    .status { border-top: 1px solid #ccc; padding-top: 0.7em; margin-top: 1em; font-size: 0.95em; color: #444; }
-    .warning { color: #c80; margin-top: 0.3em; }
-    .section-title { font-weight: bold; margin: 1em 0 0.3em 0; border-bottom: 1px solid #eee; padding-bottom: 0.2em; }
-    .buttons { text-align: right; margin-top: 1.1em; }
-    button { padding: 0.45em 1em; margin-left: 0.5em; font-size: 1em; }
+       125–200% display scaling and macOS Retina without overlap.
+       One compact column (Task 10): the settings scroll in <main> when they
+       have to, and the footer with Cancel and Save stays in view. An error or
+       a note takes a line only when it has text; a longer text opens from its
+       (?) button. */
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; overflow: hidden; background: #fff; color: #222;
+           font-family: -apple-system, "Segoe UI", Arial, sans-serif; font-size: 13px; }
+    main { flex: 1 1 auto; overflow-y: auto; padding: 0.8em 1.2em; }
+    footer { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 0.5em;
+             padding: 0.6em 1.2em; border-top: 1px solid #ddd; background: #f5f5f5; }
+    /* A .row is display: flex, which would win over the hidden attribute. */
+    [hidden] { display: none !important; }
+    .row { display: flex; align-items: center; gap: 0.5em; margin-top: 0.6em; }
+    .row > label:first-child { flex: 0 0 6.5em; }
+    .row input[type="text"], .row select { min-width: 0; padding: 0.3em 0.5em; font-size: 1em; box-sizing: border-box; }
+    #host, #token, #log_file_path { flex: 1 1 auto; }
+    #port { flex: 0 0 5em; }
+    #token { font-family: Consolas, Menlo, monospace; font-size: 0.9em; text-overflow: ellipsis; }
+    #log_to_file { margin-left: 1.5em; }
+    .row.check label { flex: 1 1 auto; }
+    #status-dot { margin-right: 0.4em; }
+    #status-dot.running { color: #2e7d32; }
+    #status-dot.stopped { color: #888; }
+    .error:empty, .note:empty { display: none; }
+    /* Errors and notes line up with the fields; longer texts take the width. */
+    .error, .note { margin: 0.3em 0 0 7em; font-size: 0.9em; }
+    .row.check + .error { margin-left: 0; }
+    .more, .warning-line { margin-top: 0.4em; font-size: 0.9em; }
+    .error { color: #c00; }
+    .note, .more { color: #555; }
+    .warning { color: #9a5b00; }
+    button { padding: 0.4em 1em; font-size: 1em; }
     button:disabled { color: #888; cursor: default; }
-    #token { font-family: Consolas, Menlo, monospace; font-size: 0.85em; }
-    .token-actions { text-align: right; margin: 0.3em 0 0.2em 0; }
-    .token-actions button { margin-left: 0.4em; }
-    #token-status { float: left; font-size: 0.85em; color: #444; padding-top: 0.45em; }
-    .hint { font-size: 0.85em; color: #555; margin-bottom: 0.6em; }
+    button.help { flex: 0 0 auto; width: 1.8em; height: 1.8em; margin-left: 0.2em; padding: 0;
+                  border-radius: 50%; font-size: 0.85em; line-height: 1; vertical-align: middle; }
   </style>
 </head>
 <body>
-  <div class="section-title">Network</div>
+  <main>
+    <div class="status"><span id="status-dot"></span><span id="status-line"></span></div>
 
-  <div class="row">
-    <label for="host">Host</label>
-    <input type="text" id="host" autocomplete="off" spellcheck="false">
-  </div>
-  <div class="error" id="host-error"></div>
+    <div class="row">
+      <label for="host">Host</label>
+      <input type="text" id="host" autocomplete="off" spellcheck="false">
+      <label for="port">Port</label>
+      <!-- type="text" not "number": HtmlDialog is desktop-only (no mobile
+           numeric-keypad benefit) and `number` adds spinner buttons +
+           scroll-wheel-changes-value behavior that's surprising in a settings
+           dialog. Server-side validator covers all edge cases. -->
+      <input type="text" id="port" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="error" id="host-error"></div>
+    <div class="error" id="port-error"></div>
+    <div id="host-warning" class="warning" hidden>
+      <div class="warning-line">⚠ Other machines can connect (they need the token); the traffic is not encrypted
+        <button type="button" class="help" data-toggle="host-warning-text" title="Show more" aria-expanded="false">?</button></div>
+      <div class="more warning" id="host-warning-text" hidden></div>
+    </div>
 
-  <div class="row">
-    <label for="port">Port</label>
-    <!-- type="text" not "number": HtmlDialog is desktop-only (no mobile
-         numeric-keypad benefit) and `number` adds spinner buttons +
-         scroll-wheel-changes-value behavior that's surprising in a settings
-         dialog. Server-side validator covers all edge cases. -->
-    <input type="text" id="port" autocomplete="off" spellcheck="false">
-  </div>
-  <div class="error" id="port-error"></div>
+    <div class="row">
+      <label for="token">MCP token</label>
+      <input type="text" id="token" readonly autocomplete="off" spellcheck="false">
+      <button id="btn-copy-token" type="button">Copy</button>
+      <button id="btn-regenerate-token" type="button">Regenerate</button>
+      <button type="button" class="help" data-toggle="token-help" title="Show more" aria-expanded="false">?</button>
+    </div>
+    <div class="note" id="token-status"></div>
+    <div class="more" id="token-help" hidden>
+      Every MCP client needs this token in SKETCHUP_MCP_TOKEN to connect.
+      Regenerate disconnects every client; each then needs the new token.
+    </div>
 
-  <div class="section-title">Token</div>
-  <div class="row">
-    <label for="token">MCP token</label>
-    <input type="text" id="token" readonly autocomplete="off" spellcheck="false">
-  </div>
-  <div class="token-actions">
-    <span id="token-status"></span>
-    <button id="btn-copy-token" type="button">Copy</button>
-    <button id="btn-regenerate-token" type="button">Regenerate</button>
-  </div>
-  <div class="hint">
-    Every MCP client needs this token in SKETCHUP_MCP_TOKEN to connect.
-    Regenerate disconnects every client; each then needs the new token.
-  </div>
+    <div class="row">
+      <label for="log_level">Log Level</label>
+      <select id="log_level">
+        <option value="DEBUG">DEBUG</option>
+        <option value="INFO">INFO</option>
+        <option value="WARN">WARN</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+      <input type="checkbox" id="log_to_file">
+      <label for="log_to_file" title="In addition to the console">Log to file</label>
+    </div>
+    <div class="error" id="log_level-error"></div>
+    <div class="row" id="log-file-row" hidden>
+      <label for="log_file_path">Log file path</label>
+      <input type="text" id="log_file_path" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="error" id="log_file_path-error"></div>
 
-  <div class="section-title">Logging</div>
+    <div class="row check">
+      <input type="checkbox" id="eval_enabled">
+      <label for="eval_enabled">Enable Ruby evaluation — any client with the token can run arbitrary Ruby</label>
+      <button type="button" class="help" data-toggle="eval-warning" title="Show more" aria-expanded="false">?</button>
+    </div>
+    <div class="error" id="eval_enabled-error"></div>
+    <div class="more warning" id="eval-warning" hidden>
+      Lets any MCP client that has the token run arbitrary Ruby with full file and shell access. ON by default; uncheck it unless you trust every client you give the token to.
+    </div>
+  </main>
 
-  <div class="row">
-    <label for="log_level">Log Level</label>
-    <select id="log_level">
-      <option value="DEBUG">DEBUG</option>
-      <option value="INFO">INFO</option>
-      <option value="WARN">WARN</option>
-      <option value="ERROR">ERROR</option>
-    </select>
-  </div>
-  <div class="error" id="log_level-error"></div>
-
-  <div class="row bool">
-    <input type="checkbox" id="log_to_file">
-    <label for="log_to_file">Log to file (in addition to console)</label>
-  </div>
-
-  <div class="row">
-    <label for="log_file_path">Log file path</label>
-    <input type="text" id="log_file_path" autocomplete="off" spellcheck="false">
-  </div>
-  <div class="error" id="log_file_path-error"></div>
-
-  <div class="section-title">Ruby Evaluation</div>
-
-  <div class="row bool">
-    <input type="checkbox" id="eval_enabled">
-    <label for="eval_enabled">Enable Ruby evaluation (DANGEROUS)</label>
-  </div>
-  <div class="error" id="eval_enabled-error"></div>
-  <div class="warning" id="eval-warning" style="margin-left: 0;">
-    Lets any MCP client that has the token run arbitrary Ruby with full file and shell access. ON by default; uncheck it unless you trust every client you give the token to.
-  </div>
-
-  <div id="status" class="status">
-    <div id="status-line"></div>
-    <div id="status-hint" class="warning"></div>
-  </div>
-
-  <div class="buttons">
-    <button id="btn-cancel">Cancel</button>
-    <button id="btn-save" disabled>Save</button>
-  </div>
+  <footer>
+    <button id="btn-cancel" type="button">Cancel</button>
+    <button id="btn-save" type="button" disabled>Save</button>
+  </footer>
 
   <script>
     var savedState = null;
-    var lastState  = null;
 
     function clearErrors() {
       ['host', 'port', 'log_level', 'log_file_path', 'eval_enabled'].forEach(function (k) {
@@ -153,17 +159,17 @@
 
     window.onHostCheck = function (result) {
       hostCheck = result;
-      refreshStatusHint(lastState);
+      refreshHostWarning();
     };
 
-    // Returns warning text for the currently-typed host, or '' if none applies
-    // (or the check for this host has not answered yet). It says what the token
+    // The full warning for the typed host, or '' when none applies (or the
+    // check for this host has not answered yet). It says what the token
     // protects — who can connect — and what it does not: the traffic.
     function hostSecurityWarning(host) {
       if (!hostCheck || hostCheck.host !== host || hostCheck.loopback) return '';
-      var text = '⚠ ' + host + ' lets other machines reach the server. They need the token '
+      var text = host + ' lets other machines reach the server. They need the token '
                + 'to connect, but the traffic is not encrypted: on a network you do not '
-               + 'trust, use 127.0.0.1 and an SSH tunnel.';
+               + 'trust, keep 127.0.0.1 and use an SSH tunnel (README → Security model).';
       // Read the live checkbox, so the warning tracks what is typed, not only
       // what was last saved (review #9).
       if (document.getElementById('eval_enabled').checked) {
@@ -172,27 +178,38 @@
       return text;
     }
 
-    // The status-hint slot is shared between two concerns: restart-needed and
-    // security warning. Security takes precedence — if both apply we still
-    // show the security one because it's the more actionable risk.
-    function refreshStatusHint(state) {
-      var hint  = document.getElementById('status-hint');
-      var typed = document.getElementById('host').value;
-      var sec   = hostSecurityWarning(typed);
-      if (sec) {
-        hint.textContent = sec;
-        return;
-      }
-      if (state && state.running && state.current) {
+    // One line under Host and Port while the host is not loopback; its (?)
+    // opens the full text.
+    function refreshHostWarning() {
+      var text = hostSecurityWarning(document.getElementById('host').value);
+      document.getElementById('host-warning').hidden = !text;
+      document.getElementById('host-warning-text').textContent = text;
+    }
+
+    // The first line: whether the server runs and where, and whether the
+    // saved host or port differ from the ones it runs on.
+    function refreshStatus(state) {
+      var dot  = document.getElementById('status-dot');
+      var line = document.getElementById('status-line');
+      if (state.running && state.current) {
         var savedDiffers =
           state.current.host !== state.host ||
           String(state.current.port) !== String(state.port);
-        hint.textContent = savedDiffers
-          ? '(saved settings differ — restart needed to apply)'
-          : '';
+        dot.textContent  = '●';
+        dot.className    = 'running';
+        line.textContent = 'Running on ' + state.current.host + ':' + state.current.port
+                         + (savedDiffers ? ' — saved settings differ; restart to apply' : '');
       } else {
-        hint.textContent = '';
+        dot.textContent  = '○';
+        dot.className    = 'stopped';
+        line.textContent = 'Stopped';
       }
+    }
+
+    // The log file path matters only while logging to a file, so its row
+    // shows only then.
+    function syncLogFileRow() {
+      document.getElementById('log-file-row').hidden = !document.getElementById('log_to_file').checked;
     }
 
     window.applyState = function (state) {
@@ -213,16 +230,10 @@
         log_file_path:  state.log_file_path || '',
         eval_enabled:   !!state.eval_enabled,
       };
-      lastState = state;
       refreshSaveButton();
-
-      var line = document.getElementById('status-line');
-      if (state.running && state.current) {
-        line.textContent = 'Status: running on ' + state.current.host + ':' + state.current.port;
-      } else {
-        line.textContent = 'Status: stopped';
-      }
-      refreshStatusHint(state);
+      syncLogFileRow();
+      refreshStatus(state);
+      refreshHostWarning();
     };
 
     window.onSaveResult = function (result) {
@@ -297,6 +308,15 @@
         : result.error;
     };
 
+    // Each (?) shows or hides the longer text its data-toggle names.
+    Array.prototype.forEach.call(document.querySelectorAll('[data-toggle]'), function (button) {
+      button.addEventListener('click', function () {
+        var target = document.getElementById(button.getAttribute('data-toggle'));
+        target.hidden = !target.hidden;
+        button.setAttribute('aria-expanded', String(!target.hidden));
+      });
+    });
+
     ['host', 'port', 'log_file_path'].forEach(function (id) {
       document.getElementById(id).addEventListener('input', refreshSaveButton);
     });
@@ -304,15 +324,14 @@
       document.getElementById(id).addEventListener('change', refreshSaveButton);
     });
     document.getElementById('log_level').addEventListener('change', refreshSaveButton);
+    document.getElementById('log_to_file').addEventListener('change', syncLogFileRow);
     // Live-update the security warning as the user types the host or toggles
     // Ruby evaluation (review #9: the warning escalates when eval is enabled).
     document.getElementById('host').addEventListener('input', function () {
       scheduleHostCheck();
-      refreshStatusHint(lastState);
+      refreshHostWarning();
     });
-    document.getElementById('eval_enabled').addEventListener('change', function () {
-      refreshStatusHint(lastState);
-    });
+    document.getElementById('eval_enabled').addEventListener('change', refreshHostWarning);
 
     // Pull initial state from Ruby once DOM is ready.
     sketchup.load_state();

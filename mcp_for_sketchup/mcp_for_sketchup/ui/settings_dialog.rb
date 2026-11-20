@@ -10,6 +10,11 @@ module MCPforSketchUp
       # cluster together. SketchUp uses this only for remembering dialog
       # position/size — not related to our host/port/log_level prefs.
       DIALOG_PREFS = "#{MCPforSketchUp::Core::Config::SECTION}_SettingsDialog".freeze
+      # The window's content area, in logical pixels: SketchUp multiplies them
+      # by the display scaling. The settings are one compact column (Task 10)
+      # and scroll inside it when they have to.
+      DIALOG_WIDTH  = 560
+      DIALOG_HEIGHT = 400
 
       @dialog = nil
 
@@ -24,17 +29,34 @@ module MCPforSketchUp
         end
         @dialog = build_dialog
         @dialog.show
+        fit_window(@dialog)
       end
+
+      # SketchUp saves a dialog's size under its preferences_key and may reopen
+      # it at that size — 500×780 from releases before the compact layout — so
+      # the size is set again once the dialog is shown. set_content_size came
+      # with SketchUp 2021.1; before it, set_size sets the outer frame.
+      def self.fit_window(dialog)
+        if dialog.respond_to?(:set_content_size)
+          dialog.set_content_size(DIALOG_WIDTH, DIALOG_HEIGHT)
+        else
+          dialog.set_size(DIALOG_WIDTH, DIALOG_HEIGHT)
+        end
+      end
+      private_class_method :fit_window
 
       def self.build_dialog
         dialog = ::UI::HtmlDialog.new(
-          dialog_title:    DIALOG_TITLE,
-          preferences_key: DIALOG_PREFS,
-          scrollable:      true,
-          resizable:       false,
-          width:           500,
-          height:          780,
-          style:           ::UI::HtmlDialog::STYLE_DIALOG
+          dialog_title:     DIALOG_TITLE,
+          preferences_key:  DIALOG_PREFS,
+          scrollable:       true,
+          resizable:        false,
+          # width and height are the content area, not the outer frame with
+          # its title bar (SketchUp 2021.1+).
+          use_content_size: true,
+          width:            DIALOG_WIDTH,
+          height:           DIALOG_HEIGHT,
+          style:            ::UI::HtmlDialog::STYLE_DIALOG
         )
 
         dialog.add_action_callback("load_state") { |_ctx|       on_load_state(dialog) }
