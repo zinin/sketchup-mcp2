@@ -141,6 +141,16 @@ class TestSharedRefusals < Minitest::Test
     def typename
       "Face"
     end
+
+    # The corners of its rectangle (its bounds lie in one z plane): a face
+    # below a moved or turned parent is boxed by its vertices.
+    def vertices
+      lo = @bounds.min
+      hi = @bounds.max
+      [[lo.x, lo.y], [hi.x, lo.y], [hi.x, hi.y], [lo.x, hi.y]].map do |x, y|
+        FrameFakes::Vertex.new(FrameFakes::Point.new(x, y, lo.z))
+      end
+    end
   end
 
   def setup

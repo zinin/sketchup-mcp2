@@ -31,7 +31,7 @@ module Sketchup
   end
 
   class ComponentDefinition
-    attr_accessor :entities, :entityID, :name
+    attr_accessor :entities, :entityID, :name, :bounds
     attr_writer :instances
     def initialize
       @entities = []
@@ -219,6 +219,9 @@ class TestGetComponentInfoWorldFrame < Minitest::Test
     # instance is the chair, which sits in the model (parent nil stops it).
     @chair.definition.instances = [@chair]
     @cushion.parent = @chair.definition
+    # Below the model, a group is boxed by its definition's bounds through
+    # the parents' matrix and its own transformation.
+    @cushion.definition.bounds = make_bbox
 
     @model_entities = [@chair]
 

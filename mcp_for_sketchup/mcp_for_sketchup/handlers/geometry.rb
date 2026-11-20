@@ -117,14 +117,14 @@ module MCPforSketchUp
           E.require_group_or_component!(entity, "entity #{id}")
           parent = F.require_unshared!(entity, "entity #{id}").matrix
           if rotation
-            apply_rotation(entity, rotation, parent)
+            apply_rotation(entity, rotation, parent, F.center(entity_world_box(entity, parent, id)))
           end
           if scale
-            center = F.center(F.world_box(entity.bounds, parent))
+            center = F.center(entity_world_box(entity, parent, id))
             entity.transform!(F.transformation(F.conjugate(F.scaling(center, *scale), parent)))
           end
           if position
-            world_min = F.world_box(entity.bounds, parent)[0]
+            world_min = entity_world_box(entity, parent, id)[0]
             delta = position_delta(world_min, position)
             entity.transform!(F.transformation(F.conjugate(F.translation(*delta), parent)))
           end
@@ -133,6 +133,15 @@ module MCPforSketchUp
       end
 
       # ----- private builders ----------------------------------------------
+
+      # The entity's world box (Frames.entity_box), or -32602 for an entity
+      # with no geometry: there is no box to move, turn or scale about.
+      def self.entity_world_box(entity, parent, id)
+        box = F.entity_box(entity, parent)
+        return box if box
+        raise MCPforSketchUp::Core::StructuredError.new(-32602,
+          "entity #{id} has no geometry, so it has no bounding box to move, rotate or scale")
+      end
 
       # Pure math (юнит-тестится без SketchUp): вектор переноса, доставляющий
       # мировой bbox-min `world_min` в точку `target`. Оба — [x, y, z] в
@@ -297,11 +306,11 @@ module MCPforSketchUp
         group
       end
 
-      # Turns about the world X, then Y, then Z axis through the centre of the
-      # world bbox, taken once before the first turn; zero angles are skipped.
-      # `parent` is the matrix of the entity's parents (Frames.placement).
-      def self.apply_rotation(entity, rot_degrees, parent)
-        center = F.center(F.world_box(entity.bounds, parent))
+      # Turns about the world X, then Y, then Z axis through `center`, the
+      # centre of the world bbox taken once before the first turn; zero angles
+      # are skipped. `parent` is the matrix of the entity's parents
+      # (Frames.placement).
+      def self.apply_rotation(entity, rot_degrees, parent, center)
         rot_degrees.each_with_index do |deg, i|
           next if deg == 0
           entity.transform!(F.transformation(F.conjugate(F.rotation(center, i, deg), parent)))

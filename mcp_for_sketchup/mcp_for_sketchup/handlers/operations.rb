@@ -210,6 +210,12 @@ module MCPforSketchUp
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
           F.require_unshared!(entity, "entity #{entity_id}")
+          # §6.3: the cut body comes back as a new group with a new id; it
+          # takes the target's name, tag and own material. Taken before
+          # make_unique (mutable_entity_collection), which renames an unnamed
+          # instance's definition ("Oak Chair" → "Oak Chair#1"): identity_of
+          # names such an instance by its definition, as the Outliner did.
+          identity = E.identity_of(entity)
           target_entities = E.mutable_entity_collection(entity)
           edges = target_entities.grep(Sketchup::Edge)
           # A body whose faces all point into it reads every edge the wrong
@@ -251,12 +257,6 @@ module MCPforSketchUp
           original_specs = edges.map { |e| edge_spec(e, entity.transformation) }
           stats["attempted"] = original_specs.length
           total = original_specs.length
-
-          # §6.3: the cut body comes back as a new group with a new id; it
-          # takes the target's name, tag and own material (identity_of names
-          # an unnamed component instance by its definition, as the Outliner
-          # does).
-          identity = E.identity_of(entity)
 
           # Track the most-recent successful subtract result by ID. Group#subtract
           # may return a proxy that becomes silently stale after subsequent

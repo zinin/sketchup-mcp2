@@ -22,7 +22,7 @@ module Sketchup
   end
 
   class ComponentDefinition
-    attr_accessor :entities, :entityID, :name
+    attr_accessor :entities, :entityID, :name, :bounds
     attr_writer :instances
     def initialize
       @entities = []

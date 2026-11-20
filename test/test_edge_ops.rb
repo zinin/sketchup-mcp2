@@ -259,6 +259,14 @@ class TestEdgeOps < Minitest::Test
     include FakeSolid
     attr_writer :definition_name
 
+    # SketchUp's make_unique gives the instance a copy of its definition,
+    # named "<name>#1".
+    def make_unique
+      alive!
+      @definition_name = "#{@definition_name}#1" if @definition_name
+      self
+    end
+
     def typename
       "ComponentInstance"
     end

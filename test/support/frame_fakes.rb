@@ -24,6 +24,8 @@ module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
   class ComponentDefinition; end unless defined?(ComponentDefinition)
+  class Face; end unless defined?(Face)
+  class Edge; end unless defined?(Edge)
 end
 
 module FrameFakes
@@ -131,6 +133,33 @@ module FrameFakes
       @entityID = id
       @parent = parent
       @bounds = bounds
+    end
+
+    def valid?
+      true
+    end
+
+    def typename
+      "Face"
+    end
+  end
+
+  Vertex = Struct.new(:position)
+
+  # A Sketchup::Face with vertices at `points` ([x, y, z] in its parent's
+  # frame); its bounds are their box, as SketchUp's are.
+  class Face < Sketchup::Face
+    attr_accessor :entityID, :parent, :vertices
+
+    def initialize(id, parent:, points:)
+      @entityID = id
+      @parent = parent
+      @vertices = points.map { |p| Vertex.new(Point.new(*p)) }
+    end
+
+    def bounds
+      xs, ys, zs = (0..2).map { |a| @vertices.map { |v| v.position.to_a[a] } }
+      FrameFakes.bounds([xs.min, ys.min, zs.min], [xs.max, ys.max, zs.max])
     end
 
     def valid?

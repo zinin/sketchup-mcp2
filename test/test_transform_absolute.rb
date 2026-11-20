@@ -56,8 +56,8 @@ class TestTransformAbsolute < Minitest::Test
       "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry.rb", __dir__), encoding: "UTF-8")
     body = src[/def self\.transform_component.*?(?=\n      def self\.)/m]
     refute_nil body, "transform_component body not found"
-    assert_match(/world_min = F\.world_box\(entity\.bounds, parent\)\[0\]/, body,
-      "the delta must start from the WORLD bbox-min (bounds through the parents' matrix)")
+    assert_match(/world_min = entity_world_box\(entity, parent, id\)\[0\]/, body,
+      "the delta must start from the WORLD bbox-min (Frames.entity_box through the parents' matrix)")
     assert_match(/delta = position_delta\(world_min, position\)/, body,
       "position must be converted to a delta from the world bbox-min (absolute semantics)")
     assert_match(/F\.conjugate\(F\.translation\(\*delta\), parent\)/, body,
@@ -100,11 +100,18 @@ class TestTransformComponentHandler < Minitest::Test
   # The parents of the nested cases: moved 100" along X and turned 90° about Z.
   ROTATED = F.multiply(F.translation(100, 0, 0), F.rotation([0, 0, 0], 2, 90))
 
+  # Its definition's bounds are `local`, its own transformation `own`, and
+  # its bounds in the parent's frame the box of local through own, as
+  # SketchUp reports them.
   class FakeEntity < Sketchup::Group
-    attr_reader :bounds, :transforms, :parent
+    attr_reader :bounds, :transforms, :parent, :transformation, :definition
 
-    def initialize(bounds, parent)
-      @bounds = bounds
+    Definition = Struct.new(:bounds)
+
+    def initialize(local, parent, own = FrameFakes::IDENTITY)
+      @definition = Definition.new(local)
+      @transformation = FrameFakes::Transform.new(own)
+      @bounds = local.min.x > local.max.x ? local : FrameFakes.bounds(*F.world_box(local, own))
       @parent = parent
       @transforms = []
     end
@@ -146,16 +153,17 @@ class TestTransformComponentHandler < Minitest::Test
     stub_singleton(F, :transformation) { |m| Marker.new(m) }
   end
 
-  # The entity with `bounds` (inches) in a parent placed at `parent_matrix`
-  # (nil: at the top level), registered as entity 4242.
-  def place_entity(min, max, parent_matrix = nil)
+  # The entity with definition bounds `min`..`max` (inches) and its own
+  # transformation `own`, in a parent placed at `parent_matrix` (nil: at the
+  # top level), registered as entity 4242.
+  def place_entity(min, max, parent_matrix = nil, own: FrameFakes::IDENTITY)
     parent =
       if parent_matrix
         definition = FrameFakes::Definition.new("Group#1", group: true)
         FrameFakes.place(definition, id: 1, parent: Object.new, matrix: parent_matrix)
         definition
       end
-    @entity = FakeEntity.new(FrameFakes.bounds(min, max), parent)
+    @entity = FakeEntity.new(FrameFakes.bounds(min, max), parent, own)
     model = FakeModel.new(4242 => @entity)
     stub_singleton(EH, :active_model!) { model }
     @model = model
@@ -232,5 +240,27 @@ class TestTransformComponentHandler < Minitest::Test
     open = recorded
     assert_matrix open, F.multiply(ROTATED, F.multiply(closed, F.inverse(ROTATED)))
     assert_matrix F.translation(-99, 0, 0), open
+  end
+
+  # Final review, Important #1: a group turned 30° inside a group turned 30°
+  # has the box of its definition through the whole 60°, so the target is
+  # reached from that box's min, not from a box of a box.
+  def test_position_under_two_turns_reaches_the_world_target
+    turn = F.rotation([0, 0, 0], 2, 30)
+    place_entity([0, 0, 0], [1, 1, 1], turn, own: turn)
+    GEO.transform_component("id" => 4242, "position" => [0.0, 0.0, 0.0])
+    world_min = F.world_box(FrameFakes.bounds([0, 0, 0], [1, 1, 1]), F.multiply(turn, turn))[0]
+    assert_matrix F.multiply(F.translation(*world_min.map(&:-@)), turn), F.multiply(turn, recorded)
+  end
+
+  # An entity with no geometry has no box to move, turn or scale about.
+  def test_transform_refuses_an_entity_without_geometry
+    place_entity([1, 1, 1], [0, 0, 0])  # SketchUp's empty bounds: min above max
+    err = assert_raises(MCPforSketchUp::Core::StructuredError) do
+      GEO.transform_component("id" => 4242, "position" => [0.0, 0.0, 0.0])
+    end
+    assert_equal(-32602, err.code)
+    assert_match(/no geometry/, err.message)
+    assert_empty @entity.transforms
   end
 end

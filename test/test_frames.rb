@@ -298,4 +298,45 @@ class TestFrames < Minitest::Test
     assert_nil F.require_open_path_unshared!(OpenModel.new([outer]))
     assert_nil F.require_open_path_unshared!(OpenModel.new(nil))
   end
+
+  # ---------- one box open and closed (final review, Important #1) ----------
+  #
+  # SketchUp boxes an instance as its definition's bounds through its own
+  # transformation (live, SketchUp 2027: a cylinder turned 30° at the top
+  # level reports the box of its turned definition box, not its vertices).
+  # A group turned 30° inside a group turned 30°: closed, its bounds in the
+  # parent's frame are already a box of a turned box, and taking them
+  # through the parent again boxes a box; open, SketchUp reports the box
+  # through the whole 60° at once. The world box must be the latter in both.
+
+  TURN30 = F.rotation([0, 0, 0], 2, 30)
+  WIDTH60 = (Math.cos(Math::PI / 3) + Math.sin(Math::PI / 3)) * 25.4  # a unit cube turned 60°, mm
+
+  def two_turns(open:)
+    outer_def = FrameFakes::Definition.new("Group#1", group: true)
+    FrameFakes.place(outer_def, id: 1, parent: model, matrix: open ? F::IDENTITY : TURN30)
+    unit = FrameFakes.bounds([0, 0, 0], [1, 1, 1])
+    inner_def = FrameFakes::Definition.new("Group#2", group: true, bounds: unit)
+    own = open ? F.multiply(TURN30, TURN30) : TURN30
+    inner = FrameFakes.place(inner_def, id: 2, parent: outer_def, matrix: own)
+    inner.bounds = FrameFakes.bounds(*F.world_box(unit, own))  # as SketchUp reports it in the parent's frame
+    inner
+  end
+
+  def test_nested_turned_group_has_one_box_open_and_closed
+    closed = F.world_bbox_mm(two_turns(open: false))
+    open = F.world_bbox_mm(two_turns(open: true))
+    assert_bbox_mm open, closed
+    assert_in_delta WIDTH60, closed["max"][0] - closed["min"][0], 1e-6
+  end
+
+  # A face's box is its vertices' box, through the parent: open, SketchUp
+  # reports the face's bounds in world coordinates, which are that.
+  def test_face_box_through_a_turned_parent_is_its_vertices_box
+    group = FrameFakes::Definition.new("Group#1", group: true)
+    FrameFakes.place(group, id: 1, parent: model, matrix: TURN30)
+    square = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]].map { |p| F.apply(TURN30, p) }  # turned 30° in its group
+    box = F.world_bbox_mm(FrameFakes::Face.new(3, parent: group, points: square))
+    assert_in_delta WIDTH60, box["max"][0] - box["min"][0], 1e-6
+  end
 end

@@ -10,7 +10,8 @@ You are working with a SketchUp model through the sketchup-mcp server.
 Follow this strategy to be effective and avoid common pitfalls.
 
 # 1. Pre-flight — ALWAYS start with
-- get_model_info() — units, model bbox, layer list, total entity count.
+- get_model_info() — units, model bbox, layer list, the number of
+  top-level entities, and the groups open for editing (editing).
 - If the user references existing geometry: list_components or
   find_components(name=...) to locate IDs (paginated: check "truncated"
   and page with offset/limit).

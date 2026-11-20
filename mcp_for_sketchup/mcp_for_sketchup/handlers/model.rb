@@ -62,13 +62,17 @@ module MCPforSketchUp
 
       # parent_matrix is the accumulated world matrix (Helpers::Frames);
       # describe_component maps the bounds through it to world space.
-      # `shared` is true below a definition with more than one instance.
+      # `shared` is true below a definition with more than one instance;
+      # `shared_of` remembers that per definition for the whole traversal, so
+      # a component placed N times costs one look at its instances, not N
+      # (each look copies all of them).
       #
       # `seen` tracks ComponentDefinition IDs that are currently active on the
       # recursion *path* — definitions are added before descending and removed
       # after. This blocks true cycles (a definition that contains itself)
       # without skipping siblings that merely share a definition.
-      def self.collect_components(entities, parent_matrix, recursive:, depth:, max_depth:, seen:, shared: false)
+      def self.collect_components(entities, parent_matrix, recursive:, depth:, max_depth:, seen:, shared: false,
+                                  shared_of: {})
         out = []
         return out if depth > max_depth
         entities.each do |entity|
@@ -84,12 +88,15 @@ module MCPforSketchUp
           begin
             sub = E.entity_collection(entity)
             child_matrix = F.multiply(parent_matrix, F.matrix_of(entity.transformation))
+            definition = entity.definition
+            shared_of[definition] = F.shared?(definition) unless shared_of.key?(definition)
             out.concat(collect_components(sub, child_matrix,
                                           recursive: true,
                                           depth: depth + 1,
                                           max_depth: max_depth,
                                           seen: seen,
-                                          shared: shared || F.shared?(entity.definition)))
+                                          shared: shared || shared_of[definition],
+                                          shared_of: shared_of))
           ensure
             seen.delete(def_id) if def_id
           end
@@ -100,9 +107,9 @@ module MCPforSketchUp
       # One row: {id, name, type, layer, depth, shared, bbox_mm}, plus
       # `definition` (the definition's name, which the Outliner shows for an
       # unnamed instance) for a component instance; a group's definition is
-      # auto-named "Group#N" and is left out. bbox_mm maps the entity's
-      # bounds (in its parent's frame) through parent_matrix to world mm, and
-      # is null for empty bounds (T-55).
+      # auto-named "Group#N" and is left out. bbox_mm is the entity's world
+      # box (Frames.entity_box through parent_matrix) in mm, and is null for
+      # an entity without geometry (T-55).
       def self.describe_component(entity, parent_matrix = F::IDENTITY, depth: 0, shared: false)
         row = {
           "id"     => entity.entityID,
@@ -113,7 +120,7 @@ module MCPforSketchUp
           "shared" => shared
         }
         row["definition"] = entity.definition.name if entity.is_a?(Sketchup::ComponentInstance)
-        row["bbox_mm"] = F.bbox_mm(entity.bounds, parent_matrix)
+        row["bbox_mm"] = F.entity_bbox_mm(entity, parent_matrix)
         row
       end
 

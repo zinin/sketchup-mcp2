@@ -98,11 +98,15 @@ class TestModelWorld < Minitest::Test
     FrameFakes.bounds([0, 0, 0], [1, 1, 1])
   end
 
-  # A placement with bounds and the Layer0 tag, registered by id and, at the
-  # top level, listed among the model's entities.
+  # A placement of `definition` (whose bounds, in its own frame, default to
+  # `bounds`) at `matrix`, with its bounds in the parent's frame the box of
+  # the definition's through the matrix, as SketchUp reports them; the
+  # Layer0 tag; registered by id and, at the top level, listed among the
+  # model's entities.
   def place(definition, id:, parent:, matrix: FrameFakes::IDENTITY, name: "", bounds: unit_box)
+    definition.bounds ||= bounds
     placed = FrameFakes.place(definition, id: id, parent: parent, matrix: matrix, name: name)
-    placed.bounds = bounds
+    placed.bounds = FrameFakes.bounds(*F.world_box(definition.bounds, matrix))
     placed.layer = LAYER
     @model.register(placed)
     @model.entities << placed if parent.equal?(@model)
@@ -111,13 +115,12 @@ class TestModelWorld < Minitest::Test
 
   # Group "Outer" (id 1) at OUTER, with group "Inner" (id 2) inside it. Open,
   # SketchUp reports Outer with an identity transformation and Inner's
-  # bounds in world coordinates.
+  # transformation (so its bounds too) in world coordinates.
   def nested_scene(open: false)
     outer_def = FrameFakes::Definition.new("Group#1", group: true)
     outer = place(outer_def, id: 1, parent: @model, matrix: open ? FrameFakes::IDENTITY : OUTER, name: "Outer")
-    inner_bounds = open ? FrameFakes.bounds([9, 0, 0], [10, 1, 1]) : unit_box
     inner = place(FrameFakes::Definition.new("Group#2", group: true),
-                  id: 2, parent: outer_def, name: "Inner", bounds: inner_bounds)
+                  id: 2, parent: outer_def, matrix: open ? OUTER : FrameFakes::IDENTITY, name: "Inner")
     @model.active_path = [outer] if open
     [outer, inner]
   end
@@ -210,5 +213,55 @@ class TestModelWorld < Minitest::Test
     assert_equal [{ "id" => 1, "name" => "Outer", "shared" => false }], M.get_model_info({})["editing"]
     @model.active_path = nil
     assert_equal [], M.get_model_info({})["editing"]
+  end
+
+  # Final review, Important #1, through the handler: a group turned 30°
+  # inside a group turned 30° has one box, open or closed (SketchUp boxes
+  # an instance as its definition's bounds through its transformation).
+  def turned_scene(open:)
+    turn = F.rotation([0, 0, 0], 2, 30)
+    outer_def = FrameFakes::Definition.new("Group#1", group: true)
+    outer = place(outer_def, id: 1, parent: @model, matrix: open ? FrameFakes::IDENTITY : turn, name: "Outer")
+    own = open ? F.multiply(turn, turn) : turn
+    inner_def = FrameFakes::Definition.new("Group#2", group: true, bounds: unit_box)
+    inner = place(inner_def, id: 2, parent: outer_def, matrix: own, name: "Inner")
+    @model.active_path = [outer] if open
+    inner
+  end
+
+  def test_component_info_agrees_open_and_closed_under_two_turns
+    turned_scene(open: false)
+    closed = M.get_component_info("id" => "2")["bbox_mm"]
+    setup
+    turned_scene(open: true)
+    open = M.get_component_info("id" => "2")["bbox_mm"]
+    assert_bbox_mm open, closed
+    width = (Math.cos(Math::PI / 3) + Math.sin(Math::PI / 3)) * 25.4
+    assert_in_delta width, closed["max"][0] - closed["min"][0], 1e-6
+  end
+
+  # Final review, Important #2: a component placed many times (screws,
+  # windows) must not cost a scan of its instances per placement.
+  class CountingDefinition < FrameFakes::Definition
+    attr_reader :reads
+
+    def instances
+      @reads = (@reads || 0) + 1
+      super
+    end
+
+    def reset_reads
+      @reads = 0
+    end
+  end
+
+  def test_recursive_listing_reads_each_definitions_instances_once
+    leg = CountingDefinition.new("Leg")
+    5.times { |i| place(leg, id: 10 + i, parent: @model, matrix: F.translation(10 * i, 0, 0)) }
+    place(FrameFakes::Definition.new("Group#3", group: true), id: 3, parent: leg, name: "part")
+    leg.reset_reads
+    rows = M.list_components("recursive" => true, "limit" => 500)["components"]
+    assert_equal 10, rows.length
+    assert_operator leg.reads, :<=, 1, "definition.instances read once per definition, not once per placement"
   end
 end

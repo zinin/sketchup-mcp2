@@ -248,15 +248,61 @@ module MCPforSketchUp
       # (T-55: SketchUp's inverted sentinel must not leak as ±2.54e31 mm).
       def self.bbox_mm(bounds, m)
         return nil if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bounds)
-        lo, hi = world_box(bounds, m)
+        box_mm(world_box(bounds, m))
+      end
+
+      # [[min], [max]] in inches as {"min" => [mm…], "max" => [mm…]}.
+      def self.box_mm(box)
         {
-          "min" => lo.map { |v| MCPforSketchUp::Helpers::Units.inch_to_mm(v) },
-          "max" => hi.map { |v| MCPforSketchUp::Helpers::Units.inch_to_mm(v) }
+          "min" => box[0].map { |v| MCPforSketchUp::Helpers::Units.inch_to_mm(v) },
+          "max" => box[1].map { |v| MCPforSketchUp::Helpers::Units.inch_to_mm(v) }
         }
       end
 
+      # The box of `points` (anything that answers x, y, z) mapped through m.
+      def self.points_box(points, m)
+        mapped = points.map { |p| apply(m, [p.x.to_f, p.y.to_f, p.z.to_f]) }
+        [(0..2).map { |a| mapped.map { |p| p[a] }.min },
+         (0..2).map { |a| mapped.map { |p| p[a] }.max }]
+      end
+
+      # The world box of an entity whose parents' matrix is `parent`, or nil
+      # when it has no geometry. SketchUp boxes an instance as its
+      # definition's bounds through its own transformation (live, SketchUp
+      # 2027: a cylinder turned 30° at the top level reports that box, not
+      # its vertices'), and reports the bounds of the open context's contents
+      # in world coordinates. So:
+      #   * the parents' matrix is the identity (the top level, or the open
+      #     context): the entity's own bounds are already world;
+      #   * a group or component instance below that: its definition's bounds
+      #     through the parents' matrix and its own transformation — one box
+      #     through the whole matrix, as SketchUp reports it open, where a box
+      #     of the parent-frame bounds would box a box;
+      #   * a face or an edge: its vertices through the parents' matrix, the
+      #     box SketchUp reports for it open.
+      def self.entity_box(entity, parent)
+        own_box = lambda do |bounds, m|
+          MCPforSketchUp::Helpers::Geometry.empty_bbox?(bounds) ? nil : world_box(bounds, m)
+        end
+        return own_box.(entity.bounds, parent) if identity?(parent)
+        case entity
+        when Sketchup::Group, Sketchup::ComponentInstance
+          own_box.(entity.definition.bounds, multiply(parent, matrix_of(entity.transformation)))
+        when Sketchup::Face, Sketchup::Edge
+          points_box(entity.vertices.map(&:position), parent)
+        else
+          own_box.(entity.bounds, parent)
+        end
+      end
+
+      # entity_box in mm; nil when the entity has no geometry.
+      def self.entity_bbox_mm(entity, parent)
+        box = entity_box(entity, parent)
+        box && box_mm(box)
+      end
+
       def self.world_bbox_mm(entity)
-        bbox_mm(entity.bounds, placement(entity).matrix)
+        entity_bbox_mm(entity, placement(entity).matrix)
       end
 
       # The groups and components open for editing, outermost first.
