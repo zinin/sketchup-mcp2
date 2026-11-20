@@ -6,6 +6,9 @@ module MCPforSketchUp
       E = MCPforSketchUp::Helpers::Entities
       U = MCPforSketchUp::Helpers::Units
 
+      TOUCH_TOL   = 0.001 # SketchUp's tolerance, inches
+      VOLUME_RTOL = 1e-4
+
       # ===== Mortise & Tenon =================================================
       #
       # All dimension params (width/height/depth/offset_*) accepted in **mm**
@@ -50,6 +53,112 @@ module MCPforSketchUp
           MCPforSketchUp::Handlers::Geometry.safe_abort(model)
           raise
         end
+      end
+
+      # ===== Pure joint geometry (no SketchUp) ===============================
+      #
+      # A box is [[min_x, min_y, min_z], [max_x, max_y, max_z]] in the boards'
+      # common parent frame. The functions are unit-agnostic; their messages
+      # treat the numbers as inches and print mm (lengths) / mm³ (volumes).
+
+      # The face the tenon board touches the mortise board with: exactly one
+      # axis touching (gap within tol of 0), the other two overlapping.
+      def self.contact_area(mortise_box, tenon_box, tol = TOUCH_TOL)
+        gaps = (0..2).map do |a|
+          [mortise_box[0][a], tenon_box[0][a]].max - [mortise_box[1][a], tenon_box[1][a]].min
+        end
+        if gaps.any? { |g| g > tol }
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the mortise and tenon boards do not touch (gap #{format_mm(gaps.max)} mm); " \
+            "move them so that one face of each lies against the other")
+        end
+        touching = (0..2).select { |a| gaps[a] >= -tol }
+        if touching.empty?
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the mortise and tenon boards overlap; move them apart until " \
+            "exactly one face of each lies against the other")
+        end
+        if touching.size > 1
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the mortise and tenon boards meet at an edge or a corner, not a face; " \
+            "the joint needs a face-to-face contact")
+        end
+        axis  = touching[0]
+        cross = (0..2).reject { |a| a == axis }
+        # the tenon board is on the + side when its min face lies on the
+        # mortise board's max face, otherwise its max face lies on the min face
+        plus  = (tenon_box[0][axis] - mortise_box[1][axis]).abs <= (tenon_box[1][axis] - mortise_box[0][axis]).abs
+        {
+          axis:  axis,
+          side:  plus ? 1 : -1,
+          plane: plus ? mortise_box[1][axis] : mortise_box[0][axis],
+          cross: cross,
+          lo:    cross.map { |a| [mortise_box[0][a], tenon_box[0][a]].max },
+          hi:    cross.map { |a| [mortise_box[1][a], tenon_box[1][a]].min }
+        }
+      end
+
+      # The box of the joint: width x height centred on the contact area
+      # (plus offsets), running depth into the mortise board along the axis.
+      def self.joint_box(contact, width, height, depth, offsets, tol = TOUCH_TOL)
+        axis = contact[:axis]
+        u, v = contact[:cross]
+        lo   = contact[:lo]
+        hi   = contact[:hi]
+        cu = (lo[0] + hi[0]) / 2.0 + offsets[u]
+        cv = (lo[1] + hi[1]) / 2.0 + offsets[v]
+        u0, u1 = cu - width / 2.0,  cu + width / 2.0
+        v0, v1 = cv - height / 2.0, cv + height / 2.0
+        if u0 < lo[0] - tol || u1 > hi[0] + tol || v0 < lo[1] - tol || v1 > hi[1] + tol
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "the joint does not fit the contact area: #{format_mm(width)} x #{format_mm(height)} mm " \
+            "at the requested offset, contact area is #{format_mm(hi[0] - lo[0])} x #{format_mm(hi[1] - lo[1])} mm; " \
+            "reduce width/height or the offsets")
+        end
+        a0, a1 = contact[:side] > 0 ? [contact[:plane] - depth, contact[:plane]] : [contact[:plane], contact[:plane] + depth]
+        min = [0, 0, 0]
+        max = [0, 0, 0]
+        min[axis], max[axis] = a0, a1
+        min[u], max[u] = u0, u1
+        min[v], max[v] = v0, v1
+        [min, max]
+      end
+
+      # True when every transformation axis (x, y, z; any length) points along
+      # one of the world axes.
+      def self.axis_aligned?(axes, tol = 1e-9)
+        axes.all? do |vec|
+          len = Math.sqrt(vec.sum { |c| c * c })
+          next false if len.zero?
+          vec.any? { |c| (c.abs / len - 1.0).abs <= tol }
+        end
+      end
+
+      # Post-check of the boolean result: nil when both boards changed by the
+      # expected volume, otherwise a sentence naming the board that is off.
+      # The mortise board may lose less than expected (a through mortise) but
+      # not more.
+      def self.joint_volume_problem(expected, mortise_before, mortise_after, tenon_before, tenon_after, rtol = VOLUME_RTOL)
+        tol    = expected * rtol
+        lost   = mortise_before - mortise_after
+        gained = tenon_after - tenon_before
+        if lost <= tol || lost > expected + tol
+          return "mortise board volume changed by #{format_mm3(-lost)} mm³ " \
+                 "(expected a loss of up to #{format_mm3(expected)} mm³)"
+        end
+        if (gained - expected).abs > tol
+          return "tenon board volume changed by #{format_mm3(gained)} mm³ " \
+                 "(expected a gain of #{format_mm3(expected)} mm³)"
+        end
+        nil
+      end
+
+      def self.format_mm(inches)
+        format("%.2f", inches * U::MM)
+      end
+
+      def self.format_mm3(cubic_inches)
+        format("%.1f", cubic_inches * U::MM**3)
       end
 
       # ===== Internal geometry helpers (carved from monolith) ================
