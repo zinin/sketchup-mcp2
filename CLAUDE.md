@@ -131,6 +131,8 @@ python examples/smoke_check.py # 28-step end-to-end (covers every tool category;
 
 Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load check).
 
+Unattended live checks on a Windows VM — installing a build over SSH, restarting SketchUp, real clicks in the Settings dialog, Regenerate and a crash after it — are described in [`docs/live-testing.md`](docs/live-testing.md).
+
 ## Configuration
 
 **Ruby (SketchUp extension)** — settings are edited through `Extensions → MCP Server → Settings...` (the API name stays `UI.menu("Plugins")`) and persisted in SketchUp preferences under section `MCPforSketchUp`. The plugin reads no settings from the environment; `handlers/export.rb` takes its temp directory from `TEMP` / `TMP`.
