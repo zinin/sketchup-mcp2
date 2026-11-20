@@ -52,7 +52,7 @@ Bump only the side you ship:
 
 **Releases up to 0.3.1 cap the counterpart at their own version.** An installed 0.3.0 plugin accepts only a 0.3.0 client, a 0.3.1 plugin accepts 0.3.0–0.3.1, and the 0.3.x clients mirror this. Every later release looks too new to them, so the first release after 0.3.1 must ship both sides and raise both floors to its own version. No 0.3.x counterpart can pair with it anyway, and the raised `MIN_PYTHON` makes the new plugin reject a 0.3.x client itself, with the `uvx sketchup-mcp2@latest` hint, instead of leaving the 0.3.x client to print its own `uv pip install --upgrade` advice, which does not refresh a `uvx` install. `tests/test_compat.py::test_first_release_past_0_3_1_raises_floors` fails until both floors move; together with `test_in_repo_pair_is_compatible` it also refuses a one-sided first release. See the release-notes checklist in [§6](#6-git-tag--github-release).
 
-Commit (`chore: bump to vX.Y.Z`) and push.
+Add the release's section to [`CHANGELOG.md`](../CHANGELOG.md): what a user upgrading in place must do, then what changed. Commit (`chore: bump to vX.Y.Z`) and push.
 
 ## 2. Pre-flight tests
 
@@ -86,7 +86,7 @@ Do this before anything is uploaded. TestPyPI and PyPI both refuse a second uplo
 
 1. **Sign.** A release that ships the plugin sends the `.rbz` through the [Trimble signing service](https://extensions.sketchup.com/developer/sign-extension): an unsigned extension is flagged as unidentified, and SketchUp blocks it outright under the strictest loading policy (*Identified Extensions Only*). **The service hands back a different file from the one you upload.** It appends a `-signed` suffix to the name and encrypts every `.rb` under the extension folder to `.rbe`, adding `mcp_for_sketchup.susig`; the root loader and `settings.html` stay in the clear, and `main.rb`'s `LOAD_ORDER` names paths without an extension precisely so `Sketchup.require` picks up the `.rbe`. Install and attach **that** file; the unsuffixed artifact is the unsigned one and must not be published. A Python-only release uses the current signed plugin of `vPREV` instead ([§6](#6-git-tag--github-release) shows how to fetch it).
 2. **Install.** In SketchUp's Extension Manager, uninstall the installed version and restart SketchUp, then install the signed `.rbz` and start the server (`Extensions → MCP Server → Start Server`). Installing over a signed version would leave its `.rbe` files and signature beside the new ones. To run these checks with nobody at the SketchUp machine, see [`live-testing.md`](live-testing.md).
-3. **Smoke-check the pair.** `uv run python examples/smoke_check.py` runs the client from this commit against the installed plugin; set `SKETCHUP_MCP_HOST`, and `SKETCHUP_MCP_SMOKE_REMOTE=1` behind a tunnel, as `CLAUDE.md` describes. All 28 steps must pass, and step 28 must show the client and the plugin you are about to ship. The run leaves the layer "MCP Test", the material "red", the group its undo step brings back and the PNG it exported under `%TEMP%\sketchup_exports`; remove them. An MCP client started before the bump still runs the previous version, and a plugin whose floor moved rejects it: restart that client.
+3. **Smoke-check the pair.** `uv run python examples/smoke_check.py` runs the client from this commit against the installed plugin; set `SKETCHUP_MCP_HOST`, `SKETCHUP_MCP_TOKEN` (the token from the plugin's Settings, **Copy**), and `SKETCHUP_MCP_SMOKE_REMOTE=1` behind a tunnel, as `CLAUDE.md` describes. All 28 steps must pass, and step 28 must show the client and the plugin you are about to ship. The run leaves the layer "MCP Test", the material "red", the group its undo step brings back and the PNG it exported under `%TEMP%\sketchup_exports`; remove them. An MCP client started before the bump still runs the previous version, and a plugin whose floor moved rejects it: restart that client.
 
 ## 4. TestPyPI rehearsal
 
@@ -142,16 +142,16 @@ rm -f mcp_for_sketchup/*.rbz && gh release download vPREV -p '*-signed.rbz' -D m
 rm -rf dist/ && gh release download vPREV -p 'sketchup_mcp2-*' -D dist
 ```
 
-Attach the signed `.rbz` you checked in [§3](#sign-the-plugin-and-check-the-pair-live), `mcp_for_sketchup_vX.Y.Z-signed.rbz`. The unsuffixed artifact §3 built is unsigned and must not be published:
+Attach the signed `.rbz` you checked in [§3](#sign-the-plugin-and-check-the-pair-live), `mcp_for_sketchup_vX.Y.Z-signed.rbz`. The unsuffixed artifact §3 built is unsigned and must not be published. Name every file exactly, with its version: a glob such as `mcp_for_sketchup_v*-signed.rbz` also picks up an older build left in the folder (a previous release's signed `.rbz`, a test build) and attaches it beside the new one. For a side re-attached from `vPREV`, use `vPREV`'s version in its names:
 
 ```bash
 git tag vX.Y.Z -m "Release X.Y.Z" && git push origin vX.Y.Z
 gh release create vX.Y.Z \
   --title "vX.Y.Z" \
   --notes "..." \
-  dist/sketchup_mcp2-*-py3-none-any.whl \
-  dist/sketchup_mcp2-*.tar.gz \
-  mcp_for_sketchup/mcp_for_sketchup_v*-signed.rbz
+  dist/sketchup_mcp2-X.Y.Z-py3-none-any.whl \
+  dist/sketchup_mcp2-X.Y.Z.tar.gz \
+  mcp_for_sketchup/mcp_for_sketchup_vX.Y.Z-signed.rbz
 ```
 
 Release notes must say which side the release ships and the oldest counterpart it works with: "works with plugin ≥ vMIN_RUBY" for the client, "works with sketchup-mcp2 ≥ vMIN_PYTHON" for the plugin.
@@ -159,7 +159,13 @@ Release notes must say which side the release ships and the oldest counterpart i
 **First release after 0.3.1 (one-time):** it ships both sides and raises both floors to its own version (see [§1](#1-choose-the-scope-then-bump)), and its notes must ask every user to upgrade both once — releases up to 0.3.1 accept only a counterpart of their own version. Give the client command explicitly: `uvx sketchup-mcp2@latest`, then restart the MCP client. The 0.3.x client's own hint, `uv pip install --upgrade sketchup-mcp2`, does not refresh a `uvx` install.
 
 Release notes must also call out anything a user upgrading in place would otherwise
-discover the hard way. For `0.3.1`:
+discover the hard way; start from the release's section of `CHANGELOG.md`. For `0.5.0`:
+
+- Both sides must be upgraded **together** once more: each rejects a 0.4.x counterpart (`-32001`). Give the client command explicitly: `uvx sketchup-mcp2@latest`, then restart the MCP client.
+- **Set the token**: copy it from `Extensions → MCP Server → Settings...` (**Copy**) into `SKETCHUP_MCP_TOKEN` in the MCP client's config. Without it every tool answers with that instruction.
+- `create_dovetail` and `create_finger_joint` are withdrawn; every `bbox_mm` and `transform_component.position` are world coordinates, nested entities included; edits inside a component or group placed more than once are refused.
+
+For `0.3.1`:
 
 - `eval_ruby` now ships **enabled by default**; close the gate by unchecking
   **Enable Ruby evaluation** in `Extensions → MCP Server → Settings...`.
