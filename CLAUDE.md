@@ -125,6 +125,7 @@ cd mcp_for_sketchup && ruby package.rb && cd ..
 # Unit tests
 ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 776 runs / 3297 assertions
 uv run pytest tests/ -q        # Python (pytest) — 261 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
+#   tests that read the plugin's source or the docs (marker `checkout`, fixture `ruby_const`) skip in the sdist, which ships the Python side only
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 28-step end-to-end (covers every tool category; 18 of 20 tools)

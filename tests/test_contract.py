@@ -10,9 +10,14 @@ wire name reaches its handler.
 import re
 from pathlib import Path
 
+import pytest
+
 from sketchup_mcp import connection
 from sketchup_mcp.annotations import WIRE_NAMES
 from sketchup_mcp.app import mcp
+
+# Reads the plugin's source: not in the sdist (conftest skips it there).
+pytestmark = pytest.mark.checkout
 
 _ROOT = Path(__file__).resolve().parent.parent
 _TOOLS_PY = _ROOT / "src" / "sketchup_mcp" / "tools.py"

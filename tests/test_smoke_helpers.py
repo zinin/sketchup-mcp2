@@ -111,6 +111,7 @@ def test_step_18_asks_export_file_is_local_with_the_host_and_the_environment():
     assert "SKETCHUP_MCP_SMOKE_REMOTE=1" in ast.unparse(local_check.msg)
 
 
+@pytest.mark.checkout  # reads CLAUDE.md, which the sdist does not ship
 def test_smoke_steps_are_consecutive_and_every_total_agrees():
     """Вставка шага перенумеровывает следующие за ним и все места, где названо
     число шагов: итоговая строка скрипта, README, CLAUDE.md. Каждый номер
