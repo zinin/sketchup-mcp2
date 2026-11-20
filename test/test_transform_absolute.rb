@@ -76,6 +76,7 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 
 module Sketchup
   class Group; end unless defined?(Group)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 # Guarded-минимум для standalone-прогона; в run_all другие файлы уже
@@ -124,6 +125,7 @@ class TestTransformComponentHandler < Minitest::Test
     def valid?; true; end
     def entityID; 4242; end
     def name; "fake_entity"; end
+    def parent; nil; end  # top level: the walk up the parents stops at once
   end
 
   class FakeModel

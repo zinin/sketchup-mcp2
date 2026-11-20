@@ -25,6 +25,7 @@ require_relative "support/singleton_stubs"
 module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 # Guarded minimum for a standalone run; under run_all other files define
@@ -121,6 +122,11 @@ class TestGeometryGuards < Minitest::Test
 
     def bounds
       BOUNDS
+    end
+
+    # At the top level: the walk up the parents stops at once.
+    def parent
+      nil
     end
 
     def erase!

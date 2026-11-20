@@ -33,6 +33,7 @@ module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
   class Face; end unless defined?(Face)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"

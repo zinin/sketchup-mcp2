@@ -6,6 +6,7 @@ module MCPforSketchUp
       E = MCPforSketchUp::Helpers::Entities
       U = MCPforSketchUp::Helpers::Units
       O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       OPS = %w[union difference intersection].freeze
 
@@ -33,6 +34,10 @@ module MCPforSketchUp
           tool   = E.find!(tool_id)
           E.require_group_or_component!(target, "target")
           E.require_group_or_component!(tool,   "tool")
+          # Both operands: the result lands beside the target, and the tool
+          # is erased with delete_originals (its copy is consumed otherwise).
+          F.require_unshared!(target, "target (entity #{target_id})")
+          F.require_unshared!(tool,   "tool (entity #{tool_id})")
 
           target_copy = duplicate_group(model, target)
           tool_copy   = duplicate_group(model, tool)
@@ -197,6 +202,7 @@ module MCPforSketchUp
           stats = ZERO_STATS.dup
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
+          F.require_unshared!(entity, "entity #{entity_id}")
           target_entities = E.mutable_entity_collection(entity)
           edges = target_entities.grep(Sketchup::Edge)
           # A body whose faces all point into it reads every edge the wrong

@@ -5,6 +5,7 @@ module MCPforSketchUp
       V = MCPforSketchUp::Helpers::Validation
       E = MCPforSketchUp::Helpers::Entities
       O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       NAMED_COLORS = {
         "red"     => [255, 0, 0],
@@ -33,6 +34,9 @@ module MCPforSketchUp
         O.run(model, "Set Material (#{name.capitalize})") do
           entity = E.find!(id)
           require_paintable!(entity, id)
+          # A face or edge inside a shared definition would change in every
+          # copy; a top-level group or instance is made unique below (T-16).
+          F.require_unshared!(entity, "entity #{id}")
           material = ensure_material(model, name)
           apply_to_entity(entity, material)
           # The description is the block's value, so it is built BEFORE the

@@ -47,6 +47,7 @@ module Sketchup
   class Group; end unless defined?(Sketchup::Group)
   class ComponentInstance; end unless defined?(Sketchup::ComponentInstance)
   class Face; end unless defined?(Sketchup::Face)
+  class ComponentDefinition; end unless defined?(Sketchup::ComponentDefinition)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
@@ -403,6 +404,7 @@ class TestCreateComponentName < Minitest::Test
     def bounds
       FakeBounds.new(FakePoint.new(0, 0, 0), FakePoint.new(4, 4, 4))
     end
+    def parent; nil; end  # top level: the walk up the parents stops at once
   end
 
   class NamedEntities
@@ -418,6 +420,7 @@ class TestCreateComponentName < Minitest::Test
       @active_entities = NamedEntities.new
       @log = []
     end
+    def active_path; nil; end  # nothing open for editing
     def start_operation(name, *)
       @log << [:start, name]
       true

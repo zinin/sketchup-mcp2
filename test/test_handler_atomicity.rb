@@ -38,6 +38,7 @@ module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
   class Face; end unless defined?(Face)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
@@ -105,6 +106,11 @@ class TestHandlerAtomicity < Minitest::Test
       BOUNDS
     end
 
+    # At the top level: the walk up the parents stops at once.
+    def parent
+      nil
+    end
+
     def erase!
       true
     end
@@ -148,6 +154,11 @@ class TestHandlerAtomicity < Minitest::Test
 
     def find_entity_by_id(id)
       @by_id[id]
+    end
+
+    # Nothing is open for editing.
+    def active_path
+      nil
     end
   end
 

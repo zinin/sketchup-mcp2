@@ -31,6 +31,7 @@ module Sketchup
   class ComponentInstance; end unless defined?(ComponentInstance)
   class Face; end unless defined?(Face)
   class Edge; end unless defined?(Edge)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 
   unless const_defined?(:Color)
     class Color
@@ -151,6 +152,12 @@ class TestMaterials < Minitest::Test
     def bounds
       @model.log << :bounds
       BOUNDS
+    end
+
+    # At the top level: the model is not a definition, so the walk up the
+    # parents stops at once.
+    def parent
+      @model
     end
   end
 

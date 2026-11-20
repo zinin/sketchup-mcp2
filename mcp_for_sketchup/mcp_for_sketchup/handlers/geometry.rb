@@ -7,6 +7,7 @@ module MCPforSketchUp
       G = MCPforSketchUp::Helpers::Geometry
       U = MCPforSketchUp::Helpers::Units
       O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       def self.create_component(params)
         type = V.require_enum(params, "type", %w[cube cylinder cone sphere])
@@ -26,6 +27,10 @@ module MCPforSketchUp
         name = params.key?("name") ? V.require_string(params, "name") : nil
 
         model = E.active_model!
+        # New objects go into the group open for editing, as SketchUp's own
+        # tools put them; in a shared one they would appear in every copy, so
+        # that is refused before anything starts (spec §6.1).
+        F.require_open_path_unshared!(model)
         O.run(model, "Create Component (#{type.capitalize})") do
           group = case type
                   when "cube"     then build_cube(model.active_entities, pos, dims)
@@ -41,19 +46,12 @@ module MCPforSketchUp
       # Returns {id, name, type, bbox_mm} so Claude can re-locate after destructive ops.
       # A face or an edge (set_material paints them) has no #name: its type is
       # its typename in lower case ("face", "edge") and its name is nil.
+      # bbox_mm is in WORLD coordinates: the entity's bounds mapped through the
+      # walk up its parents (Frames.world_bbox_mm), for nested entities too.
       # bbox_mm == nil, если у entity пустые bounds (T-55: инвертированный
       # сентинел SketchUp ±1e30" не должен утекать как ±2.54e31 мм).
       def self.describe_entity(entity)
-        bb = entity.bounds
-        bbox_mm =
-          if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb)
-            nil
-          else
-            {
-              "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
-              "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
-            }
-          end
+        bbox_mm = F.world_bbox_mm(entity)
         type, name =
           case entity
           when Sketchup::Group             then ["group", entity.name]
@@ -74,6 +72,7 @@ module MCPforSketchUp
         O.run(model, "Delete Component") do
           entity = E.find!(id)
           E.require_group_or_component!(entity, "entity #{id}")
+          F.require_unshared!(entity, "entity #{id}")
           entity.erase!
           { "ok" => true }
         end
@@ -112,6 +111,7 @@ module MCPforSketchUp
         O.run(model, "Transform Component") do
           entity = E.find!(id)
           E.require_group_or_component!(entity, "entity #{id}")
+          F.require_unshared!(entity, "entity #{id}")
           if rotation
             apply_rotation(entity, rotation)
           end
