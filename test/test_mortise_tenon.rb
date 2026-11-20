@@ -418,8 +418,19 @@ class TestMortiseTenon < Minitest::Test
       faulty.manifold = false
       err = assert_unsuitable(/not a solid/)
       assert_match(/#{label}/, err.message)
+      # A board with a tenon nested in it by an earlier version is no solid.
+      assert_match(/explode or move out any group or component nested in it/, err.message)
       faulty.manifold = true
     end
+  end
+
+  def test_same_board_for_mortise_and_tenon_is_refused
+    err = assert_raises(StructuredError) { joint("tenon_id" => @leg.entityID.to_s) }
+    assert_equal(-32602, err.code)
+    assert_match(/same board/, err.message)
+    assert_match(/two different boards/, err.message)
+    assert_empty @model.log  # refused before start_operation
+    assert_empty @box_calls
   end
 
   def test_separated_boards_are_refused
@@ -481,41 +492,59 @@ class TestMortiseTenon < Minitest::Test
   end
 
   # ---------- a solid operation fails: all or nothing ----------
+  #
+  # Each operation gets its own advice: only the cut depends on the depth
+  # against the mortise board's thickness.
 
   def test_nil_from_subtract_rolls_back
     @cutter = FakeTool.new(nil)
-    assert_refused(-32603, /could not/)
+    err = assert_refused(-32603, /could not cut the mortise into the mortise board/)
+    assert_match(/thickness/, err.message)
     assert_equal 1, @box_calls.size  # no tenon piece after a failed cut
   end
 
   def test_nil_from_union_rolls_back
     @piece = FakeTool.new(nil)
-    assert_refused(-32603, /could not/)
+    err = assert_refused(-32603, /could not join the tenon to the tenon board/)
+    refute_match(/thickness/, err.message)
+    assert_equal 2, @box_calls.size  # the cut ran; the union failed
   end
 
   def test_erased_result_rolls_back
     @pocketed.valid = false
-    assert_refused(-32603, /could not/)
+    assert_refused(-32603, /could not cut the mortise into the mortise board/)
   end
 
   # ---------- the results are checked before the commit ----------
 
   def test_empty_cut_is_refused_by_the_volume_check
     @pocketed.volume = @leg.volume  # the cut removed nothing
-    err = assert_refused(-32603, /was not committed/)
-    assert_match(/mortise board volume/, err.message)
+    err = assert_refused(-32603, /was not committed: mortise board lost 0\.0 mm³/)
+    refute_match(/-0\.0/, err.message)
+    assert_match(/thickness/, err.message)
+  end
+
+  # The rail does not fill its box where it touches the leg: the tenon
+  # piece overlaps it, and the union adds less than the joint.
+  def test_short_tenon_is_refused_by_the_volume_check
+    @tenoned.volume = mm3(326_000)
+    err = assert_refused(-32603, /was not committed: tenon board gained 6000\.0 mm³/)
+    refute_match(/thickness/, err.message)
   end
 
   def test_tenon_in_two_shells_is_refused
     @tenoned.entities = [Object.new, *shell(6), *shell(6)]
-    assert_refused(-32603, /was not committed/)
+    err = assert_refused(-32603, /was not committed: the tenon did not join the tenon board's body \(it is a separate shell\)/)
+    refute_match(/thickness/, err.message)
   end
 
   def test_non_solid_result_is_refused
-    [@pocketed, @tenoned].each do |result|
+    # Only the cut's advice talks about the mortise board's thickness.
+    [[@pocketed, "mortise board", true], [@tenoned, "tenon board", false]].each do |result, label, cut|
       @model.log.clear
       result.manifold = false
-      assert_refused(-32603, /was not committed/)
+      err = assert_refused(-32603, /was not committed: the #{label} is no longer a solid/)
+      assert_equal cut, err.message.include?("thickness"), err.message
       result.manifold = true
     end
   end

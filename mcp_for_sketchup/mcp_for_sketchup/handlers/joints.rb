@@ -8,6 +8,7 @@ module MCPforSketchUp
 
       TOUCH_TOL   = 0.001 # SketchUp's tolerance, inches
       VOLUME_RTOL = 1e-4
+      AXIS_NAMES  = %w[X Y Z].freeze
 
       # ===== Mortise & Tenon =================================================
       #
@@ -25,6 +26,11 @@ module MCPforSketchUp
       def self.create_mortise_tenon(params)
         mortise_id = V.require_id(params, "mortise_id")
         tenon_id   = V.require_id(params, "tenon_id")
+        if mortise_id == tenon_id
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "mortise_id and tenon_id name the same board (entity #{mortise_id}); " \
+            "a joint needs two different boards")
+        end
         width      = U.mm_to_inch(V.optional_positive(params, "width",  50.0))
         height     = U.mm_to_inch(V.optional_positive(params, "height", 25.0))
         depth      = U.mm_to_inch(V.optional_positive(params, "depth",  10.0))
@@ -89,9 +95,12 @@ module MCPforSketchUp
         end
         touching = (0..2).select { |a| gaps[a] >= -tol }
         if touching.empty?
+          # the axis of the smallest overlap: the shortest way apart
+          axis = (0..2).max_by { |a| gaps[a] }
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
-            "the mortise and tenon boards overlap; move them apart until " \
-            "exactly one face of each lies against the other")
+            "the mortise and tenon boards overlap by #{format_mm(-gaps[axis])} mm along " \
+            "#{AXIS_NAMES[axis]}; move them apart along #{AXIS_NAMES[axis]} until exactly " \
+            "one face of each lies against the other")
         end
         if touching.size > 1
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
@@ -150,22 +159,30 @@ module MCPforSketchUp
       end
 
       # Post-check of the boolean result: nil when both boards changed by the
-      # expected volume, otherwise a sentence naming the board that is off.
-      # The mortise board may lose less than expected (a through mortise) but
-      # not more.
+      # expected volume, otherwise a sentence that starts with the board that
+      # is off ("mortise board …" / "tenon board …"). The mortise board may
+      # lose less than expected (a through mortise) but not more.
       def self.joint_volume_problem(expected, mortise_before, mortise_after, tenon_before, tenon_after, rtol = VOLUME_RTOL)
         tol    = expected * rtol
         lost   = mortise_before - mortise_after
         gained = tenon_after - tenon_before
         if lost <= tol || lost > expected + tol
-          return "mortise board volume changed by #{format_mm3(-lost)} mm³ " \
+          return "mortise board #{format_change(lost, 'lost', 'gained', tol)} mm³ " \
                  "(expected a loss of up to #{format_mm3(expected)} mm³)"
         end
         if (gained - expected).abs > tol
-          return "tenon board volume changed by #{format_mm3(gained)} mm³ " \
+          return "tenon board #{format_change(gained, 'gained', 'lost', tol)} mm³ " \
                  "(expected a gain of #{format_mm3(expected)} mm³)"
         end
         nil
+      end
+
+      # "<verb> X" for a volume change expected to go the way of `verb`, or
+      # "<opposite> X" when it went the other way by more than tol. X (mm³)
+      # is never negative, nor a negative zero.
+      def self.format_change(amount, verb, opposite, tol)
+        return "#{opposite} #{format_mm3(-amount)}" if amount < -tol
+        "#{verb} #{format_mm3(amount.positive? ? amount : 0.0)}"
       end
 
       def self.format_mm(inches)
@@ -178,12 +195,18 @@ module MCPforSketchUp
 
       # ===== Building and checking the joint (SketchUp) ======================
 
-      # What to try when SketchUp's solid tools fail on a joint or give a
-      # result the post-check refuses.
-      SOLID_TOOLS_ADVICE =
-        "A face of the joint that lies in a face of a board can defeat SketchUp's solid " \
-        "tools: make the depth differ from the mortise board's thickness, keep the joint " \
+      # What to try when the subtract that cuts the mortise fails, or leaves a
+      # mortise board the post-check refuses.
+      CUT_ADVICE =
+        "A face of the cutter that lies in a face of the mortise board can defeat SketchUp's " \
+        "subtract: make the depth differ from the mortise board's thickness, keep the joint " \
         "off the edge of the contact area, or build this joint with eval_ruby"
+
+      # The same for the union that joins the tenon to the tenon board.
+      JOIN_ADVICE =
+        "A side of the tenon that lies in a face of the tenon board can defeat SketchUp's " \
+        "union: keep the joint off the edge of the contact area, or build this joint with " \
+        "eval_ruby"
 
       # The board's bounding box in its parent's frame, as plain Floats: a
       # SketchUp Length compares within SketchUp's tolerance, and the pure
@@ -237,8 +260,9 @@ module MCPforSketchUp
           next if board.manifold?
           raise MCPforSketchUp::Core::StructuredError.new(-32602,
             "the #{label} is not a solid, and the joint is built with SketchUp's solid tools; " \
-            "close its holes and remove stray faces and edges until Entity Info calls it a " \
-            "solid, then try again")
+            "close its holes, remove stray faces and edges, and explode or move out any group " \
+            "or component nested in it (an earlier version of this tool left its tenon nested " \
+            "like that), until Entity Info calls it a solid, then try again")
         end
       end
 
@@ -262,7 +286,7 @@ module MCPforSketchUp
       def self.cut_mortise(board, box)
         cutter = MCPforSketchUp::Helpers::Geometry.make_box(board.parent.entities, *make_box_args(box))
         result = cutter.subtract(board)
-        solid_result!(result, "cut the mortise into the mortise board")
+        solid_result!(result, "cut the mortise into the mortise board", CUT_ADVICE)
       end
 
       # The tenon: a piece of the joint's box, the board's sibling like the
@@ -272,16 +296,16 @@ module MCPforSketchUp
       def self.attach_tenon(board, box)
         piece = MCPforSketchUp::Helpers::Geometry.make_box(board.parent.entities, *make_box_args(box))
         result = piece.union(board)
-        solid_result!(result, "join the tenon to the tenon board")
+        solid_result!(result, "join the tenon to the tenon board", JOIN_ADVICE)
       end
 
       # A solid operation's result, or -32603 when it returned nil or a group
-      # that is already gone.
-      def self.solid_result!(result, what)
+      # that is already gone; `advice` is what to try for that operation.
+      def self.solid_result!(result, what, advice)
         return result if result && result.valid?
         raise MCPforSketchUp::Core::StructuredError.new(-32603,
           "SketchUp could not #{what}; the operation was rolled back and the model is " \
-          "unchanged. #{SOLID_TOOLS_ADVICE}")
+          "unchanged. #{advice}")
       end
 
       # True when the group's faces make one connected shell: every face is
@@ -299,24 +323,26 @@ module MCPforSketchUp
       # group, or the empty group subtract returns when the cutter shares face
       # planes with the board; the results show all of them. -32603 unless
       # both results are solids, their volumes changed as joint_volume_problem
-      # expects and the tenon is one shell with its board.
+      # expects and the tenon is one shell with its board. The advice follows
+      # the board that is off: the cut made the mortise board, the union the
+      # tenon board.
       def self.verify_joint!(mortise, tenon, expected, mortise_before, tenon_before)
-        problem =
+        problem, advice =
           if !mortise.manifold?
-            "the mortise board is no longer a solid"
+            ["the mortise board is no longer a solid", CUT_ADVICE]
           elsif !tenon.manifold?
-            "the tenon board is no longer a solid"
+            ["the tenon board is no longer a solid", JOIN_ADVICE]
           elsif (volume = joint_volume_problem(expected, mortise_before, mortise.volume, tenon_before, tenon.volume))
-            volume
+            [volume, volume.start_with?("mortise board") ? CUT_ADVICE : JOIN_ADVICE]
           elsif !single_shell?(tenon)
-            "the tenon did not join the tenon board's body (it is a separate shell)"
+            ["the tenon did not join the tenon board's body (it is a separate shell)", JOIN_ADVICE]
           end
         return if problem.nil?
 
         raise MCPforSketchUp::Core::StructuredError.new(-32603,
           "the joint was not committed: #{problem}; the operation was rolled back and the " \
           "model is unchanged. Each board must fill its bounding box where the boards touch " \
-          "(no notch, taper or L-shape). #{SOLID_TOOLS_ADVICE}")
+          "(no notch, taper or L-shape). #{advice}")
       end
     end
   end
