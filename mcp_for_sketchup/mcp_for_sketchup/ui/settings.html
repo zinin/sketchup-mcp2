@@ -2,89 +2,124 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MCP Server for SketchUp Settings</title>
   <style>
-    /* Use em / flex-basis instead of fixed px so the dialog survives Windows
-       125–200% display scaling and macOS Retina without overlap. */
-    body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; font-size: 13px; margin: 1em; color: #222; }
-    .row { display: flex; align-items: center; margin-bottom: 0.3em; }
-    .row label { flex: 0 0 10em; }
-    .row input[type="text"], .row select { flex: 1; padding: 0.3em 0.5em; font-size: 1em; box-sizing: border-box; }
-    .row.bool input { flex: 0 0 auto; margin-right: 0.6em; }
-    .row.bool label { flex: 1 1 auto; }
-    .error { color: #c00; font-size: 0.85em; margin: 0 0 0.6em 10em; min-height: 1.1em; }
-    .status { border-top: 1px solid #ccc; padding-top: 0.7em; margin-top: 1em; font-size: 0.95em; color: #444; }
-    .warning { color: #c80; margin-top: 0.3em; }
-    .section-title { font-weight: bold; margin: 1em 0 0.3em 0; border-bottom: 1px solid #eee; padding-bottom: 0.2em; }
-    .buttons { text-align: right; margin-top: 1.1em; }
-    button { padding: 0.45em 1em; margin-left: 0.5em; font-size: 1em; }
-    button:disabled { color: #888; cursor: default; }
+    :root { color-scheme: light; font:13px -apple-system,"Segoe UI",Arial,sans-serif; color:#252b30; }
+    * { box-sizing:border-box; }
+    body { margin:0; height:100vh; display:flex; flex-direction:column; background:#fff; }
+    header { padding:16px 20px 12px; border-bottom:1px solid #e5e7eb; flex:none; }
+    h1 { font-size:18px; font-weight:600; margin:0; }
+    .eyebrow,.subtitle,.number,.footer-note { display:none; }
+    main { padding:12px 20px 4px; flex:1; min-height:0; overflow-y:auto; }
+    section { padding:12px 0; border-bottom:1px solid #e5e7eb; }
+    section:last-child { border-bottom:0; }
+    h2 { margin:0 0 10px; font-size:13px; font-weight:600; }
+    .network { display:grid; grid-template-columns:minmax(0,1fr) 100px; gap:12px; }
+    .field { min-width:0; }
+    label { display:block; font-size:12px; color:#555e66; margin-bottom:5px; }
+    input[type="text"],select { width:100%; min-height:32px; border:1px solid #cbd0d5; border-radius:4px;
+      padding:6px 8px; color:#252b30; background:#fff; font:inherit; }
+    #host,#port,#log_file_path { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+    input:focus-visible,select:focus-visible,button:focus-visible { outline:2px solid #497ca8; outline-offset:2px; }
+    select:has(option[value="ERROR"]:checked),option[value="ERROR"] { color:#ae3030; }
+    select:has(option[value="WARN"]:checked),option[value="WARN"] { color:#90620c; }
+    select:has(option[value="INFO"]:checked),option[value="INFO"] { color:#2f638b; }
+    select:has(option[value="DEBUG"]:checked),option[value="DEBUG"] { color:#626a73; }
+    .toggle { display:flex; align-items:center; gap:8px; margin:12px 0; }
+    .toggle input { width:15px; height:15px; margin:0; accent-color:#346da1; flex:none; }
+    .toggle label { color:#252b30; margin:0; cursor:pointer; }
+    .ruby .toggle { margin:0 0 8px; }
+    .error { color:#ae3030; font-size:11px; line-height:1.4; margin-top:4px; }
+    .error:empty,.warning:empty { display:none; }
+    .warning { color:#805d1b; font-size:11px; line-height:1.5; }
+    .status { font-size:12px; color:#5c6670; padding:0 0 10px; border-bottom:1px solid #e5e7eb; }
+    #status-line { overflow-wrap:anywhere; }
+    #status-hint { margin-top:6px; }
+    footer { display:flex; justify-content:flex-end; padding:12px 20px; border-top:1px solid #e5e7eb; flex:none; }
+    .buttons { display:flex; gap:8px; }
+    button { padding:7px 15px; border:1px solid #cbd0d5; border-radius:4px; background:#fff;
+      color:#303840; font:inherit; cursor:pointer; }
+    #btn-save { background:#346da1; border-color:#346da1; color:#fff; }
+    #btn-save:disabled { background:#e9edf0; border-color:#e9edf0; color:#8c959d; cursor:default; }
+    @media(max-width:340px) { .network { grid-template-columns:minmax(0,1fr); } }
+    .log-tools { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    .log-tools select { width:130px; } .log-tools input { min-width:0; flex:1; }
+    .log-tools button { padding:6px 10px; }
+    #live-log-output { height:150px; overflow:auto; border:1px solid #e0e4e8; border-radius:4px;
+      background:#fafbfc; padding:8px; font:11px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+    .log-entry { white-space:pre-wrap; overflow-wrap:anywhere; padding:3px 0; }
+    .log-error { color:#ae3030; } .log-warn { color:#90620c; }
+    .log-info { color:#2f638b; } .log-debug { color:#626a73; }
+    .log-note { font-size:11px; color:#6a737d; margin:6px 0 0; }
   </style>
 </head>
 <body>
-  <div class="section-title">Network</div>
 
-  <div class="row">
-    <label for="host">Host</label>
-    <input type="text" id="host" autocomplete="off" spellcheck="false">
-  </div>
-  <div class="error" id="host-error"></div>
-
-  <div class="row">
-    <label for="port">Port</label>
-    <!-- type="text" not "number": HtmlDialog is desktop-only (no mobile
-         numeric-keypad benefit) and `number` adds spinner buttons +
-         scroll-wheel-changes-value behavior that's surprising in a settings
-         dialog. Server-side validator covers all edge cases. -->
-    <input type="text" id="port" autocomplete="off" spellcheck="false">
-  </div>
-  <div class="error" id="port-error"></div>
-
-  <div class="section-title">Logging</div>
-
-  <div class="row">
-    <label for="log_level">Log Level</label>
-    <select id="log_level">
-      <option value="DEBUG">DEBUG</option>
-      <option value="INFO">INFO</option>
-      <option value="WARN">WARN</option>
-      <option value="ERROR">ERROR</option>
-    </select>
-  </div>
-  <div class="error" id="log_level-error"></div>
-
-  <div class="row bool">
-    <input type="checkbox" id="log_to_file">
-    <label for="log_to_file">Log to file (in addition to console)</label>
-  </div>
-
-  <div class="row">
-    <label for="log_file_path">Log file path</label>
-    <input type="text" id="log_file_path" autocomplete="off" spellcheck="false">
-  </div>
-  <div class="error" id="log_file_path-error"></div>
-
-  <div class="section-title">Ruby Evaluation</div>
-
-  <div class="row bool">
-    <input type="checkbox" id="eval_enabled">
-    <label for="eval_enabled">Enable Ruby evaluation (DANGEROUS)</label>
-  </div>
-  <div class="error" id="eval_enabled-error"></div>
-  <div class="warning" id="eval-warning" style="margin-left: 0;">
-    Lets anything that can connect to the MCP server's port — any local process, and other machines if Host is not a loopback address — run arbitrary Ruby with full file/shell access. ON by default; uncheck it unless you trust everything that can reach the port.
-  </div>
-
-  <div id="status" class="status">
-    <div id="status-line"></div>
-    <div id="status-hint" class="warning"></div>
-  </div>
-
-  <div class="buttons">
-    <button id="btn-cancel">Cancel</button>
-    <button id="btn-save" disabled>Save</button>
-  </div>
-
+  <header>
+    <p class="eyebrow">SketchUp · MCP Server</p>
+    <h1>MCP Server Settings</h1>
+    <p class="subtitle">Manage connections, logging, and Ruby access.</p>
+  </header>
+  <main>
+    <div id="status" class="status" role="status">
+      <div id="status-line">Loading server status…</div>
+      <div id="status-hint" class="warning"></div>
+    </div>
+    <section aria-labelledby="network-title">
+      <h2 class="section-heading" id="network-title"><span class="number">01</span> Network</h2>
+      <div class="network">
+        <div class="field"><label for="host">Host</label>
+          <input type="text" id="host" autocomplete="off" spellcheck="false" aria-describedby="host-error">
+          <div class="error" id="host-error" role="alert"></div></div>
+        <div class="field"><label for="port">Port</label>
+          <input type="text" id="port" autocomplete="off" spellcheck="false" aria-describedby="port-error">
+          <div class="error" id="port-error" role="alert"></div></div>
+      </div>
+    </section>
+    <section aria-labelledby="logging-title">
+      <h2 class="section-heading" id="logging-title"><span class="number">02</span> Logging</h2>
+      <label for="log_level">Log level</label>
+      <select id="log_level" aria-describedby="log_level-error">
+        <option value="DEBUG">Debug</option>
+        <option value="INFO">Info</option>
+        <option value="WARN">Warnings</option>
+        <option value="ERROR">Errors</option>
+      </select>
+      <div class="error" id="log_level-error" role="alert"></div>
+      <div class="toggle"><input type="checkbox" id="log_to_file">
+        <label for="log_to_file">Save logs to file</label></div>
+      <label for="log_file_path">Log file path</label>
+      <input type="text" id="log_file_path" autocomplete="off" spellcheck="false" aria-describedby="log_file_path-error">
+      <div class="error" id="log_file_path-error" role="alert"></div>
+    </section>
+    <section class="ruby" aria-labelledby="ruby-title">
+      <h2 class="section-heading" id="ruby-title"><span class="number">03</span> Ruby evaluation</h2>
+      <div class="toggle"><input type="checkbox" id="eval_enabled" aria-describedby="eval-warning eval_enabled-error">
+        <label for="eval_enabled">Enable Ruby evaluation</label></div>
+      <div class="error" id="eval_enabled-error" role="alert"></div>
+      <div class="warning" id="eval-warning">Lets anything that can connect to the MCP server's port — any local process, and other machines if Host is not a loopback address — run arbitrary Ruby with full file/shell access. ON by default; uncheck it unless you trust everything that can reach the port.</div>
+    </section>
+    <section aria-labelledby="live-log-title">
+      <h2 id="live-log-title">Live logs</h2>
+      <div class="log-tools">
+        <select id="live-log-level" aria-label="Filter live logs by severity">
+          <option value="DEBUG">All levels</option><option value="INFO">Info and above</option>
+          <option value="WARN">Warnings</option><option value="ERROR">Errors</option>
+        </select>
+        <input id="live-log-search" type="text" aria-label="Search live logs" placeholder="Filter logs…">
+        <button id="live-log-clear" type="button">Clear</button>
+      </div>
+      <div id="live-log-output" role="log" aria-label="Live server logs"></div>
+      <p class="log-note" id="live-log-note">Waiting for logs…</p>
+      <p class="log-note">Latest 200 events. Uses the saved log level above. Clear affects only this view.</p>
+    </section>
+  </main>
+  <footer>
+    <span class="footer-note">Changes apply when you save.</span>
+    <div class="buttons"><button id="btn-cancel" type="button">Cancel</button>
+      <button id="btn-save" type="button" disabled>Save</button></div>
+  </footer>
   <script>
     var savedState = null;
     var lastState  = null;
@@ -252,6 +287,51 @@
 
     // Pull initial state from Ruby once DOM is ready.
     sketchup.load_state();
+
+    // Poll on the HtmlDialog event loop; closing the existing dialog disposes
+    // the interval. No SketchUp threads or additional windows are created.
+    var logCursor = 0;
+    var logRows = [];
+    var logPollStarted = 0;
+    var logRanks = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+    function renderLogs() {
+      var output = document.getElementById('live-log-output');
+      var follow = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
+      var minimum = logRanks[document.getElementById('live-log-level').value];
+      var search = document.getElementById('live-log-search').value.toLowerCase();
+      output.textContent = '';
+      var shown = 0;
+      logRows.forEach(function (entry) {
+        if (logRanks[entry.level] < minimum || entry.text.toLowerCase().indexOf(search) < 0) return;
+        var row = document.createElement('div');
+        row.className = 'log-entry log-' + entry.level.toLowerCase();
+        row.textContent = entry.text;
+        output.appendChild(row);
+        shown++;
+      });
+      if (follow) output.scrollTop = output.scrollHeight;
+      document.getElementById('live-log-note').textContent = shown + ' shown / ' + logRows.length + ' retained';
+    }
+    window.appendLogs = function (payload) {
+      logPollStarted = 0;
+      logCursor = payload.cursor;
+      if (!payload.entries.length) return;
+      logRows = logRows.concat(payload.entries).slice(-200);
+      renderLogs();
+    };
+    function pollLogs() {
+      if (document.hidden || (logPollStarted && Date.now() - logPollStarted < 2000)) return;
+      logPollStarted = Date.now();
+      sketchup.load_logs(String(logCursor));
+    }
+    document.getElementById('live-log-level').addEventListener('change', renderLogs);
+    document.getElementById('live-log-search').addEventListener('input', renderLogs);
+    document.getElementById('live-log-clear').addEventListener('click', function () {
+      logRows = [];
+      renderLogs();
+    });
+    pollLogs();
+    window.setInterval(pollLogs, 500);
   </script>
 </body>
 </html>

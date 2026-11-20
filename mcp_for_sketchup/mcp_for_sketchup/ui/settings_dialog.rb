@@ -38,6 +38,7 @@ module MCPforSketchUp
         )
 
         dialog.add_action_callback("load_state") { |_ctx|       on_load_state(dialog) }
+        dialog.add_action_callback("load_logs") { |_ctx, cursor| on_load_logs(dialog, cursor) }
         dialog.add_action_callback("save")       { |_ctx, json| on_save(dialog, json) }
         # Defer dialog.close out of the JS action_callback frame for the same
         # Windows-quirk reason we wrap UI.messagebox below — cheap insurance.
@@ -78,6 +79,14 @@ module MCPforSketchUp
         dialog.execute_script("window.applyState(#{js_safe_json(load_state_payload)})")
       rescue StandardError => e
         MCPforSketchUp::Core::Logger.log_error("settings_dialog.load_state", e)
+      end
+
+      def self.on_load_logs(dialog, cursor)
+        payload = MCPforSketchUp::Core::Logger.recent_logs(cursor)
+        dialog.execute_script("window.appendLogs(#{js_safe_json(payload)})")
+      rescue StandardError
+        # The window may have closed while its final poll was queued.
+        nil
       end
 
       def self.on_save(dialog, json)
