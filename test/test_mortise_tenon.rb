@@ -2,10 +2,12 @@
 # create_mortise_tenon over fakes (M-02). The joint sits on the contact area
 # of two boards that touch face to face; a cutter subtracted from the mortise
 # board and a piece united with the tenon board build it inside one
-# operation, which commits only when both results are solids, their volumes
-# changed by the joint, the mortise board is one piece and the tenon is one
-# shell with its board. Anything else aborts: the log is
-# [[:start, label], :abort] and no half-built joint is committed.
+# operation, which commits only when both results are solids, the mortise
+# board lost exactly the part of the joint inside it (all of it unless the
+# mortise runs through), the tenon board gained the whole joint, the mortise
+# board is one piece and the tenon is one shell with its board. Anything
+# else aborts: the log is [[:start, label], :abort] and no half-built joint
+# is committed.
 #
 # The boards are the probe of the design's §3: a leg 50 x 50 x 300 mm with a
 # rail 200 x 20 x 80 mm against its +X face, centred on it. The joint is 10
@@ -577,10 +579,26 @@ class TestMortiseTenon < Minitest::Test
     end
   end
 
-  def test_second_pocket_meeting_an_earlier_one_is_accepted
-    @leg.volume = mm3(742_000)       # a pocket from an earlier joint
-    @pocketed.volume = mm3(738_000)  # the new one meets it: 4 000 mm³, not 8 000
-    joint
+  # A through mortise: the leg is 50 mm thick and the joint 60 deep. The leg
+  # loses only the part of the joint inside it; the rail gains all of it.
+  def test_through_mortise_is_accepted
+    @pocketed.volume = mm3(730_000)  # the leg loses 10 x 40 x 50 = 20 000 mm³
+    @tenoned.volume  = mm3(344_000)  # the rail gains 10 x 40 x 60 = 24 000 mm³
+
+    joint("depth" => 60)
+
     assert_committed
+    box = [[-10, 20, 130], [60, 10, 40]]
+    assert_boxes box, box
+  end
+
+  # The earlier pocket holds part of the new joint's box: the cut frees only
+  # the rest, and the new tenon, built on the whole box, would run into the
+  # earlier tenon.
+  def test_second_pocket_meeting_an_earlier_one_is_refused
+    @leg.volume = mm3(742_000)       # a pocket from an earlier joint
+    @pocketed.volume = mm3(738_000)  # the new one meets it: the leg loses 4 000 mm³, not 8 000
+    err = assert_refused(-32603, /was not committed: mortise board lost 4000\.0 mm³ \(expected a loss of 8000\.0 mm³\)/)
+    assert_match(/must not meet an earlier one/, err.message)
   end
 end

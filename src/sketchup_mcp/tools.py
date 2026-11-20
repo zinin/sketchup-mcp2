@@ -317,8 +317,11 @@ async def create_mortise_tenon(
     contact area and may reach its edge. A depth equal to the mortise
     board's thickness, or a joint that reaches the edge of the contact area,
     puts a face of the cut in a face of the board, which SketchUp's solid
-    operations can fail on (-32603): avoid both when possible. Defaults are
-    sized for ~100 mm boards.
+    operations can fail on (-32603): avoid both when possible. The mortise
+    board must fill its bounding box where the boards touch, and the pocket
+    must not meet an earlier one (its tenon would run into the earlier
+    tenon); otherwise the joint is refused (-32603). Defaults are sized for
+    ~100 mm boards.
 
     The mortise is cut into the mortise board and the tenon is joined to the
     tenon board as one solid. Both boards come back as new groups with new

@@ -51,8 +51,11 @@ module MCPforSketchUp
           E.require_group_or_component!(tenon_board,   "tenon board")
           require_joinable!(model, mortise_board, tenon_board)
 
-          contact = contact_area(board_box(mortise_board), board_box(tenon_board))
-          box     = joint_box(contact, width, height, depth, [ox, oy, oz])
+          mortise_box = board_box(mortise_board)
+          contact     = contact_area(mortise_box, board_box(tenon_board))
+          box         = joint_box(contact, width, height, depth, [ox, oy, oz])
+          thickness   = mortise_box[1][contact[:axis]] - mortise_box[0][contact[:axis]]
+          cut         = width * height * [depth, thickness].min
 
           mortise_before   = mortise_board.volume
           tenon_before     = tenon_board.volume
@@ -61,7 +64,7 @@ module MCPforSketchUp
 
           mortise = cut_mortise(mortise_board, box)
           tenon   = attach_tenon(tenon_board, box)
-          verify_joint!(mortise, tenon, width * height * depth, mortise_before, tenon_before)
+          verify_joint!(mortise, tenon, cut, width * height * depth, mortise_before, tenon_before)
           E.restore_identity!(mortise, mortise_identity)
           E.restore_identity!(tenon,   tenon_identity)
 
@@ -176,20 +179,24 @@ module MCPforSketchUp
       end
 
       # Post-check of the boolean result: nil when both boards changed by the
-      # expected volume, otherwise a sentence that starts with the board that
-      # is off ("mortise board …" / "tenon board …"). The mortise board may
-      # lose less than expected (a through mortise) but not more.
-      def self.joint_volume_problem(expected, mortise_before, mortise_after, tenon_before, tenon_after, rtol = VOLUME_RTOL)
-        tol    = expected * rtol
+      # expected volumes, otherwise a sentence that starts with the board that
+      # is off ("mortise board …" / "tenon board …"). `cut` is the volume the
+      # mortise board must lose, `joint` the volume the tenon board must gain
+      # (the whole joint's box). The mortise board loses exactly the part of
+      # the joint's box inside it — width × height × min(depth, its thickness
+      # along the joint axis), so a through mortise is fine — and a smaller
+      # loss means the box met an earlier pocket, or a notch, gap or taper of
+      # the board, where the tenon would fill space the cut did not free.
+      def self.joint_volume_problem(cut, joint, mortise_before, mortise_after, tenon_before, tenon_after, rtol = VOLUME_RTOL)
         lost   = mortise_before - mortise_after
         gained = tenon_after - tenon_before
-        if lost <= tol || lost > expected + tol
-          return "mortise board #{format_change(lost, 'lost', 'gained', tol)} mm³ " \
-                 "(expected a loss of up to #{format_mm3(expected)} mm³)"
+        if (lost - cut).abs > cut * rtol
+          return "mortise board #{format_change(lost, 'lost', 'gained', cut * rtol)} mm³ " \
+                 "(expected a loss of #{format_mm3(cut)} mm³)"
         end
-        if (gained - expected).abs > tol
-          return "tenon board #{format_change(gained, 'gained', 'lost', tol)} mm³ " \
-                 "(expected a gain of #{format_mm3(expected)} mm³)"
+        if (gained - joint).abs > joint * rtol
+          return "tenon board #{format_change(gained, 'gained', 'lost', joint * rtol)} mm³ " \
+                 "(expected a gain of #{format_mm3(joint)} mm³)"
         end
         nil
       end
@@ -342,21 +349,22 @@ module MCPforSketchUp
 
       # The post-check, before anything is committed. The bounding boxes
       # cannot see a board that does not fill its box where the boards touch
-      # (an L-shape, a notch, a taper), geometry rotated inside an unrotated
-      # group, or the empty group subtract returns when the cutter shares face
-      # planes with the board; the results show all of them. -32603 unless
-      # both results are solids, their volumes changed as joint_volume_problem
-      # expects, the mortise board is still one piece (a through mortise as
-      # wide as the board cuts it in two) and the tenon is one shell with its
-      # board. The advice follows the board that is off: the cut made the
-      # mortise board, the union the tenon board.
-      def self.verify_joint!(mortise, tenon, expected, mortise_before, tenon_before)
+      # (an L-shape, a notch, a taper), a pocket that meets an earlier one,
+      # geometry rotated inside an unrotated group, or the empty group
+      # subtract returns when the cutter shares face planes with the board;
+      # the results show all of them. -32603 unless both results are solids,
+      # their volumes changed as joint_volume_problem expects, the mortise
+      # board is still one piece (a through mortise as wide as the board cuts
+      # it in two) and the tenon is one shell with its board. The advice
+      # follows the board that is off: the cut made the mortise board, the
+      # union the tenon board.
+      def self.verify_joint!(mortise, tenon, cut, joint, mortise_before, tenon_before)
         problem, advice =
           if !mortise.manifold?
             ["the mortise board is no longer a solid", CUT_ADVICE]
           elsif !tenon.manifold?
             ["the tenon board is no longer a solid", JOIN_ADVICE]
-          elsif (volume = joint_volume_problem(expected, mortise_before, mortise.volume, tenon_before, tenon.volume))
+          elsif (volume = joint_volume_problem(cut, joint, mortise_before, mortise.volume, tenon_before, tenon.volume))
             [volume, volume.start_with?("mortise board") ? CUT_ADVICE : JOIN_ADVICE]
           elsif !single_shell?(mortise)
             ["the cut split the mortise board into separate pieces", SPLIT_ADVICE]
@@ -368,7 +376,7 @@ module MCPforSketchUp
         raise MCPforSketchUp::Core::StructuredError.new(-32603,
           "the joint was not committed: #{problem}; the operation was rolled back and the " \
           "model is unchanged. Each board must fill its bounding box where the boards touch " \
-          "(no notch, taper or L-shape). #{advice}")
+          "(no notch, taper or L-shape), and the pocket must not meet an earlier one. #{advice}")
       end
     end
   end

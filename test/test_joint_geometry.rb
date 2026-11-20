@@ -113,40 +113,43 @@ class TestJointGeometry < Minitest::Test
   end
 
   def test_volume_clean_joint
-    assert_nil J.joint_volume_problem(8000, 750_000, 742_000, 320_000, 328_000)
+    assert_nil J.joint_volume_problem(8000, 8000, 750_000, 742_000, 320_000, 328_000)
   end
 
-  def test_volume_through_mortise_is_fine                # lost w × h × thickness < expected
-    assert_nil J.joint_volume_problem(8000, 750_000, 745_000, 320_000, 328_000)
+  def test_volume_through_mortise_is_fine                # the leg loses w × h × thickness
+    assert_nil J.joint_volume_problem(5000, 8000, 750_000, 745_000, 320_000, 328_000)
   end
 
-  def test_volume_pocket_meeting_an_earlier_one_is_fine
-    assert_nil J.joint_volume_problem(8000, 742_000, 738_000, 320_000, 328_000)
+  def test_volume_pocket_meeting_an_earlier_one_is_refused # the cut frees 4 000 of 8 000
+    assert_match(/\Amortise board lost/, J.joint_volume_problem(8000, 8000, 742_000, 738_000, 320_000, 328_000))
   end
 
   def test_volume_problems
-    assert_match(/mortise board/, J.joint_volume_problem(8000, 750_000, 750_000, 320_000, 328_000)) # empty cut
-    assert_match(/mortise board/, J.joint_volume_problem(8000, 750_000, 741_000, 320_000, 328_000)) # too much
-    assert_match(/tenon board/,   J.joint_volume_problem(8000, 750_000, 742_000, 320_000, 320_000)) # no tenon
-    assert_match(/tenon board/,   J.joint_volume_problem(8000, 750_000, 742_000, 320_000, 327_990)) # short
+    assert_match(/mortise board/, J.joint_volume_problem(8000, 8000, 750_000, 750_000, 320_000, 328_000)) # empty cut
+    assert_match(/mortise board/, J.joint_volume_problem(8000, 8000, 750_000, 741_000, 320_000, 328_000)) # too much
+    assert_match(/tenon board/,   J.joint_volume_problem(8000, 8000, 750_000, 742_000, 320_000, 320_000)) # no tenon
+    assert_match(/tenon board/,   J.joint_volume_problem(8000, 8000, 750_000, 742_000, 320_000, 327_990)) # short
   end
 
   # A change is stated as a non-negative amount, and never as a negative
   # zero. Volumes in in³, chosen so that the mm³ are round numbers.
   def test_volume_problems_state_the_change_as_a_non_negative_amount
     in3 = ->(mm3) { mm3 / 25.4**3 }
-    empty_cut = J.joint_volume_problem(in3[8000], in3[750_000], in3[750_000], in3[320_000], in3[328_000])
-    assert_equal "mortise board lost 0.0 mm³ (expected a loss of up to 8000.0 mm³)", empty_cut
+    empty_cut = J.joint_volume_problem(in3[8000], in3[8000], in3[750_000], in3[750_000], in3[320_000], in3[328_000])
+    assert_equal "mortise board lost 0.0 mm³ (expected a loss of 8000.0 mm³)", empty_cut
     # Measured a hair larger than before, within the tolerance: still no -0.0.
-    assert_equal "mortise board lost 0.0 mm³ (expected a loss of up to 8000.0 mm³)",
-                 J.joint_volume_problem(in3[8000], in3[750_000], in3[750_000.04], in3[320_000], in3[328_000])
+    assert_equal "mortise board lost 0.0 mm³ (expected a loss of 8000.0 mm³)",
+                 J.joint_volume_problem(in3[8000], in3[8000], in3[750_000], in3[750_000.04], in3[320_000], in3[328_000])
+    # Less than the cut: the box met an earlier pocket.
+    assert_equal "mortise board lost 4000.0 mm³ (expected a loss of 8000.0 mm³)",
+                 J.joint_volume_problem(in3[8000], in3[8000], in3[750_000], in3[746_000], in3[320_000], in3[328_000])
     assert_match(/mortise board lost 9000\.0 mm³/,
-                 J.joint_volume_problem(in3[8000], in3[750_000], in3[741_000], in3[320_000], in3[328_000]))
+                 J.joint_volume_problem(in3[8000], in3[8000], in3[750_000], in3[741_000], in3[320_000], in3[328_000]))
     assert_match(/mortise board gained 100\.0 mm³/,
-                 J.joint_volume_problem(in3[8000], in3[750_000], in3[750_100], in3[320_000], in3[328_000]))
+                 J.joint_volume_problem(in3[8000], in3[8000], in3[750_000], in3[750_100], in3[320_000], in3[328_000]))
     assert_equal("tenon board gained 0.0 mm³ (expected a gain of 8000.0 mm³)",
-                 J.joint_volume_problem(in3[8000], in3[750_000], in3[742_000], in3[320_000], in3[320_000]))
+                 J.joint_volume_problem(in3[8000], in3[8000], in3[750_000], in3[742_000], in3[320_000], in3[320_000]))
     assert_match(/tenon board lost 100\.0 mm³/,
-                 J.joint_volume_problem(in3[8000], in3[750_000], in3[742_000], in3[320_000], in3[319_900]))
+                 J.joint_volume_problem(in3[8000], in3[8000], in3[750_000], in3[742_000], in3[320_000], in3[319_900]))
   end
 end
