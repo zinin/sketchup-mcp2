@@ -4,7 +4,7 @@
 Pre-conditions:
   1. SketchUp 2026+ is running with an empty model (step 19 uses the
      viewport-screenshot tool, verified on SketchUp 2026 only).
-  2. Ruby SketchUp plugin is installed and started via Plugins → MCP Server →
+  2. Ruby SketchUp plugin is installed and started via Extensions → MCP Server →
      Start. The plugin version must be at least MIN_RUBY from
      src/sketchup_mcp/compat.py; step 28 verifies this.
   3. Run with the same Python venv used by the MCP server.

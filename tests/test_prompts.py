@@ -74,3 +74,20 @@ async def test_prompt_says_entity_count_is_top_level_only():
     text = result.messages[0].content.text
     assert "total entity count" not in text
     assert "top-level entities only" in text
+
+
+async def test_prompt_says_to_relay_token_messages():
+    """M-06: only the user can copy the token from SketchUp, so a token
+    message is repeated to them verbatim."""
+    result = await mcp.get_prompt("sketchup_modeling_strategy", {})
+    text = " ".join(result.messages[0].content.text.split())
+    assert ("If a tool says SKETCHUP_MCP_TOKEN is not set or the token is wrong, repeat the "
+            "message to the user verbatim: only they can copy the token from SketchUp.") in text
+
+
+async def test_prompt_names_the_extensions_menu():
+    """M-23: SketchUp's menu is Extensions; the API keeps the name Plugins."""
+    result = await mcp.get_prompt("sketchup_modeling_strategy", {})
+    text = " ".join(result.messages[0].content.text.split())
+    assert "Plugins" not in text
+    assert "Extensions → MCP Server → Settings..." in text

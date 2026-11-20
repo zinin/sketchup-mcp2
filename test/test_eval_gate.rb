@@ -59,6 +59,14 @@ class TestEvalGate < Minitest::Test
     assert_nil $mcp_eval_probe, "a refused call must not have evaluated the code"
   end
 
+  # M-23: SketchUp's menu is called Extensions; only the API keeps the name
+  # UI.menu("Plugins"). The message is relayed to the user verbatim.
+  def test_the_gate_message_names_the_extensions_menu
+    message = MCPforSketchUp::Handlers::Eval::EVAL_DISABLED_MESSAGE
+    assert_includes message, "Open Extensions → MCP Server → Settings... and check 'Enable Ruby evaluation'."
+    refute_includes message, "Plugins"
+  end
+
   def test_open_gate_runs_the_code
     Config.eval_enabled = true
 

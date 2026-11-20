@@ -7,7 +7,7 @@ a short scripted workload. Asserts all workers complete without error.
 
 Pre-conditions:
   1. SketchUp is running with the multi-client Ruby plugin installed
-     and started via Plugins → MCP Server → Start.
+     and started via Extensions → MCP Server → Start.
   2. SKETCHUP_MCP_TOKEN is set to the token from the plugin's Settings
      (Copy); the workers inherit it. Without it the script stops before
      starting them.

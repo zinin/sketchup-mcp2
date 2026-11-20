@@ -503,7 +503,7 @@ async def test_eval_gate_message_is_an_error_result_verbatim(
     """
     from sketchup_mcp.tools import eval_ruby
 
-    message = "eval_ruby is disabled. Open Plugins → MCP Server → Settings..."
+    message = "eval_ruby is disabled. Open Extensions → MCP Server → Settings..."
     mock_send_command.send_command.side_effect = SketchUpError(
         -32010, message, {"tool": "eval_ruby", "params": {}},
     )

@@ -35,7 +35,7 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
 - **`.skp` export of an untitled model is refused on purpose** (-32602, before any file or directory is made). The old T-27 behaviour saved it to `%TEMP%/sketchup_exports/…` with `Model#save` and returned a `warning`, but `save` re-points the open document there: the user's next Ctrl+S wrote to `%TEMP%`, and a temp cleanup could delete the only copy. `Model#save_copy` would leave the document alone but raises on an untitled model. `save_skp` only ever calls `save_copy` — do not add a `save` branch. Other formats are unaffected.
 - **eval gate**: `eval_ruby` is gated by the `eval_enabled` pref, which
   ships **on** (`Config::DEFAULTS[:eval_enabled] = true`) and is closed from
-  `Plugins → MCP Server → Settings...`. An absent pref resolves to that
+  `Extensions → MCP Server → Settings...`. An absent pref resolves to that
   default; a present-but-non-boolean pref fails **closed** — a corrupt value
   is no basis for enabling arbitrary code execution. Gate closed ⇒
   `handlers/eval.rb::eval_ruby` raises JSON-RPC `-32010`, which
@@ -50,28 +50,49 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   `-warehouse` build where the gate was closed; (2) **per-call review at the
   MCP client** — Claude Desktop / Claude Code show each `eval_ruby` call's
   code to approve or deny. It covers only calls made through that client; a
-  direct TCP client bypasses it. Note this second layer is a client
+  direct TCP client that has the token bypasses it. Note this second layer is a client
   convention, not a protocol guarantee: MCP does not mandate an interaction
   model, and a client running pre-authorized
   (`--dangerously-skip-permissions`) shows nothing.
   The extension deliberately does NOT log or re-prompt the code — that would
   duplicate the client's permission UI and break autonomous
   (`--dangerously-skip-permissions`) operation.
-- **Version handshake (one-time on connect)**: every TCP connection MUST
-  begin with a JSON-RPC `hello` request carrying
-  `params.client_version`. The server rejects a client older than
-  `core/compat.rb`'s `MIN_PYTHON`; the client rejects a plugin older than
-  `compat.py`'s `MIN_RUBY`. There is **no upper bound**: the newer side of
-  a pair knows what changed, so it rejects the older one, and a
-  Python-only or plugin-only release talks to the installed counterpart.
-  The server replies with `{server_version, client_id}` in `result`.
-  Mismatches return JSON-RPC error `-32001` (`IncompatibleVersionError`
-  on the Python side) and the server closes the socket. After a
-  successful handshake, regular `tools/call` requests carry no
-  `client_version` field and responses carry no `server_version` field.
-  When to raise the floors: `docs/release.md` §1. Releases up to 0.3.1
-  still cap the counterpart at their own version. `get_version` remains a
-  regular tool returning the verdict payload.
+- **Handshake (one-time on connect, block C)**: every TCP connection MUST
+  begin with two JSON-RPC requests, both with id 0, and nothing else is
+  accepted until they succeed (any other method is refused and the socket
+  closed; the 30 s pre-handshake deadline covers both; a frame over 4 KiB
+  is refused at its header until then):
+  1. `hello {client_version, client_nonce}` → the version check first:
+     a client older than `core/compat.rb`'s `MIN_PYTHON` gets `-32001`, and
+     so does one that sends no `client_nonce` (it predates authentication;
+     it must hear "upgrade", not "wrong token"). Then
+     `{server_version, server_nonce, server_proof}`.
+  2. The client checks `server_version` against `compat.py`'s `MIN_RUBY`
+     (a reply without nonce and proof is a plugin that predates
+     authentication: `IncompatibleVersionError`), then `server_proof` in
+     constant time — a mismatch means the server does not know the token,
+     and the client closes without proving anything. Then
+     `auth {client_proof}` → `{client_id}`, or `-32003 authentication
+     failed` (logged at WARN as `auth_failed`; socket closed). Python raises
+     `AuthenticationError` (a `SketchUpError`, code -32003); its message,
+     which says where to copy the token from, reaches the MCP client
+     verbatim, like the eval-gate message.
+
+  Proofs are `HMAC-SHA256(token, "sketchup-mcp/1/<server|client>" +
+  client_nonce + server_nonce)`, all lowercase hex (`core/auth.rb`,
+  `src/sketchup_mcp/auth.py`; both test suites pin one vector). The token
+  — 32 random bytes, 64 hex — is made on the plugin's first load
+  (`Config.load_token!`, pref `auth_token`), shown read-only in Settings
+  (Copy, Regenerate — which disconnects every client), and given to the
+  client as `SKETCHUP_MCP_TOKEN`; without a well-formed one the client
+  opens no socket. It is never logged, sent, or put in an error. There is
+  **no upper bound** on versions: the newer side of a pair knows what
+  changed, so it rejects the older one, and a Python-only or plugin-only
+  release talks to the installed counterpart. After the handshake,
+  `tools/call` requests carry no `client_version` and responses no
+  `server_version`. When to raise the floors: `docs/release.md` §1.
+  Releases up to 0.3.1 still cap the counterpart at their own version.
+  `get_version` remains a regular tool returning the verdict payload.
 - **Literal source-guard tests**: `test/test_operation_names.rb` and
   `test/test_transform_absolute.rb` pin exact handler source text (down to
   indentation) to protect invariants like the reversed `Group#subtract`.
@@ -92,8 +113,8 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 691 runs / 2913 assertions
-uv run pytest tests/ -q        # Python (pytest) — 227 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 755 runs / 3183 assertions
+uv run pytest tests/ -q        # Python (pytest) — 255 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 28-step end-to-end (covers every tool category; 18 of 20 tools)
@@ -103,12 +124,13 @@ Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load
 
 ## Configuration
 
-**Ruby (SketchUp extension)** — settings are edited through `Plugins → MCP Server → Settings...` and persisted in SketchUp preferences under section `MCPforSketchUp`. No ENV variables are read on the Ruby side.
+**Ruby (SketchUp extension)** — settings are edited through `Extensions → MCP Server → Settings...` (the API name stays `UI.menu("Plugins")`) and persisted in SketchUp preferences under section `MCPforSketchUp`. The plugin reads no settings from the environment; `handlers/export.rb` takes its temp directory from `TEMP` / `TMP`.
 
 | Setting | Default | Notes |
 |---|---|---|
-| Host | `127.0.0.1` | bind address. **⚠ Security:** `0.0.0.0` exposes the MCP server (including `eval_ruby` — arbitrary Ruby execution) to the entire local network with **no authentication**. Use only on trusted networks (host→VM, isolated lab). For multi-machine setups use the reverse SSH tunnel described in README → Security model instead. |
+| Host | `127.0.0.1` | bind address. **⚠ Security:** a LAN address or `0.0.0.0` lets every machine that can reach the port try to connect: a client still needs the token, but the traffic is **not encrypted** (readable, and changeable after the handshake). On networks you do not trust keep `127.0.0.1` and use the reverse SSH tunnel in README → Security model. Settings warns about any non-loopback host (`Core::Net.loopback?`, the check the server's bind WARN uses too). |
 | Port | `9876` | 1..65535 |
+| Token | made on first load | 64 hex characters (32 random bytes), pref `auth_token`. Shown read-only with **Copy** and **Regenerate**; Regenerate saves a new token, then disconnects every client. Never typed, logged or sent. |
 | Log Level | `WARN` | `DEBUG` / `INFO` / `WARN` / `ERROR`. Default `WARN` so info/debug never clutter SketchUp's shared Ruby console; every emitted line is prefixed `[<UTC iso8601>] [MCPforSU] [LEVEL]`. |
 | Enable Ruby evaluation | **on** | Gates `eval_ruby`. Ships enabled; uncheck to close the gate. Re-enabling it pops a blocking security confirm (arbitrary code ⇒ full filesystem/network/shell). |
 | Log to file | `false` | Mirror every console line to a UTF-8 file (written in addition to the console, not instead of it). |
@@ -122,8 +144,9 @@ Log-level changes apply immediately. Enabling Ruby evaluation requires confirmin
 - `SKETCHUP_MCP_PORT` (default `9876`)
 - `SKETCHUP_MCP_TIMEOUT` (default `60` seconds) — keep it well above 30 s: an edge op starts no new cut after 30 s inside SketchUp and then rolls back. SketchUp does not know the client gave up, so after a timed-out mutating call check the model (`get_component_info` / `list_components`) before retrying.
 - `SKETCHUP_MCP_LOG_LEVEL` (`DEBUG` / `INFO` / `WARN` / `ERROR`; default `INFO`)
+- `SKETCHUP_MCP_TOKEN` — the token from the plugin's Settings (Copy); whitespace around it is dropped. Required: without a well-formed one every tool and `get_version` answer with the instruction and no socket is opened. The eager connect at startup is bounded to 5 s apart from `SKETCHUP_MCP_TIMEOUT`; `sketchup-mcp2 --version` prints the version.
 
-`examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` (via `sketchup_mcp.config`). For a split-host setup — Linux dev box + Windows SketchUp — there are two ways. **LAN address:** `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`; a non-loopback host counts as remote. **Reverse SSH tunnel** (README → Security model; the plugin stays on `127.0.0.1`): the host is loopback, so also set `SKETCHUP_MCP_SMOKE_REMOTE=1`, e.g. `SKETCHUP_MCP_SMOKE_REMOTE=1 uv run python examples/smoke_check.py`. Either way the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network). Without the variable, a loopback host makes step 18 look for the file on this machine and fail; `_export_file_is_local` in the script decides.
+`examples/smoke_check.py` honors the same `SKETCHUP_MCP_HOST` / `SKETCHUP_MCP_PORT` / `SKETCHUP_MCP_TOKEN` (via `sketchup_mcp.config`) and stops before connecting without a token. For a split-host setup — Linux dev box + Windows SketchUp — there are two ways. **LAN address:** `SKETCHUP_MCP_HOST=192.168.x.y uv run python examples/smoke_check.py`; a non-loopback host counts as remote. **Reverse SSH tunnel** (README → Security model; the plugin stays on `127.0.0.1`): the host is loopback, so also set `SKETCHUP_MCP_SMOKE_REMOTE=1`, e.g. `SKETCHUP_MCP_SMOKE_REMOTE=1 uv run python examples/smoke_check.py`. Either way the `export_scene` file lands on the SketchUp host, so step 18 falls back to asserting Ruby returned a non-empty path (file existence cannot be verified across the network). Without the variable, a loopback host makes step 18 look for the file on this machine and fail; `_export_file_is_local` in the script decides.
 
 ## Architecture
 
@@ -145,6 +168,7 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 | `errors.py` | `SketchUpError` parsed from JSON-RPC error envelopes |
 | `server.py` | CLI entry point (`[project.scripts]` → `sketchup-mcp2`) |
 | `compat.py` | Single source of truth for Python↔Ruby version compatibility (MIN_RUBY, check_ruby_version) |
+| `auth.py` | Client side of the token handshake: the token check, nonces, HMAC proofs, the token messages |
 
 `eval_ruby` is the escape hatch — passes arbitrary Ruby code straight through.
 
@@ -152,8 +176,8 @@ JSON-RPC 2.0 envelopes; each MCP tool is a thin Python wrapper that builds a JSO
 
 | Subtree | Role |
 |---|---|
-| `main.rb` (~70 lines) | Loads modules in order, registers Plugins → MCP Server menu |
-| `core/` | `application.rb`, `server.rb`, `client_state.rb`, `framing.rb`, `config.rb`, `compat.rb`, `logger.rb`, `errors.rb` |
+| `main.rb` (~75 lines) | Loads modules in order, loads the token, registers the Extensions → MCP Server menu (`UI.menu("Plugins")`) |
+| `core/` | `application.rb`, `server.rb`, `client_state.rb`, `framing.rb`, `config.rb`, `compat.rb`, `auth.rb` (token, nonces, HMAC proofs), `net.rb` (the one loopback check), `logger.rb`, `errors.rb` |
 | `handlers/` | One file per tool group: `dispatch.rb`, `geometry.rb`, `operations.rb`, `joints.rb`, `materials.rb`, `export.rb`, `model.rb`, `eval.rb`, `view.rb`, `system.rb` |
 | `helpers/` | Shared utilities: `units.rb`, `validation.rb`, `entities.rb`, `geometry.rb`, `operation.rb` (the one undo-step wrapper), `frames.rb` (world matrices, the walk up the parents, shared definitions) |
 | `ui/` | Settings dialog: `settings_dialog.rb`, `settings_validator.rb`, `settings.html` |
