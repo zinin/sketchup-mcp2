@@ -2,12 +2,10 @@
 # M-07: the parameters that size the work of one call are bounded on the Ruby
 # side too: fillet_edges segments 1..32, create_component segments 3..128. A
 # direct TCP client bypasses the Python schema, and segments = 10**9 would run
-# unbounded on SketchUp's UI thread. (create_dovetail num_tails and
-# create_finger_joint num_fingers: test_joints_validation.rb.)
+# unbounded on SketchUp's UI thread.
 #
 # What a handler uses when the caller leaves such a parameter out is pinned
-# here as well: fillet_edges segments 8, create_dovetail num_tails 3,
-# create_finger_joint num_fingers 5, and create_component segments by type
+# here as well: fillet_edges segments 8 and create_component segments by type
 # (default_segments_for).
 #
 # Validation runs before any model access. Entities.active_model! is stubbed
@@ -29,12 +27,10 @@ end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
-require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints"
 
 class TestParamBounds < Minitest::Test
   OPS = MCPforSketchUp::Handlers::Operations
   GEO = MCPforSketchUp::Handlers::Geometry
-  J   = MCPforSketchUp::Handlers::Joints
   V   = MCPforSketchUp::Helpers::Validation
   EH  = MCPforSketchUp::Helpers::Entities
   StructuredError = MCPforSketchUp::Core::StructuredError
@@ -138,17 +134,6 @@ class TestParamBounds < Minitest::Test
 
   def test_fillet_segments_default_to_8
     assert_equal 8, value_used_for("segments") { OPS.fillet_edges("entity_id" => 1, "radius" => 5.0) }
-  end
-
-  def test_dovetail_num_tails_default_to_3
-    assert_equal 3, value_used_for("num_tails") { J.create_dovetail("tail_id" => 1, "pin_id" => 2) }
-  end
-
-  def test_finger_joint_num_fingers_default_to_5
-    used = value_used_for("num_fingers") do
-      J.create_finger_joint("board1_id" => 1, "board2_id" => 2)
-    end
-    assert_equal 5, used
   end
 
   # The segments create_component uses for a `type` built without them.

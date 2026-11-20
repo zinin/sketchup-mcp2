@@ -1,10 +1,10 @@
 # test/test_handler_atomicity.rb
 # M-08: every mutating handler rolls back when it fails mid-operation.
 #
-# The eleven mutating handlers wrap their edits in model.start_operation ...
+# The nine mutating handlers wrap their edits in model.start_operation ...
 # model.commit_operation and answer any StandardError with
 # Geometry.safe_abort(model) and a re-raise, so one call is one undo step and
-# a call that fails leaves the model as it was. ROWS holds all eleven, so a
+# a call that fails leaves the model as it was. ROWS holds all nine, so a
 # handler that stops aborting fails here whatever its own tests cover. The
 # last tests read the handler files and find every method that calls
 # start_operation, so a new site without a row fails too, and pin that scan.
@@ -185,10 +185,6 @@ class TestHandlerAtomicity < Minitest::Test
      %i[layers add], "Create Layer (L)"],
     [H::Joints, :create_mortise_tenon, { "mortise_id" => "1", "tenon_id" => "2" },
      %i[find_entity_by_id], "Mortise and Tenon"],
-    [H::Joints, :create_dovetail, { "tail_id" => "1", "pin_id" => "2" },
-     %i[find_entity_by_id], "Dovetail Joint"],
-    [H::Joints, :create_finger_joint, { "board1_id" => "1", "board2_id" => "2" },
-     %i[find_entity_by_id], "Finger Joint"],
   ].freeze
 
   # The handlers whose row call runs to the end over these fakes.

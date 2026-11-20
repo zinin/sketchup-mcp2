@@ -71,9 +71,8 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   When to raise the floors: `docs/release.md` §1. Releases up to 0.3.1
   still cap the counterpart at their own version. `get_version` remains a
   regular tool returning the verdict payload.
-- **Literal source-guard tests**: `test/test_operation_names.rb`,
-  `test/test_transform_absolute.rb`, `test/test_joints_frame_compensation.rb`
-  pin exact handler source text (down to indentation) to protect invariants
+- **Literal source-guard tests**: `test/test_operation_names.rb` and
+  `test/test_transform_absolute.rb` pin exact handler source text (down to indentation) to protect invariants
   like the reversed `Group#subtract`. Never run an auto-formatter over
   handlers or tests; when refactoring pinned code, update the pins
   deliberately.
@@ -92,8 +91,8 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 579 runs / 1813 assertions
-uv run pytest tests/ -q        # Python (pytest) — 214 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 556 runs / 1720 assertions
+uv run pytest tests/ -q        # Python (pytest) — 206 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 26-step end-to-end (covers every tool category; 19 of 22 tools)
@@ -168,7 +167,7 @@ All created geometry lives inside SketchUp **Groups** so it can be selected/move
 | Materials | `set_material` (groups, component instances, faces, edges; existing material names, named colors, hex `#rrggbb`) |
 | Booleans | `boolean_operation` (union / difference / intersection) |
 | Edge ops | `chamfer_edge`, `fillet_edge` (Ruby-side names are plural — `chamfer_edges`/`fillet_edges`) |
-| Joinery | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
+| Joinery | `create_mortise_tenon` |
 | Export | `export_scene` (skp / obj / dae / stl / png / jpg; skp refused for an untitled model) |
 | Introspection | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | View | `get_viewport_screenshot` (returns MCP Image + JSON metadata text block; optional view_preset/style/zoom_extents; non-destructive by default; **requires SketchUp 2026+** — see below) |

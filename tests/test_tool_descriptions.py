@@ -15,7 +15,7 @@ _OPERATIONS_RB = (
 
 async def test_every_tool_parameter_has_description():
     tools = await mcp.list_tools()
-    assert len(tools) == 22
+    assert len(tools) == 20
     missing = []
     for tool in tools:
         for pname, pschema in tool.inputSchema.get("properties", {}).items():
@@ -37,8 +37,7 @@ async def test_dimension_tools_mention_units():
     # (разрешение рендера в пикселях), units-требование к нему неверно.
     tools = {t.name: t for t in await mcp.list_tools()}
     for name in ("create_component", "transform_component", "chamfer_edge",
-                 "fillet_edge", "create_mortise_tenon", "create_dovetail",
-                 "create_finger_joint"):
+                 "fillet_edge", "create_mortise_tenon"):
         desc = tools[name].description or ""
         assert ("mm" in desc) or ("millimeter" in desc.lower()), f"{name}: нет units"
 

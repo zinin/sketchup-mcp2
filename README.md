@@ -62,7 +62,7 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 | **Materials** | `set_material` — paints a group, component instance, face or edge with an existing material (by name), a named color or hex `#rrggbb` |
 | **Booleans** | `boolean_operation` — union / difference / intersection |
 | **Edge ops** | `chamfer_edge`, `fillet_edge` — feature edges only (seams and concave edges skipped; fillet also skips curved rims and refuses a body without straight feature edges); distance/radius in mm, segments configurable |
-| **Joinery** | `create_mortise_tenon`, `create_dovetail`, `create_finger_joint` |
+| **Joinery** | `create_mortise_tenon` |
 | **Export** | `export_scene` — skp / obj / dae / stl / png / jpg; skp is refused for an untitled model |
 | **Introspection** | `get_model_info`, `list_components`, `get_component_info`, `find_components`, `list_layers`, `create_layer`, `get_selection`, `get_version` |
 | **View** | `get_viewport_screenshot` — captures the viewport as a PNG (returns an MCP `Image` + JSON metadata text block; optional `view_preset` / `style` / `zoom_extents`; **requires SketchUp 2026+**) |

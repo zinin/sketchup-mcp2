@@ -53,8 +53,6 @@ class TestOperationNames < Minitest::Test
   def test_joints_labels_are_title_case
     src = source(HANDLERS, "joints.rb")
     assert_op_label src, /start_operation\("Mortise and Tenon"/, "mortise_tenon"
-    assert_op_label src, /start_operation\("Dovetail Joint"/, "dovetail"
-    assert_op_label src, /start_operation\("Finger Joint"/, "finger_joint"
   end
 
   def test_materials_label_is_title_case
@@ -118,9 +116,6 @@ class TestOperationNames < Minitest::Test
     src = source(HANDLERS, "joints.rb")
     [
       /subtract_tracked\(cutter,\s*board\)/,
-      /subtract_tracked\(cutter,\s*pin_group\)/,
-      /subtract_tracked\(cutter,\s*group\)/,
-      /subtract_tracked\(cutter,\s*current\)/,
     ].each do |pattern|
       assert_match(pattern, src,
         "joints must keep the CUTTER as subtract_tracked's first arg " \

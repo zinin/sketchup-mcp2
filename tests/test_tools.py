@@ -336,12 +336,10 @@ async def test_schema_rejects_zero_scale_component(dispatch_conn):
     dispatch_conn.send_command.assert_not_called()
 
 
-async def test_schema_rejects_dovetail_angle_above_60(dispatch_conn):
-    with pytest.raises(Exception) as exc_info:
-        await mcp.call_tool("create_dovetail",
-                            {"tail_id": "1", "pin_id": "2", "angle": 75.0})
-    assert "angle" in str(exc_info.value)
-    dispatch_conn.send_command.assert_not_called()
+async def test_withdrawn_joinery_tools_are_not_offered():
+    names = {t.name for t in await mcp.list_tools()}
+    assert "create_dovetail" not in names
+    assert "create_finger_joint" not in names
 
 
 # --- M-07: верхние границы счётчиков (зеркало Ruby optional_int_range) ---
@@ -366,54 +364,6 @@ async def test_schema_accepts_fillet_segments_32(dispatch_conn):
         "fillet_edges", {"entity_id": "1", "radius": 5.0, "segments": 32})
 
 
-async def test_schema_rejects_dovetail_num_tails_above_25(dispatch_conn):
-    with pytest.raises(Exception) as exc_info:
-        await mcp.call_tool("create_dovetail",
-                            {"tail_id": "1", "pin_id": "2", "num_tails": 26})
-    assert "num_tails" in str(exc_info.value)
-    dispatch_conn.send_command.assert_not_called()
-
-
-async def test_schema_rejects_dovetail_num_tails_zero(dispatch_conn):
-    # Нижняя граница gt=0: ge=0 пропустил бы ноль зубьев.
-    with pytest.raises(Exception) as exc_info:
-        await mcp.call_tool("create_dovetail",
-                            {"tail_id": "1", "pin_id": "2", "num_tails": 0})
-    assert "num_tails" in str(exc_info.value)
-    dispatch_conn.send_command.assert_not_called()
-
-
-async def test_schema_accepts_dovetail_num_tails_25(dispatch_conn):
-    await mcp.call_tool("create_dovetail",
-                        {"tail_id": "1", "pin_id": "2", "num_tails": 25})
-    wire_args = dispatch_conn.send_command.call_args.args[1]
-    assert wire_args["num_tails"] == 25
-
-
-async def test_schema_rejects_finger_joint_num_fingers_above_50(dispatch_conn):
-    with pytest.raises(Exception) as exc_info:
-        await mcp.call_tool("create_finger_joint",
-                            {"board1_id": "1", "board2_id": "2", "num_fingers": 51})
-    assert "num_fingers" in str(exc_info.value)
-    dispatch_conn.send_command.assert_not_called()
-
-
-async def test_schema_rejects_finger_joint_num_fingers_zero(dispatch_conn):
-    # Нижняя граница gt=0: ge=0 пропустил бы ноль пальцев.
-    with pytest.raises(Exception) as exc_info:
-        await mcp.call_tool("create_finger_joint",
-                            {"board1_id": "1", "board2_id": "2", "num_fingers": 0})
-    assert "num_fingers" in str(exc_info.value)
-    dispatch_conn.send_command.assert_not_called()
-
-
-async def test_schema_accepts_finger_joint_num_fingers_50(dispatch_conn):
-    await mcp.call_tool("create_finger_joint",
-                        {"board1_id": "1", "board2_id": "2", "num_fingers": 50})
-    wire_args = dispatch_conn.send_command.call_args.args[1]
-    assert wire_args["num_fingers"] == 50
-
-
 @pytest.mark.parametrize(
     "tool_name, kwargs, expected_ruby_name, expected_ruby_kwargs",
     [
@@ -428,16 +378,6 @@ async def test_schema_accepts_finger_joint_num_fingers_50(dispatch_conn):
          "create_mortise_tenon", {"mortise_id": "1", "tenon_id": "2",
                                    "width": 50.0, "height": 25.0, "depth": 10.0,
                                    "offset_x": 0.0, "offset_y": 0.0, "offset_z": 0.0}),
-        ("create_dovetail", {"tail_id": "1", "pin_id": "2"},
-         "create_dovetail", {"tail_id": "1", "pin_id": "2",
-                              "width": 50.0, "height": 50.0, "depth": 15.0, "angle": 15.0,
-                              "num_tails": 3,
-                              "offset_x": 0.0, "offset_y": 0.0, "offset_z": 0.0}),
-        ("create_finger_joint", {"board1_id": "1", "board2_id": "2"},
-         "create_finger_joint", {"board1_id": "1", "board2_id": "2",
-                                  "width": 50.0, "height": 25.0, "depth": 10.0,
-                                  "num_fingers": 5,
-                                  "offset_x": 0.0, "offset_y": 0.0, "offset_z": 0.0}),
         ("transform_component", {"id": "1"}, "transform_component", {"id": "1"}),
         ("boolean_operation", {"target_id": "1", "tool_id": "2"},
          "boolean_operation", {"target_id": "1", "tool_id": "2",
