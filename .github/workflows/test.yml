@@ -12,12 +12,16 @@ permissions:
 jobs:
   ruby:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # SketchUp 2024–2026 несут Ruby 3.2.x, SketchUp 2027 — Ruby 3.4.x.
+        ruby-version: ['3.2', '3.4']
     steps:
       - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
-          # SketchUp 2024/2025 несут Ruby 3.2.x; для SU2026 то же семейство.
-          ruby-version: '3.2'
+          ruby-version: ${{ matrix.ruby-version }}
       # test_package_output.rb требует rubyzip (не stdlib);
       # Gemfile в проекте нет намеренно (см. deep-research T-20).
       # Пин мажора: локально верифицирован rubyzip 3.x; неожиданный мажорный
@@ -46,11 +50,16 @@ jobs:
   contract:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # SketchUp 2024–2026 несут Ruby 3.2.x, SketchUp 2027 — Ruby 3.4.x.
+        ruby-version: ['3.2', '3.4']
     steps:
       - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.2'
+          ruby-version: ${{ matrix.ruby-version }}
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'

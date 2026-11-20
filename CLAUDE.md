@@ -72,10 +72,10 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   still cap the counterpart at their own version. `get_version` remains a
   regular tool returning the verdict payload.
 - **Literal source-guard tests**: `test/test_operation_names.rb` and
-  `test/test_transform_absolute.rb` pin exact handler source text (down to indentation) to protect invariants
-  like the reversed `Group#subtract`. Never run an auto-formatter over
-  handlers or tests; when refactoring pinned code, update the pins
-  deliberately.
+  `test/test_transform_absolute.rb` pin exact handler source text (down to
+  indentation) to protect invariants like the reversed `Group#subtract`.
+  Never run an auto-formatter over handlers or tests; when refactoring
+  pinned code, update the pins deliberately.
 
 ## Development Commands
 
@@ -91,11 +91,11 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 556 runs / 1720 assertions
-uv run pytest tests/ -q        # Python (pytest) — 206 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 585 runs / 1948 assertions
+uv run pytest tests/ -q        # Python (pytest) — 207 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
-python examples/smoke_check.py # 26-step end-to-end (covers every tool category; 19 of 22 tools)
+python examples/smoke_check.py # 26-step end-to-end (covers every tool category; 18 of 20 tools)
 ```
 
 Other example scripts in `examples/`: `smoke_multi_client.py` (multi-client load check).
