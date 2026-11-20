@@ -225,10 +225,15 @@ module MCPforSketchUp
 
       # Settings → Regenerate (spec §7.1). The new token is saved before it takes
       # effect; then every client is closed, so sessions opened with the old
-      # token end, and the dialog shows the new token. A failed save keeps the
-      # old token — and the clients using it.
+      # token end, and the dialog shows the new token — in the token field
+      # only, so edits the user has not saved stay in the form. A failed save
+      # keeps the old token, and the clients using it. Every path answers
+      # onTokenResult, which re-enables the button the dialog disabled.
       def self.on_regenerate_token(dialog)
-        return unless confirm_regenerate
+        unless confirm_regenerate
+          dialog.execute_script("window.onTokenResult(#{js_safe_json({ ok: false, cancelled: true })})")
+          return
+        end
         begin
           MCPforSketchUp::Core::Config.regenerate_token!
         rescue StandardError => e
@@ -238,18 +243,18 @@ module MCPforSketchUp
           return
         end
         MCPforSketchUp::Core::Application.disconnect_clients("token_regenerated")
-        dialog.execute_script(
-          "window.onTokenResult(#{js_safe_json({ ok: true })}); " \
-          "window.applyState(#{js_safe_json(load_state_payload)})"
-        )
+        result = { ok: true, token: MCPforSketchUp::Core::Config.token }
+        dialog.execute_script("window.onTokenResult(#{js_safe_json(result)})")
       rescue StandardError => e
         report_general_error(dialog, e, tag: "settings_dialog.regenerate_token")
       end
 
       # §7.3: whether the host typed in the dialog is loopback, by the server's
-      # check; the dialog debounces the calls.
+      # check, without a name lookup: it runs as the user types, on SketchUp's
+      # UI thread (the dialog debounces the calls). A name counts as not
+      # loopback until it is saved; the saved host is then judged with a lookup.
       def self.on_check_host(dialog, host)
-        result = { host: host.to_s, loopback: MCPforSketchUp::Core::Net.loopback?(host) }
+        result = { host: host.to_s, loopback: MCPforSketchUp::Core::Net.loopback?(host, resolve: false) }
         dialog.execute_script("window.onHostCheck(#{js_safe_json(result)})")
       rescue StandardError => e
         MCPforSketchUp::Core::Logger.log_error("settings_dialog.check_host", e)

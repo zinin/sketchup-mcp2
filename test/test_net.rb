@@ -36,4 +36,26 @@ class TestNet < Minitest::Test
     stub_singleton(Addrinfo, :getaddrinfo) { |*_| addresses }
     refute N.loopback?("split-horizon.example")
   end
+
+  # Final review: the dialog asks while the user types, on SketchUp's UI
+  # thread, where a name lookup can freeze SketchUp. IP literals and localhost
+  # need none, and resolve: false makes none.
+  def test_ip_literals_and_localhost_need_no_lookup
+    stub_singleton(Addrinfo, :getaddrinfo) { |*_| raise "no lookup expected" }
+    %w[127.0.0.1 127.0.0.2 ::1 localhost LOCALHOST].each { |host| assert N.loopback?(host), host }
+    %w[0.0.0.0 :: 192.168.1.5].each { |host| refute N.loopback?(host), host }
+  end
+
+  def test_resolve_false_makes_no_lookup
+    stub_singleton(Addrinfo, :getaddrinfo) { |*_| raise "no lookup expected" }
+    refute N.loopback?("192.168.", resolve: false)
+    refute N.loopback?("my-host", resolve: false)
+    assert N.loopback?("127.0.0.1", resolve: false)
+  end
+
+  def test_names_are_resolved_by_default
+    addresses = [Addrinfo.ip("127.0.0.1")]
+    stub_singleton(Addrinfo, :getaddrinfo) { |*_| addresses }
+    assert N.loopback?("my-host")
+  end
 end

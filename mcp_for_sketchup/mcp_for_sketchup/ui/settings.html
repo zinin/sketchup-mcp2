@@ -278,11 +278,20 @@
       try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
       document.getElementById('token-status').textContent = copied ? 'Copied' : 'Press Ctrl+C to copy';
     });
+    // One Regenerate at a time: the button stays disabled until Ruby answers
+    // (a double click would queue two confirms). Only the token field changes,
+    // so edits not yet saved stay in the form.
     document.getElementById('btn-regenerate-token').addEventListener('click', function () {
+      var button = document.getElementById('btn-regenerate-token');
+      if (button.disabled) return;
+      button.disabled = true;
       document.getElementById('token-status').textContent = '';
       sketchup.regenerate_token();
     });
     window.onTokenResult = function (result) {
+      document.getElementById('btn-regenerate-token').disabled = false;
+      if (result.cancelled) return;
+      if (result.ok) document.getElementById('token').value = result.token;
       document.getElementById('token-status').textContent = result.ok
         ? 'New token saved; every client was disconnected.'
         : result.error;

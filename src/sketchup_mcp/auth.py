@@ -49,9 +49,12 @@ def check_token(token: str | None) -> str:
     if token is None:
         raise AuthenticationError(f"SKETCHUP_MCP_TOKEN is not set. {COPY_TOKEN_HINT}")
     if not is_hex64(token):
+        if len(token) == 64:
+            problem = "it has 64 characters, but not all of them are lowercase hex (0-9, a-f)"
+        else:
+            problem = f"expected 64 lowercase hex characters (0-9, a-f), got {len(token)}"
         raise AuthenticationError(
-            "SKETCHUP_MCP_TOKEN is not a token from the SketchUp plugin: "
-            f"expected 64 hex characters, got {len(token)}. {COPY_TOKEN_HINT}"
+            f"SKETCHUP_MCP_TOKEN is not a token from the SketchUp plugin: {problem}. {COPY_TOKEN_HINT}"
         )
     return token
 

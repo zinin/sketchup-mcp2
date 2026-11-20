@@ -45,7 +45,17 @@ def test_check_token_names_the_length_of_a_malformed_one():
         auth.check_token("abc")
     assert ei.value.message == (
         "SKETCHUP_MCP_TOKEN is not a token from the SketchUp plugin: "
-        f"expected 64 hex characters, got 3. {HINT}")
+        f"expected 64 lowercase hex characters (0-9, a-f), got 3. {HINT}")
+
+
+def test_check_token_says_what_is_wrong_with_64_characters():
+    # Final review: "expected 64 hex characters, got 64" contradicted itself
+    # for an upper-case token or one with a stray character.
+    with pytest.raises(AuthenticationError) as ei:
+        auth.check_token("0123456789ABCDEF" * 4)
+    assert ei.value.message == (
+        "SKETCHUP_MCP_TOKEN is not a token from the SketchUp plugin: it has 64 characters, "
+        f"but not all of them are lowercase hex (0-9, a-f). {HINT}")
 
 
 def test_check_token_returns_a_well_formed_one(auth_vectors):

@@ -201,20 +201,21 @@ class TestSettingsDialogToken < Minitest::Test
     dialog
   end
 
-  def test_regenerate_yes_saves_disconnects_and_refreshes
+  # Final review: only the token field changes — an applyState would put the
+  # saved values back over edits the user has not saved.
+  def test_regenerate_yes_saves_disconnects_and_shows_the_token
     dialog = regenerate(answer: true)
     assert_equal NEW, C.token
     assert_equal ["token_regenerated"], @disconnected
-    assert_includes dialog.script_text, 'window.onTokenResult({"ok":true})'
-    assert_includes dialog.script_text, "window.applyState("
-    assert_includes dialog.script_text, NEW, "the dialog shows the new token"
+    assert_equal [%(window.onTokenResult({"ok":true,"token":"#{NEW}"}))], dialog.scripts
   end
 
+  # The dialog disables Regenerate while a confirm is open; a No re-enables it.
   def test_regenerate_no_changes_nothing
     dialog = regenerate(answer: false)
     assert_equal OLD, C.token
     assert_empty @disconnected
-    assert_empty dialog.scripts
+    assert_equal ['window.onTokenResult({"ok":false,"cancelled":true})'], dialog.scripts
   end
 
   def test_regenerate_save_failure_reports_and_keeps_the_token
@@ -237,6 +238,15 @@ class TestSettingsDialogToken < Minitest::Test
     dialog = FakeDialog.new
     S.on_check_host(dialog, "192.168.1.5")
     assert_equal ['window.onHostCheck({"host":"192.168.1.5","loopback":false})'], dialog.scripts
+  end
+
+  # Final review: the check runs as the user types, on SketchUp's UI thread;
+  # a name lookup there could freeze SketchUp, so typed names are not resolved.
+  def test_check_host_makes_no_lookup
+    stub_singleton(Addrinfo, :getaddrinfo) { |*_| raise "no lookup expected" }
+    dialog = FakeDialog.new
+    S.on_check_host(dialog, "192.168.")
+    assert_equal ['window.onHostCheck({"host":"192.168.","loopback":false})'], dialog.scripts
   end
 
   def test_eval_confirm_mentions_the_token
@@ -495,6 +505,21 @@ class TestSettingsHtmlEvalWarning < Minitest::Test
     assert_includes html, "sketchup.regenerate_token()"
     assert_includes html, "sketchup.check_host("
     refute_includes html, "isWildcard", "the wildcard-only JavaScript check is gone"
+  end
+
+  # Final review: one Regenerate at a time (a double click queued two
+  # confirms), and only the token field changes when it answers.
+  def test_regenerate_is_guarded_and_sets_only_the_token
+    html = File.read(S::HTML_PATH, encoding: "UTF-8")
+    handler = html[/getElementById\('btn-regenerate-token'\)\.addEventListener\('click'.*?\}\);/m]
+    refute_nil handler
+    assert_includes handler, "if (button.disabled) return;"
+    assert_includes handler, "button.disabled = true;"
+    result = html[/window\.onTokenResult = function \(result\) \{.*?\n    \};/m]
+    refute_nil result
+    assert_includes result, "getElementById('btn-regenerate-token').disabled = false;"
+    assert_includes result, "getElementById('token').value = result.token;"
+    refute_includes result, "applyState"
   end
 
   def test_eval_warning_states_the_shipped_default

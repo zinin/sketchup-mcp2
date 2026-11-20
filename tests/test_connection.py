@@ -1122,7 +1122,7 @@ async def test_missing_token_answers_without_connecting():
 
 async def test_malformed_token_answers_without_connecting():
     message = await _refused_before_connecting("abc")
-    assert "expected 64 hex characters, got 3" in message
+    assert "expected 64 lowercase hex characters (0-9, a-f), got 3" in message
     assert _HINT in message
 
 
@@ -1137,3 +1137,48 @@ async def test_non_finite_argument_is_refused_before_sending(make_connection, fa
     assert ei.value.message == (
         "arguments for 'create_component' contain a number that is not finite (NaN or infinity)")
     assert bytes(writer.buffer) == b""
+
+
+# Final review, Important 1: a listener that took the port must not crash the
+# client outside its error types — the MCP server would not start, and
+# get_version would stop returning a payload.
+async def test_surrogate_server_proof_is_an_unknown_server(auth_vectors):
+    v = auth_vectors
+    impostor = encode_frame(json.dumps({"jsonrpc": "2.0", "id": 0, "result": {
+        "server_version": compat.MIN_RUBY, "server_nonce": v.server_nonce,
+        "server_proof": "\ud800"}}).encode("utf-8"))
+    async with FakeServer([impostor]) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, token=v.token, timeout=2.0)
+        with pytest.raises(AuthenticationError) as ei:
+            await conn.connect()
+        await received_frames(fs, 1)
+        await asyncio.sleep(0.05)
+        frames = client_frames(fs.received)
+    assert "does not know this token" in ei.value.message
+    assert [f["method"] for f in frames] == ["hello"]
+
+
+async def test_deeply_nested_hello_reply_is_a_parse_error(auth_vectors):
+    nested = b"[" * 100_000 + b"]" * 100_000
+    async with FakeServer([encode_frame(nested)]) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, token=auth_vectors.token, timeout=2.0)
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+    assert ei.value.code == -32700
+    assert "handshake parse error" in ei.value.message
+
+
+async def test_deeply_nested_tool_reply_is_a_parse_error(make_connection, fake_streams):
+    reader, _writer = fake_streams
+    reader.feed_data(encode_frame(b"[" * 100_000 + b"]" * 100_000))
+    conn = make_connection()
+    with pytest.raises(SketchUpError) as ei:
+        await conn.send_command("get_model_info", {})
+    assert ei.value.code == -32700
+    assert conn._writer is None, "the stream is out of step: disconnect"
+
+
+async def test_repr_hides_the_token():
+    # Final review: a token one %r or traceback away from a log.
+    conn = SketchUpConnection(host="h", port=1, timeout=1.0, token="0123456789abcdef" * 4)
+    assert "0123456789abcdef" not in repr(conn)

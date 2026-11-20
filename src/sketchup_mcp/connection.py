@@ -60,8 +60,9 @@ class SketchUpConnection:
     port: int
     timeout: float
     # M-06: SKETCHUP_MCP_TOKEN (config.TOKEN for the module singleton). Without
-    # a well-formed one, connect() opens no socket.
-    token: str | None = None
+    # a well-formed one, connect() opens no socket. repr=False: a secret must
+    # not reach a log line or a traceback through repr(connection).
+    token: str | None = field(default=None, repr=False)
     _reader: asyncio.StreamReader | None = None
     _writer: asyncio.StreamWriter | None = None
     _lock: asyncio.Lock | None = field(default=None, init=False, repr=False)
@@ -165,12 +166,14 @@ class SketchUpConnection:
         server_proof = result.get("server_proof")
         if server_nonce is None and server_proof is None:
             raise IncompatibleVersionError(compat._msg_ruby_unauthenticated(server_version))
-        if not (auth.is_hex64(server_nonce) and isinstance(server_proof, str)):
+        # A nonce and a proof are 64 lowercase hex characters. Anything else is
+        # not the plugin — and checking the form first keeps network text (a
+        # lone surrogate, say) away from the comparison below, which takes only
+        # ASCII str.
+        if not (auth.is_hex64(server_nonce) and auth.is_hex64(server_proof)):
             raise AuthenticationError(auth.msg_unknown_token(self.host, self.port))
         expected = auth.proof(self.token, "server", client_nonce, server_nonce)
-        # Bytes, not str: compare_digest refuses a str with non-ASCII characters,
-        # and the proof comes from the network.
-        if not hmac.compare_digest(expected.encode("ascii"), server_proof.encode("utf-8")):
+        if not hmac.compare_digest(expected, server_proof):
             raise AuthenticationError(auth.msg_unknown_token(self.host, self.port))
         result = await self._handshake_step(
             "auth", {"client_proof": auth.proof(self.token, "client", client_nonce, server_nonce)})
@@ -200,10 +203,13 @@ class SketchUpConnection:
             ) from e
         try:
             response = json.loads(response_body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (ValueError, RecursionError) as e:
             # UnicodeDecodeError: json.loads(bytes) декодирует UTF-8 сам;
             # не-UTF8 тело кидало голый UnicodeDecodeError мимо таксономии
             # (валил lifespan вместо degraded-старта). T-11/PY-CONN-02.
+            # ValueError covers it and JSONDecodeError; RecursionError is a
+            # reply nested past the parser's depth — a server that has not
+            # proved it knows the token must not crash the client (block C).
             raise SketchUpError(-32700, f"handshake parse error: {e}") from e
         if not isinstance(response, dict):
             raise SketchUpError(
@@ -412,8 +418,9 @@ class SketchUpConnection:
             raise
         try:
             response = json.loads(response_body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            # См. _handshake: не-UTF8 тело = тот же parse-класс ошибок. T-11.
+        except (ValueError, RecursionError) as e:
+            # См. _handshake_step: не-UTF8 тело и ответ глубже лимита парсера —
+            # тот же parse-класс ошибок. T-11.
             await self.disconnect()
             raise SketchUpError(-32700, f"parse error: {e}") from e
         # Reject malformed non-dict top-level JSON before any .get() call.
