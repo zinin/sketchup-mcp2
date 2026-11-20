@@ -48,6 +48,21 @@ module MCPforSketchUp
         group_or_component.make_unique if group_or_component.respond_to?(:make_unique)
         entity_collection(group_or_component)
       end
+
+      # Solid-операции (subtract/union) возвращают НОВУЮ группу и теряют имя,
+      # тег (layer) и собственный материал исходной. identity_of снимает их
+      # до операции, restore_identity! возвращает на результат.
+      def self.identity_of(entity)
+        { name: entity.name, layer: entity.layer, material: entity.material }
+      end
+
+      # Material ставится только если он был (nil — не трогаем у цели свой).
+      def self.restore_identity!(entity, identity)
+        entity.name = identity[:name]
+        entity.layer = identity[:layer]
+        entity.material = identity[:material] unless identity[:material].nil?
+        entity
+      end
     end
   end
 end
