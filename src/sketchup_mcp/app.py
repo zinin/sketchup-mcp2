@@ -10,6 +10,7 @@ from typing import AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
 
+from sketchup_mcp import __version__
 from sketchup_mcp.config import setup_logging
 from sketchup_mcp.connection import close_connection, get_connection
 from sketchup_mcp.errors import SketchUpError
@@ -51,6 +52,9 @@ mcp = FastMCP(
     instructions="Sketchup integration through the Model Context Protocol",
     lifespan=server_lifespan,
 )
+# serverInfo.version (M-12): FastMCP 1.30 takes no version argument, and
+# without this the client would see the mcp package's version, not ours.
+mcp._mcp_server.version = __version__
 
 # Side-effect imports: register tool/prompt handlers on `mcp`. Must come AFTER
 # `mcp` is constructed (both modules do `from sketchup_mcp.app import mcp`).

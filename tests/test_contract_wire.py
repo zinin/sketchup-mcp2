@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import CallToolResult
 
 from sketchup_mcp.app import mcp
 from sketchup_mcp.connection import SketchUpConnection
@@ -41,8 +41,8 @@ _ECHO_SERVER = (
 _WAIT = 10.0  # seconds: the longest any wait on the echo server may block
 
 # The screenshot wrapper decodes png_base64 from the reply, which an echo does
-# not carry, so its call raises after the round trip. Every other wrapper
-# returns the reply as text.
+# not carry, so after the round trip its call returns an error result naming
+# png_base64. Every other wrapper returns the reply as text.
 _NO_TEXT_REPLY = "get_viewport_screenshot"
 
 # dispatch.rb routes each wire name to the handler method of the same name,
@@ -153,8 +153,10 @@ def _minimal_args(tool_name: str, schema: dict) -> dict:
 
 
 def _text_of(result) -> str:
-    """The text a str-returning tool produced. call_tool returns its content
-    blocks, paired with the structured output."""
+    """The text a str-returning tool produced: its one content block, or the
+    text of the error result it returned (block A, M-12)."""
+    if isinstance(result, CallToolResult):
+        return result.content[0].text
     blocks = result[0] if isinstance(result, tuple) else result
     return blocks[0].text
 
@@ -190,9 +192,11 @@ async def test_every_mcp_tool_reaches_ruby_with_the_arguments_it_sent(
             sent.clear()
             args = _minimal_args(tool.name, tool.inputSchema)
             if tool.name == _NO_TEXT_REPLY:
-                with pytest.raises(ToolError, match="png_base64") as raised:
-                    await mcp.call_tool(tool.name, args)
-                reply = str(raised.value)
+                result = await mcp.call_tool(tool.name, args)
+                assert isinstance(result, CallToolResult) and result.isError, (
+                    f"{tool.name}: expected an error result, got {result!r}")
+                reply = _text_of(result)
+                assert "png_base64" in reply, f"{tool.name}: {reply}"
             else:
                 reply = _text_of(await mcp.call_tool(tool.name, args))
             # A wire name that dispatch.rb does not route is answered with

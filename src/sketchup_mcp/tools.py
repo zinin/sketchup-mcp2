@@ -10,9 +10,11 @@ import logging
 from typing import Annotated, Literal, Optional
 
 from mcp.server.fastmcp import Context, Image
+from mcp.types import CallToolResult, TextContent
 from pydantic import AfterValidator, Field
 
 from sketchup_mcp import compat, config
+from sketchup_mcp.annotations import TOOL_ANNOTATIONS
 from sketchup_mcp.app import mcp
 from sketchup_mcp.connection import get_connection
 from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError, format_error
@@ -42,6 +44,33 @@ def _validate_scale_nonzero(v: list[float]) -> list[float]:
         if abs(s) <= 1e-9:
             raise ValueError(f"scale[{i}] must be non-zero (|s| > 1e-9)")
     return v
+
+
+def _tool(fn):
+    """Register ``fn`` as an MCP tool, with the annotations annotations.py gives
+    it and without structured output: FastMCP would also send a ``str`` return
+    as ``{"result": ...}`` structured content, the same text twice (M-18)."""
+    return mcp.tool(annotations=TOOL_ANNOTATIONS[fn.__name__], structured_output=False)(fn)
+
+
+def _error(text: str) -> CallToolResult:
+    """An error result: ``isError`` true and ``text`` as it is (M-12). It is
+    returned, not raised: FastMCP prefixes a raised error with "Error
+    executing tool …", and the client should see the text unchanged."""
+    return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
+def _not_running(e: ConnectionError) -> CallToolResult:
+    return _error(f"SketchUp not running or extension not started: {e}")
+
+
+def _tool_error(e: SketchUpError, tool_name: str) -> CallToolResult:
+    """``format_error``'s "[code] message" as an error result. Locally raised
+    transport errors (timeout, stale socket, oversize) carry no ``tool`` in
+    data, and format_error would render ``tool=?``: backfill it. setdefault
+    never overrides a Ruby-origin error that carries its own ``tool``."""
+    e.data.setdefault("tool", tool_name)
+    return _error(format_error(e, debug=config.LOG_LEVEL == "DEBUG"))
 
 
 async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
@@ -91,30 +120,25 @@ def _extract_text(result: object) -> str:
     return json.dumps(result)
 
 
-async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
+async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str | CallToolResult:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
 
-    Same external contract as before — kept for compatibility with the
-    string-returning tools. Now delegates to :func:`_raw_call`
-    for connection acquisition and converts the result to a string.
-    Connection failures surface as the canonical legacy string so the LLM
-    sees a stable, actionable hint.
+    A success is the handler's text (via :func:`_raw_call`). A failure is an
+    error result (M-12) whose text is the canonical one: "SketchUp not running
+    or extension not started: …" when no connection can be made, so the LLM
+    sees a stable, actionable hint, and format_error's "[code] message" for a
+    SketchUpError.
     """
     try:
         result = await _raw_call(ctx, tool_name, **kwargs)
     except ConnectionError as e:
-        return f"SketchUp not running or extension not started: {e}"
+        return _not_running(e)
     except SketchUpError as e:
-        # Locally-raised transport errors (timeout, stale socket, oversize)
-        # carry no `tool` in data → format_error would render `tool=?`.
-        # Backfill it from the tool name; setdefault never overrides a
-        # Ruby-origin error that already carries its own `tool`.
-        e.data.setdefault("tool", tool_name)
-        return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
+        return _tool_error(e, tool_name)
     return _extract_text(result)
 
 
-@mcp.tool()
+@_tool
 async def create_component(
     ctx: Context,
     type: Annotated[
@@ -137,7 +161,7 @@ async def create_component(
         Field(description="Optional name for the new group so "
                           "find_components can locate it later"),
     ] = None,
-) -> str:
+) -> str | CallToolResult:
     """Create a primitive (cube / cylinder / cone / sphere) in SketchUp.
 
     All linear values are millimeters (mm). Minimum size per dimension:
@@ -157,11 +181,11 @@ async def create_component(
     return await _call(ctx, "create_component", **args)
 
 
-@mcp.tool()
+@_tool
 async def delete_component(
     ctx: Context,
     id: EntityId,
-) -> str:
+) -> str | CallToolResult:
     """Delete a group or component instance by entity ID. Raw faces, edges and
     other entities fail with -32602.
 
@@ -170,7 +194,7 @@ async def delete_component(
     return await _call(ctx, "delete_component", id=str(id))
 
 
-@mcp.tool()
+@_tool
 async def transform_component(
     ctx: Context,
     id: EntityId,
@@ -190,7 +214,7 @@ async def transform_component(
         ],
         Field(description="relative factors about bbox center, each |s| > 1e-9"),
     ] = None,
-) -> str:
+) -> str | CallToolResult:
     """Move, rotate and/or scale a group or component (mm / degrees).
 
     Groups and component instances only; other entities fail with -32602.
@@ -220,8 +244,8 @@ async def transform_component(
     return await _call(ctx, "transform_component", **args)
 
 
-@mcp.tool()
-async def get_selection(ctx: Context) -> str:
+@_tool
+async def get_selection(ctx: Context) -> str | CallToolResult:
     """Get the entities currently selected in the SketchUp UI.
 
     Returns: JSON {entities: [...]} — groups/components are {id, name, type,
@@ -231,7 +255,7 @@ async def get_selection(ctx: Context) -> str:
     return await _call(ctx, "get_selection")
 
 
-@mcp.tool()
+@_tool
 async def set_material(
     ctx: Context,
     id: EntityId,
@@ -241,7 +265,7 @@ async def set_material(
               description="Name of a material already in the model, named "
                           "color, or 6-digit hex string like #a05030"),
     ],
-) -> str:
+) -> str | CallToolResult:
     """Assign a material (color) to a group, component instance, face or edge.
 
     material: a material already in the model, matched by name without regard
@@ -261,7 +285,7 @@ async def set_material(
 
 
 # Note: Ruby tool name is 'export' (wire mapping pinned in tests/test_tools.py).
-@mcp.tool()
+@_tool
 async def export_scene(
     ctx: Context,
     format: Annotated[
@@ -269,7 +293,7 @@ async def export_scene(
         Field(description="skp (native), obj / dae / stl (geometry), "
                           "png / jpg (viewport render)"),
     ] = "skp",
-) -> str:
+) -> str | CallToolResult:
     """Export the current scene to a temp file on the SketchUp host.
 
     Formats: skp (native), obj / dae / stl (geometry), png / jpg (viewport
@@ -286,7 +310,7 @@ async def export_scene(
 # Pydantic always sends the sized defaults (50/25/10 mm) on the wire, so they
 # override Ruby's V.optional_positive defaults — keep the two sides in sync
 # (see mcp_for_sketchup/mcp_for_sketchup/handlers/joints.rb).
-@mcp.tool()
+@_tool
 async def create_mortise_tenon(
     ctx: Context,
     mortise_id: EntityId,
@@ -300,7 +324,7 @@ async def create_mortise_tenon(
         description="Joint offset from the center of the contact area along Y, mm")] = 0.0,
     offset_z: Annotated[float, Field(
         description="Joint offset from the center of the contact area along Z, mm")] = 0.0,
-) -> str:
+) -> str | CallToolResult:
     """Create a mortise-and-tenon joint between two boards that touch face to face.
 
     All dimensions in millimeters. The boards must be solid groups or
@@ -347,44 +371,44 @@ async def create_mortise_tenon(
     )
 
 
-@mcp.tool()
+@_tool
 async def eval_ruby(
     ctx: Context,
     code: Annotated[
         str,
         Field(min_length=1, description="Ruby code to evaluate inside SketchUp"),
     ],
-) -> str:
+) -> str | CallToolResult:
     """Evaluate arbitrary Ruby code in SketchUp.
 
     Enabled by default; the user can close the gate in the SketchUp
     extension's Settings. When closed, the SketchUp side returns JSON-RPC
     code -32010 with a user-facing message explaining how to re-enable it.
-    This wrapper surfaces that message as a plain string so the LLM can
-    repeat it to the user verbatim — without the `[code]` prefix that
-    format_error would otherwise add.
+    This tool returns that message as an error result, verbatim — without
+    the `[code]` prefix that other errors carry — so the LLM can repeat it
+    to the user.
 
     Returns the .to_s of the LAST evaluated expression; stdout (puts) is NOT
     captured. End scripts with an explicit expression — e.g. a final
-    `result.to_json` — to get structured data back. Errors return
-    "[code] message" with the Ruby exception class and message.
+    `result.to_json` — to get structured data back. Other errors come back
+    as error results with the text "[code] message", carrying the Ruby
+    exception class and message.
     """
     try:
         result = await _raw_call(ctx, "eval_ruby", code=code)
     except ConnectionError as e:
-        return f"SketchUp not running or extension not started: {e}"
+        return _not_running(e)
     except SketchUpError as e:
         if e.code == compat.EVAL_DISABLED_CODE:
-            return e.message
-        # Same tool-name backfill as _call, placed AFTER the -32010 verbatim
-        # path so the eval-disabled message stays untouched.
-        e.data.setdefault("tool", "eval_ruby")
-        return format_error(e, debug=config.LOG_LEVEL == "DEBUG")
+            return _error(e.message)
+        # The tool-name backfill comes AFTER the -32010 verbatim path, so the
+        # eval-disabled message stays untouched.
+        return _tool_error(e, "eval_ruby")
 
     return _extract_text(result)
 
 
-@mcp.tool()
+@_tool
 async def boolean_operation(
     ctx: Context,
     target_id: EntityId,
@@ -399,7 +423,7 @@ async def boolean_operation(
         Field(description="erase the two source bodies after a "
                           "successful operation"),
     ] = False,
-) -> str:
+) -> str | CallToolResult:
     """Perform a boolean operation (union / difference / intersection) on two solids.
 
     difference = target minus tool. Operating on an instance of a shared
@@ -423,14 +447,14 @@ async def boolean_operation(
 # Ruby tool name is `chamfer_edges` (plural); Python parameter `id` maps to
 # Ruby `entity_id`. Default 5 mm is visible on the documented 100 mm-cube
 # use case.
-@mcp.tool()
+@_tool
 async def chamfer_edge(
     ctx: Context,
     id: EntityId,
     distance: Annotated[
         float, Field(gt=0, description="Chamfer distance in mm"),
     ] = 5.0,
-) -> str:
+) -> str | CallToolResult:
     """Chamfer (bevel) every feature edge of a group/component by ``distance`` mm.
 
     Seams of curved surfaces — edges where the surface bends by less than 25°
@@ -454,7 +478,7 @@ async def chamfer_edge(
 
 # Ruby tool name is `fillet_edges` (plural); Python parameter `id` maps to
 # Ruby parameter `entity_id`.
-@mcp.tool()
+@_tool
 async def fillet_edge(
     ctx: Context,
     id: EntityId,
@@ -464,7 +488,7 @@ async def fillet_edge(
     segments: Annotated[
         int, Field(ge=1, le=32, description="Arc segments per rounded edge, 1–32"),
     ] = 8,
-) -> str:
+) -> str | CallToolResult:
     """Round (fillet) every straight feature edge of a group/component by
     ``radius`` mm with ``segments`` arc segments.
 
@@ -493,14 +517,14 @@ async def fillet_edge(
 # zoom_extents → write_image → restore. Restore runs in an outer `ensure`
 # block, so an exception anywhere between snapshot and write_image still
 # leaves the viewport in its original state.
-@mcp.tool()
+@_tool
 async def get_viewport_screenshot(
     ctx: Context,
     max_size: Annotated[
         int,
-        Field(ge=64, le=4096,
-              description="Largest side of the returned PNG in pixels; the "
-                          "other side follows the viewport aspect ratio"),
+        Field(ge=64, le=2000,
+              description="Largest side of the returned PNG in pixels (at most "
+                          "2000); the other side follows the viewport aspect ratio"),
     ] = 800,
     view_preset: Annotated[
         Literal[
@@ -526,13 +550,13 @@ async def get_viewport_screenshot(
     ] = True,
     # NB: bare `list` on purpose — `list[Image | str]` crashes FastMCP tool
     # registration on mcp 1.27 and 1.30.
-) -> list:
+) -> list | CallToolResult:
     """Capture the current SketchUp viewport; returns the PNG image plus a JSON text block {width, height, preset_used, style_used}.
 
     Useful for letting Claude visually verify the scene between steps.
 
     Parameters
-    - max_size: largest side of the returned PNG (64..4096). Aspect ratio is
+    - max_size: largest side of the returned PNG (64..2000). Aspect ratio is
       taken from the current viewport; the smaller side is scaled proportionally.
     - view_preset: switch the camera to a standard view before snapping.
       ``current`` leaves the camera alone.
@@ -544,14 +568,13 @@ async def get_viewport_screenshot(
       user's viewport is unchanged.
 
     If the connection drops mid-response the call is retried automatically;
-    the viewport may briefly flicker in that rare case.
+    the viewport may briefly flicker in that rare case. Errors come back as
+    error results with the text "[code] message", as for every tool.
     """
     # Delegate connection + send_command to _raw_call so we don't duplicate
-    # the transport logic of _call. _raw_call does NOT translate
-    # ConnectionError (text-tools and Image-tools have divergent strategies),
-    # so we convert here: there is no Image sentinel for "not connected",
-    # so raise SketchUpError. See design §5.8 for the error-handling
-    # asymmetry rationale.
+    # the transport logic of _call. Every failure — no connection, a Ruby
+    # error, or a response this wrapper cannot decode — comes back as an
+    # error result, like the text tools' (M-12).
     try:
         raw = await _raw_call(
             ctx,
@@ -562,9 +585,16 @@ async def get_viewport_screenshot(
             style=style,
             restore_view=restore_view,
         )
+        return _screenshot_content(raw)
     except ConnectionError as e:
-        raise SketchUpError(-32000, f"SketchUp not running: {e}") from e
+        return _not_running(e)
+    except SketchUpError as e:
+        return _tool_error(e, "get_viewport_screenshot")
 
+
+def _screenshot_content(raw: object) -> list:
+    """The PNG and the metadata text block of a screenshot response; raises
+    SketchUpError(-32603) for a response it cannot decode."""
     # Ruby returns MCP-shaped {content: [{type: "text", text: JSON-blob}], ...}.
     # Extract the JSON blob and decode the base64 PNG into raw bytes.
     text: Optional[str] = None
@@ -611,8 +641,8 @@ async def get_viewport_screenshot(
     return [Image(data=png_bytes, format="png"), json.dumps(meta)]
 
 
-@mcp.tool()
-async def get_model_info(ctx: Context) -> str:
+@_tool
+async def get_model_info(ctx: Context) -> str | CallToolResult:
     """Get current SketchUp model info: file path, title, units, bounding box, entity count, layer list.
 
     Returns: JSON {path, title, units: "mm", bounding_box_mm|null,
@@ -621,7 +651,7 @@ async def get_model_info(ctx: Context) -> str:
     return await _call(ctx, "get_model_info")
 
 
-@mcp.tool()
+@_tool
 async def list_components(
     ctx: Context,
     recursive: Annotated[
@@ -646,7 +676,7 @@ async def list_components(
         Field(description="detailed includes bbox_mm per component; "
                           "concise omits it"),
     ] = "detailed",
-) -> str:
+) -> str | CallToolResult:
     """List groups and component instances in the model (paginated).
 
     Each component is {id, name, type, layer, depth, bbox_mm} (detailed) or
@@ -662,11 +692,11 @@ async def list_components(
                        response_format=response_format)
 
 
-@mcp.tool()
+@_tool
 async def get_component_info(
     ctx: Context,
     id: EntityId,
-) -> str:
+) -> str | CallToolResult:
     """Detailed info for a single group or component instance by entity ID.
 
     Returns: JSON {id, name, type, layer, depth, bbox_mm|null}.
@@ -674,7 +704,7 @@ async def get_component_info(
     return await _call(ctx, "get_component_info", id=str(id))
 
 
-@mcp.tool()
+@_tool
 async def find_components(
     ctx: Context,
     name: Annotated[
@@ -708,7 +738,7 @@ async def find_components(
         Field(description="detailed includes bbox_mm per component; "
                           "concise omits it"),
     ] = "detailed",
-) -> str:
+) -> str | CallToolResult:
     """Find components matching name substring, layer, and/or type.
 
     Name matching is case-insensitive substring; layer must match exactly.
@@ -730,8 +760,8 @@ async def find_components(
     return await _call(ctx, "find_components", **args)
 
 
-@mcp.tool()
-async def list_layers(ctx: Context) -> str:
+@_tool
+async def list_layers(ctx: Context) -> str | CallToolResult:
     """List all model layers (tags).
 
     Returns: JSON {layers: [{name, visible, color, id}]}.
@@ -739,13 +769,13 @@ async def list_layers(ctx: Context) -> str:
     return await _call(ctx, "list_layers")
 
 
-@mcp.tool()
+@_tool
 async def create_layer(
     ctx: Context,
     name: Annotated[
         str, Field(min_length=1, description="Name for the new layer"),
     ],
-) -> str:
+) -> str | CallToolResult:
     """Create a new layer (tag) with the given name.
 
     Returns: JSON {id, name, visible}.
@@ -753,8 +783,8 @@ async def create_layer(
     return await _call(ctx, "create_layer", name=name)
 
 
-@mcp.tool()
-async def undo(ctx: Context) -> str:
+@_tool
+async def undo(ctx: Context) -> str | CallToolResult:
     """Undo the last atomic operation in SketchUp. One MCP tool-call = one undo step.
 
     Returns: JSON {ok: true}.
@@ -762,7 +792,7 @@ async def undo(ctx: Context) -> str:
     return await _call(ctx, "undo")
 
 
-@mcp.tool()
+@_tool
 async def get_version(ctx: Context) -> str:
     """Return the server version and Python↔Ruby compatibility verdict.
 

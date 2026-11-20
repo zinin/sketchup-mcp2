@@ -92,12 +92,12 @@ specify:
 
 # 8. eval_ruby gate
 eval_ruby ships enabled, but the user can close the gate in the
-SketchUp extension's Settings. If a call to eval_ruby returns a string
-starting with "eval_ruby is disabled.", that is not a failure: it is
-the extension's actionable instruction for the user. Surface the full
-message to the user verbatim — do not paraphrase, do not retry the same
-code, do not silently fall back to typed tools without telling the user
-that eval was unavailable. The user can enable Ruby evaluation in
+SketchUp extension's Settings. If a call to eval_ruby returns an error
+whose text starts with "eval_ruby is disabled.", it is not a fault in
+your code: it is the extension's actionable instruction for the user.
+Surface the full message to the user verbatim — do not paraphrase, do
+not retry the same code, do not silently fall back to typed tools
+without telling the user that eval was unavailable. The user can enable Ruby evaluation in
 Plugins → MCP Server → Settings... — the checkbox is «Enable Ruby
 evaluation».
 """

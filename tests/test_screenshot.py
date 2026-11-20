@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from mcp.server.fastmcp import Image
-from mcp.types import ImageContent
+from mcp.types import CallToolResult, ImageContent
 
 from sketchup_mcp.app import mcp
 from sketchup_mcp.errors import SketchUpError
@@ -79,7 +79,7 @@ async def test_screenshot_minimal_payload():
 
 
 async def test_screenshot_max_size_rejects_out_of_range():
-    """max_size below 64 or above 4096 is rejected by FastMCP/Pydantic
+    """max_size below 64 or above 2000 is rejected by FastMCP/Pydantic
     validation — exercised through the dispatcher (``mcp.call_tool``)
     because that's where validation lives."""
     # Connection is mocked so failed-validation paths don't try to touch sockets.
@@ -87,7 +87,7 @@ async def test_screenshot_max_size_rejects_out_of_range():
     with patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn)):
         # Force the screenshot wrapper to be importable+registered.
         import sketchup_mcp.tools  # noqa: F401
-        for bad in (10, 99999):
+        for bad in (10, 2001):
             with pytest.raises(Exception) as exc_info:
                 await mcp.call_tool("get_viewport_screenshot", {"max_size": bad})
             # FastMCP raises a Pydantic ValidationError-derived class — keep
@@ -174,18 +174,34 @@ async def test_screenshot_dispatch_includes_metadata_text():
     assert meta["style_used"] == "shaded"
 
 
+# M-12 (spec §6.6, block A): the screenshot reports its errors like every
+# other tool — an error result, isError true, with the [code] message text —
+# instead of raising (FastMCP would prefix "Error executing tool …").
+def _error_text(result) -> str:
+    assert isinstance(result, CallToolResult), f"expected an error result, got {result!r}"
+    assert result.isError is True
+    return result.content[0].text
+
+
+async def test_screenshot_max_size_schema_caps_at_2000():
+    import sketchup_mcp.tools  # noqa: F401
+    tool = next(t for t in await mcp.list_tools() if t.name == "get_viewport_screenshot")
+    assert tool.inputSchema["properties"]["max_size"]["maximum"] == 2000
+
+
 async def test_screenshot_base64_decode_failure():
     """Invalid base64 in Ruby response surfaces as a clear error."""
     bad = _ruby_result_for(png_b64="not-base64!@#$")
     with _mock_connection(bad):
         from sketchup_mcp.tools import get_viewport_screenshot
-        with pytest.raises(SketchUpError):
-            await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
+        text = _error_text(await get_viewport_screenshot(ctx=None))  # type: ignore[arg-type]
+    assert text.startswith("[-32603] png_base64 decode failed")
+    assert "tool=get_viewport_screenshot" in text
 
 
-async def test_screenshot_non_dict_payload_raises():
+async def test_screenshot_non_dict_payload_is_an_error_result():
     """A JSON scalar/array in the Ruby text blob (valid JSON but not an object)
-    must raise a clean SketchUpError, not leak an AttributeError from
+    must come back as a clean error, not leak an AttributeError from
     payload.get() (kimi review)."""
     bad = {
         "content": [{"type": "text", "text": "[1, 2, 3]"}],
@@ -193,36 +209,30 @@ async def test_screenshot_non_dict_payload_raises():
     }
     with _mock_connection(bad):
         from sketchup_mcp.tools import get_viewport_screenshot
-        with pytest.raises(SketchUpError) as ei:
-            await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
-    assert ei.value.code == -32603
-    assert "not a JSON object" in str(ei.value)
+        text = _error_text(await get_viewport_screenshot(ctx=None))  # type: ignore[arg-type]
+    assert text.startswith("[-32603]")
+    assert "not a JSON object" in text
 
 
-async def test_screenshot_propagates_ruby_error():
-    """A JSON-RPC error from Ruby surfaces as SketchUpError."""
+async def test_screenshot_reports_a_ruby_error():
+    """A JSON-RPC error from Ruby reaches the client with its own text."""
+    err = SketchUpError(-32000, "viewport write_image failed", {"tool": "get_viewport_screenshot"})
     conn = MagicMock()
-    conn.send_command = AsyncMock(
-        side_effect=SketchUpError(-32000, "viewport write_image failed")
-    )
+    conn.send_command = AsyncMock(side_effect=err)
     with patch("sketchup_mcp.tools.get_connection", AsyncMock(return_value=conn)):
         from sketchup_mcp.tools import get_viewport_screenshot
-        with pytest.raises(SketchUpError):
-            await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
+        text = _error_text(await get_viewport_screenshot(ctx=None))  # type: ignore[arg-type]
+    assert text.startswith("[-32000] viewport write_image failed")
 
 
-async def test_screenshot_connection_error_becomes_sketchuperror():
-    """Design §5.8 contract: ConnectionError from the transport layer is
-    re-raised as ``SketchUpError(-32000, …)``, NOT silently swallowed and
-    NOT converted to the legacy ``"SketchUp not running…"`` string used
-    by the text-returning tools. Locks in the asymmetric error-handling
-    decision so it cannot regress without a test failure."""
+async def test_screenshot_connection_error_is_an_error_result():
+    """A ConnectionError from the transport layer reads as for every other
+    tool. (The part-1 design raised SketchUpError here, unlike the text
+    tools; one error shape for every tool replaces that asymmetry.)"""
     with patch(
         "sketchup_mcp.tools.get_connection",
         AsyncMock(side_effect=ConnectionError("refused")),
     ):
         from sketchup_mcp.tools import get_viewport_screenshot
-        with pytest.raises(SketchUpError) as exc_info:
-            await get_viewport_screenshot(ctx=None)  # type: ignore[arg-type]
-    assert exc_info.value.code == -32000
-    assert "SketchUp not running" in str(exc_info.value)
+        text = _error_text(await get_viewport_screenshot(ctx=None))  # type: ignore[arg-type]
+    assert text == "SketchUp not running or extension not started: refused"
