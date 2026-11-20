@@ -23,6 +23,8 @@ module MCPforSketchUp
     helpers/validation
     helpers/entities
     helpers/geometry
+    helpers/operation
+    helpers/frames
     core/framing
     core/client_state
     handlers/dispatch

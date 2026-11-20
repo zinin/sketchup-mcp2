@@ -1,13 +1,13 @@
 # test/test_handler_atomicity.rb
 # M-08: every mutating handler rolls back when it fails mid-operation.
 #
-# The nine mutating handlers wrap their edits in model.start_operation ...
-# model.commit_operation and answer any StandardError with
-# Geometry.safe_abort(model) and a re-raise, so one call is one undo step and
-# a call that fails leaves the model as it was.
+# The nine mutating handlers run their edits through Helpers::Operation.run
+# (M-16), which starts the operation, commits it when the block completes and
+# aborts it on any exception, so one call is one undo step and a call that
+# fails leaves the model as it was.
 # ROWS holds all nine, so a handler that stops aborting fails here
 # whatever its own tests cover. The last tests read the handler files and
-# find the methods that call start_operation, within the limits listed
+# find the methods that call O.run, within the limits listed
 # above the scan, so a new site without a row fails too, and pin that scan.
 # They also keep operation handlers and eval_ruby out of READ_ONLY_TOOLS.
 #
@@ -38,6 +38,7 @@ module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
   class Face; end unless defined?(Face)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
@@ -45,6 +46,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/materials"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
@@ -103,6 +106,11 @@ class TestHandlerAtomicity < Minitest::Test
       BOUNDS
     end
 
+    # At the top level: the walk up the parents stops at once.
+    def parent
+      nil
+    end
+
     def erase!
       true
     end
@@ -146,6 +154,11 @@ class TestHandlerAtomicity < Minitest::Test
 
     def find_entity_by_id(id)
       @by_id[id]
+    end
+
+    # Nothing is open for editing.
+    def active_path
+      nil
     end
   end
 
@@ -212,10 +225,11 @@ class TestHandlerAtomicity < Minitest::Test
     end
   end
 
-  # ---------- every start_operation site has a row ----------
+  # ---------- every O.run site has a row ----------
   #
-  # The scan reads the handler files as text. It sees `start_operation(...)`
-  # and `start_operation "..."`, in a `def self.x` or a plain `def x`, and it
+  # The scan reads the handler files as text. It sees `O.run(...)`, the bare
+  # `O.run model, "..."` and the full `Operation.run(...)`, in a `def self.x`
+  # or a plain `def x`, and it
   # links a helper such as run_edge_op to the methods that call it with
   # parentheses. Three patterns slip past it silently:
   #   * an operation started through send or define_method;
@@ -243,7 +257,7 @@ class TestHandlerAtomicity < Minitest::Test
   # { "method" => code } for the methods in `source`. Every `def`, with or
   # without self., starts a method that runs to the next def, so a def added
   # after a row method does not join its code. The code leaves out the comment
-  # lines: a comment that names start_operation does not count.
+  # lines: a comment that names O.run does not count.
   def methods_of(source)
     chunks = source.split(/^(?=[ \t]*def\b)/)
     chunks.filter_map do |chunk|
@@ -269,7 +283,7 @@ class TestHandlerAtomicity < Minitest::Test
   def operation_handlers(sources = handler_sources)
     sources.flat_map do |module_name, source|
       methods = methods_of(source)
-      openers = methods.select { |_, code| code.match?(/\bstart_operation[\s(]/) }.keys
+      openers = methods.select { |_, code| code.match?(/\b(?:O|Operation)\.run[\s(]/) }.keys
       openers.flat_map { |name| entry_points(methods, name) }.uniq
              .map { |name| "#{module_name}.#{name}" }
     end
@@ -280,9 +294,9 @@ class TestHandlerAtomicity < Minitest::Test
     found = operation_handlers
 
     assert_empty found - rows,
-      "these handlers call start_operation but have no row in ROWS: add one"
+      "these handlers call O.run but have no row in ROWS: add one"
     assert_empty rows - found,
-      "these rows name handlers that no longer call start_operation (or the scan misses them)"
+      "these rows name handlers that no longer call O.run (or the scan misses them)"
   end
 
   # A stale-socket retry must never repeat a model edit or arbitrary Ruby.
@@ -302,21 +316,27 @@ class TestHandlerAtomicity < Minitest::Test
     source = <<~RUBY
       module Fake
         def self.quiet(params)
-          # model.start_operation("only in a comment", true)
+          # O.run(model, "only in a comment") { params }
           nil
         end
 
-        # The next one calls model.start_operation("for real", true) and says so.
+        # The next one calls O.run(model, "for real") and says so.
         def self.plain(params)
-          model.start_operation("Plain", true)
+          O.run(model, "Plain") { params }
         end
 
         def self.bare(params)
-          model.start_operation "Bare", true
+          O.run model, "Bare" do
+            params
+          end
+        end
+
+        def self.full_name(params)
+          MCPforSketchUp::Helpers::Operation.run(model, "Full") { params }
         end
 
         def self.helper(params)
-          model.start_operation("Helper", true)
+          O.run(model, "Helper") { params }
         end
 
         def self.uses_helper(params)
@@ -328,12 +348,12 @@ class TestHandlerAtomicity < Minitest::Test
         end
 
         def instance_method(params)
-          model.start_operation("Instance", true)
+          O.run(model, "Instance") { params }
         end
       end
     RUBY
 
-    assert_equal %w[Fake.also_uses_helper Fake.bare Fake.instance_method Fake.plain Fake.uses_helper],
+    assert_equal %w[Fake.also_uses_helper Fake.bare Fake.full_name Fake.instance_method Fake.plain Fake.uses_helper],
                  operation_handlers("Fake" => source).sort
   end
 end

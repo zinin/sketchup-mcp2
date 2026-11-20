@@ -52,6 +52,8 @@ async def test_returns_lines_pin_top_response_shapes():
         "boolean_operation": "bbox_mm",
         "create_mortise_tenon": "{mortise: {id, name, type, bbox_mm|null}, tenon: {...}}",
         "list_components": "truncated",
+        "get_model_info": "{path, title, units: \"mm\", bounding_box_mm|null, "
+                          "entity_count, layers[], editing[]}",
         # Реальная форма stats из operations.rb::run_edge_op — ключа "failed"
         # не существует; дрейф докстринга от wire-формы ловится здесь.
         "chamfer_edge": "stats{attempted, succeeded, subtract_failed, "
@@ -120,7 +122,7 @@ async def test_group_only_tools_say_other_entities_fail():
 async def test_mortise_tenon_description_states_the_contact_rules():
     tools = {t.name: t for t in await mcp.list_tools()}
     desc = " ".join((tools["create_mortise_tenon"].description or "").split())
-    for fragment in ("touch face to face", "multiples of 90 degrees",
+    for fragment in ("touch face to face", "multiple of 90°", "open for editing",
                      "new ids", "Nothing is half-built"):
         assert fragment in desc, fragment
     assert "boolean_cuts" not in desc
@@ -140,3 +142,61 @@ async def test_export_scene_says_an_untitled_model_cannot_export_skp():
         assert frag in desc, f"export_scene: в докстринге нет «{frag}»"
     text = desc + json.dumps(tool.inputSchema)
     assert "warning" not in text.lower(), "export_scene: поле warning больше не существует"
+
+
+# ---------- block A (M-03, M-24): what the tools say about frames and copies ----------
+
+_MUTATING_ID_TOOLS = ("delete_component", "transform_component", "set_material",
+                      "boolean_operation", "chamfer_edge", "fillet_edge",
+                      "create_mortise_tenon")
+
+
+async def _descriptions() -> dict[str, str]:
+    return {t.name: " ".join((t.description or "").split()) for t in await mcp.list_tools()}
+
+
+async def test_mutating_tools_say_shared_entities_are_refused():
+    descs = await _descriptions()
+    for name in _MUTATING_ID_TOOLS:
+        assert "placed more than once" in descs[name], f"{name}: no word on shared entities"
+
+
+async def test_coordinate_tools_say_world():
+    descs = await _descriptions()
+    for name in ("create_component", "transform_component", "get_component_info",
+                 "list_components", "find_components", "get_selection"):
+        assert "world" in descs[name], f"{name}: does not say its coordinates are world"
+
+
+async def test_eval_ruby_says_inches_no_undo_and_global():
+    desc = (await _descriptions())["eval_ruby"]
+    for fragment in ("inches", "no undo operation", "global"):
+        assert fragment in desc, f"eval_ruby: no «{fragment}»"
+
+
+async def test_undo_names_the_shared_undo_stack():
+    assert "shared undo stack" in (await _descriptions())["undo"]
+
+
+async def test_get_model_info_explains_entity_count_and_editing():
+    desc = (await _descriptions())["get_model_info"]
+    for fragment in ("top-level entities only", "editing"):
+        assert fragment in desc, f"get_model_info: no «{fragment}»"
+
+
+async def test_open_path_tools_count_a_shared_group_holding_the_open_one():
+    # A unique group open inside a copy of a shared component is shared too:
+    # create_component refuses there, and editing[] marks it shared.
+    descs = await _descriptions()
+    for name in ("create_component", "get_model_info"):
+        assert "one holding it" in descs[name], f"{name}: says nothing of a shared group holding the open one"
+
+
+async def test_get_component_info_says_which_copy_a_shared_box_is():
+    desc = (await _descriptions())["get_component_info"]
+    for fragment in ("copy open for editing", "first placed copy"):
+        assert fragment in desc, f"get_component_info: no «{fragment}»"
+
+
+async def test_find_components_matches_definition_names():
+    assert "definition name" in (await _descriptions())["find_components"]

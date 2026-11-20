@@ -16,8 +16,7 @@
 # Sketchup::Group / ComponentInstance stubs because the guard checks is_a?
 # (other files define their own stubs, and under run_all every file loads
 # before any test runs). Entities.active_model! is stubbed per test, and
-# Geom::Transformation.translation in the transform test; SingletonStubs
-# restores both.
+# Frames.transformation in the transform test; SingletonStubs restores both.
 require "minitest/autorun"
 
 require_relative "support/singleton_stubs"
@@ -25,6 +24,7 @@ require_relative "support/singleton_stubs"
 module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 # Guarded minimum for a standalone run; under run_all other files define
@@ -48,6 +48,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 
 class TestGeometryGuards < Minitest::Test
@@ -57,16 +59,12 @@ class TestGeometryGuards < Minitest::Test
   EH  = MCPforSketchUp::Helpers::Entities
   StructuredError = MCPforSketchUp::Core::StructuredError
 
-  # Every entity reports the same bounds, in inches. scale reads the centre.
+  # Every entity reports the same bounds, in inches.
   FakePt     = Struct.new(:x, :y, :z)
-  FakeBounds = Struct.new(:min, :max) do
-    def center
-      FakePt.new(*%i[x y z].map { |axis| (min[axis] + max[axis]) / 2.0 })
-    end
-  end
+  FakeBounds = Struct.new(:min, :max)
   BOUNDS = FakeBounds.new(FakePt.new(0.0, 0.0, 0.0), FakePt.new(1.0, 2.0, 4.0))
 
-  # What the stubbed Geom::Transformation.translation and .scaling return.
+  # What the stubbed Frames.transformation returns: the matrix's translation.
   Translation = Struct.new(:x, :y, :z)
 
   class RecordingModel
@@ -119,6 +117,11 @@ class TestGeometryGuards < Minitest::Test
 
     def bounds
       BOUNDS
+    end
+
+    # At the top level: the walk up the parents stops at once.
+    def parent
+      nil
     end
 
     def erase!
@@ -196,19 +199,14 @@ class TestGeometryGuards < Minitest::Test
   # ---------- transform_component ----------
 
   # Arms every branch of transform_component that touches the entity. Only an
-  # unguarded handler gets as far as building a transformation; with these
-  # stubs that shows up as a recorded transform!, however late the guard
-  # sits, not as a NoMethodError. apply_rotation is stubbed whole: it builds
-  # Geom::Vector3d, a class other files define for themselves, and a stand-in
-  # defined here at load time would hide theirs.
+  # unguarded handler gets as far as building a transformation; every branch
+  # builds it through Frames.transformation (rotation, scale and position
+  # alike), so with this stub that shows up as a recorded transform!, however
+  # late the guard sits, not as a NoMethodError.
   def arm_transform_branches
-    stub_singleton(Geom::Transformation, :translation) do |point|
-      Translation.new(point.x, point.y, point.z)
+    stub_singleton(MCPforSketchUp::Helpers::Frames, :transformation) do |m|
+      Translation.new(m[12], m[13], m[14])
     end
-    stub_singleton(Geom::Transformation, :scaling) do |_center, x, y, z|
-      Translation.new(x, y, z)
-    end
-    stub_singleton(GEO, :apply_rotation) { |entity, _degrees| entity.transform!(:rotation) }
   end
 
   # transform_component on a face with just `change` (position, rotation or

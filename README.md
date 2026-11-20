@@ -58,7 +58,7 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 
 | Category | Tools |
 |---|---|
-| **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm**; `position` is an **absolute** bbox-min target |
+| **Geometry** | `create_component` (cube / cylinder / cone / sphere), `delete_component`, `transform_component` — all dimensions in **mm**; `position` is an **absolute world** bbox-min target, for nested entities too |
 | **Materials** | `set_material` — paints a group, component instance, face or edge with an existing material (by name), a named color or hex `#rrggbb` |
 | **Booleans** | `boolean_operation` — union / difference / intersection |
 | **Edge ops** | `chamfer_edge`, `fillet_edge` — feature edges only (seams and concave edges skipped; fillet also skips curved rims and refuses a body without straight feature edges); distance/radius in mm, segments configurable |
@@ -69,13 +69,15 @@ That's it. Ask Claude things like *"create a 1.2 × 0.8 m oak dining table"* and
 | **Lifecycle** | `undo` |
 | **Escape hatch** | `eval_ruby` — arbitrary Ruby inside SketchUp for anything not covered above. Enabled by default; close the gate in the Settings dialog — see [Configuration](#ruby-side-settings-dialog-inside-sketchup). |
 
-All dimensions in **millimeters**; angles in **degrees**. Every entity-returning handler also responds with `bbox_mm` so the LLM can re-locate entities by bounding box if their IDs go stale after destructive ops.
+All dimensions in **millimeters**; angles in **degrees**. Every coordinate is in **world** (model) coordinates, for nested entities and while a group is open for editing. Every entity-returning handler also responds with `bbox_mm` so the LLM can re-locate entities by bounding box if their IDs go stale after destructive ops.
+
+Edits inside a component or group placed more than once are refused: changing one copy would change them all. `list_components` and `find_components` flag such entities `shared`, and `find_components` also matches a component's definition name.
 
 ### Capabilities
 
 - **Multi-client support** — N concurrent MCP clients can be connected at once (e.g. Claude Desktop + a smoke-test script + your own Python notebook). Operations are still serialised on the SketchUp UI thread; frames are dispatched in a single global FIFO ordered by decode arrival.
 - **One-time version handshake** — every TCP connection begins with a JSON-RPC `hello` carrying `client_version`; the server validates against its supported range and replies with `server_version` + `client_id`. Incompatible pairs surface immediately as `IncompatibleVersionError` and the socket is closed.
-- **Atomic undo** — every mutating handler wraps the edit in `model.start_operation`/`commit_operation`, so a single `Edit → Undo` rolls back the whole call.
+- **Atomic undo** — every mutating handler runs its edit through `Helpers::Operation.run` (one `model.start_operation`/`commit_operation`, aborted on any failure), so a single `Edit → Undo` rolls back the whole call.
 - **MCP prompt `sketchup_modeling_strategy`** — surfaced in MCP-aware clients' slash menu; teaches the model project conventions (mm units, typed-tools-vs-`eval_ruby`, pitfalls like reversed `Group#subtract`).
 - **Settings dialog** — `Plugins → MCP Server → Settings...` for host / port / log level. Log level applies immediately; host/port changes prompt for a restart.
 
@@ -130,7 +132,7 @@ For richer Ruby recipes that drive the SketchUp API directly — framed walls, g
 
 Working examples and load tests live in [`examples/`](examples/):
 
-- `smoke_check.py` — 26-step end-to-end verification of every tool category.
+- `smoke_check.py` — 28-step end-to-end verification of every tool category.
 - `smoke_multi_client.py` — concurrent multi-client load test.
 
 ## Architecture
@@ -174,7 +176,7 @@ uv run pytest tests/ -q          # Python unit tests
 ### Live smoke (requires SketchUp running with the extension started)
 
 ```bash
-uv run python examples/smoke_check.py          # 26-step end-to-end
+uv run python examples/smoke_check.py          # 28-step end-to-end
 uv run python examples/smoke_multi_client.py   # concurrent multi-client
 ```
 

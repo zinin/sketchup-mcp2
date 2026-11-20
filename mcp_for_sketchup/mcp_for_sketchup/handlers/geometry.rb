@@ -6,17 +6,8 @@ module MCPforSketchUp
       E = MCPforSketchUp::Helpers::Entities
       G = MCPforSketchUp::Helpers::Geometry
       U = MCPforSketchUp::Helpers::Units
-
-      # Wrap abort_operation so its own potential exception (NoMethodError on
-      # older SU, "no operation active" if double-abort) never shadows the
-      # original handler exception.
-      def self.safe_abort(model)
-        model.abort_operation if model.respond_to?(:abort_operation)
-      rescue StandardError => e
-        MCPforSketchUp::Core::Logger.log("DEBUG",
-          "Geometry.safe_abort: model.abort_operation raised: " \
-          "#{e.class}: #{e.message}")
-      end
+      O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       def self.create_component(params)
         type = V.require_enum(params, "type", %w[cube cylinder cone sphere])
@@ -36,8 +27,11 @@ module MCPforSketchUp
         name = params.key?("name") ? V.require_string(params, "name") : nil
 
         model = E.active_model!
-        model.start_operation("Create Component (#{type.capitalize})", true)
-        begin
+        # New objects go into the group open for editing, as SketchUp's own
+        # tools put them; in a shared one they would appear in every copy, so
+        # that is refused before anything starts (spec §6.1).
+        F.require_open_path_unshared!(model)
+        O.run(model, "Create Component (#{type.capitalize})") do
           group = case type
                   when "cube"     then build_cube(model.active_entities, pos, dims)
                   when "cylinder" then build_cylinder(model.active_entities, pos, dims, segments)
@@ -45,30 +39,19 @@ module MCPforSketchUp
                   when "sphere"   then build_sphere(model.active_entities, pos, dims, segments)
                   end
           group.name = name if name
-          model.commit_operation
           describe_entity(group)
-        rescue StandardError
-          safe_abort(model)
-          raise
         end
       end
 
       # Returns {id, name, type, bbox_mm} so Claude can re-locate after destructive ops.
       # A face or an edge (set_material paints them) has no #name: its type is
       # its typename in lower case ("face", "edge") and its name is nil.
+      # bbox_mm is in WORLD coordinates: the entity's bounds mapped through the
+      # walk up its parents (Frames.world_bbox_mm), for nested entities too.
       # bbox_mm == nil, если у entity пустые bounds (T-55: инвертированный
       # сентинел SketchUp ±1e30" не должен утекать как ±2.54e31 мм).
       def self.describe_entity(entity)
-        bb = entity.bounds
-        bbox_mm =
-          if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb)
-            nil
-          else
-            {
-              "min" => [U.inch_to_mm(bb.min.x), U.inch_to_mm(bb.min.y), U.inch_to_mm(bb.min.z)],
-              "max" => [U.inch_to_mm(bb.max.x), U.inch_to_mm(bb.max.y), U.inch_to_mm(bb.max.z)]
-            }
-          end
+        bbox_mm = F.world_bbox_mm(entity)
         type, name =
           case entity
           when Sketchup::Group             then ["group", entity.name]
@@ -86,16 +69,12 @@ module MCPforSketchUp
       def self.delete_component(params)
         id = V.require_id(params)
         model = E.active_model!
-        model.start_operation("Delete Component", true)
-        begin
+        O.run(model, "Delete Component") do
           entity = E.find!(id)
           E.require_group_or_component!(entity, "entity #{id}")
+          F.require_unshared!(entity, "entity #{id}")
           entity.erase!
-          model.commit_operation
           { "ok" => true }
-        rescue StandardError
-          safe_abort(model)
-          raise
         end
       end
 
@@ -107,11 +86,15 @@ module MCPforSketchUp
       # `position` — АБСОЛЮТНАЯ цель (T-04, решение 2026-07-02): entity
       # переносится так, чтобы минимальный угол его bbox оказался ровно в
       # заданной точке (тот же якорь, что у create_component.position).
-      # rotation/scale остаются относительными, вокруг центра bbox.
+      # Block A (M-03): цель и bbox — МИРОВЫЕ, и для вложенных entity тоже.
+      # rotation/scale остаются относительными: вокруг мировых осей X/Y/Z
+      # через центр мирового bbox. Каждое мировое действие W применяется в
+      # системе родителя как P⁻¹·W·P (Frames.conjugate), где P — матрица
+      # родителей (walk); на верхнем уровне P — единичная.
       # Порядок применения: rotation → scale → position (ПОСЛЕДНЕЙ, и он
       # намеренно не совпадает с порядком аргументов) — дельта берётся от
-      # пост-трансформационного bounds.min, итоговый bbox-min равен цели
-      # даже в комбинированных вызовах (ревью iter-1, CRIT-5).
+      # пост-трансформационного мирового bbox-min, итоговый bbox-min равен
+      # цели даже в комбинированных вызовах (ревью iter-1, CRIT-5).
       def self.transform_component(params)
         id = V.require_id(params)
         # position/scale in mm (rotation in degrees — not a size)
@@ -129,38 +112,44 @@ module MCPforSketchUp
         position    = position_mm&.map { |v| U.mm_to_inch(v) }
 
         model = E.active_model!
-        model.start_operation("Transform Component", true)
-        begin
+        O.run(model, "Transform Component") do
           entity = E.find!(id)
           E.require_group_or_component!(entity, "entity #{id}")
+          parent = F.require_unshared!(entity, "entity #{id}").matrix
           if rotation
-            apply_rotation(entity, rotation)
+            apply_rotation(entity, rotation, parent, F.center(entity_world_box(entity, parent, id)))
           end
           if scale
-            center = entity.bounds.center
-            entity.transform!(Geom::Transformation.scaling(center, scale[0], scale[1], scale[2]))
+            center = F.center(entity_world_box(entity, parent, id))
+            entity.transform!(F.transformation(F.conjugate(F.scaling(center, *scale), parent)))
           end
           if position
-            delta = position_delta(entity.bounds.min, position)
-            entity.transform!(Geom::Transformation.translation(
-              Geom::Point3d.new(delta[0], delta[1], delta[2])))
+            world_min = entity_world_box(entity, parent, id)[0]
+            delta = position_delta(world_min, position)
+            entity.transform!(F.transformation(F.conjugate(F.translation(*delta), parent)))
           end
-          model.commit_operation
           describe_entity(entity)
-        rescue StandardError
-          safe_abort(model)
-          raise
         end
       end
 
       # ----- private builders ----------------------------------------------
 
+      # The entity's world box (Frames.entity_box), or -32602 for an entity
+      # with no geometry: there is no box to move, turn or scale about.
+      def self.entity_world_box(entity, parent, id)
+        box = F.entity_box(entity, parent)
+        return box if box
+        raise MCPforSketchUp::Core::StructuredError.new(-32602,
+          "entity #{id} has no geometry, so it has no bounding box to move, rotate or scale")
+      end
+
       # Pure math (юнит-тестится без SketchUp): вектор переноса, доставляющий
-      # bbox-min `current_min` в точку `target`. Оба аргумента — в дюймах.
-      def self.position_delta(current_min, target)
-        [target[0] - current_min.x,
-         target[1] - current_min.y,
-         target[2] - current_min.z]
+      # мировой bbox-min `world_min` в точку `target`. Оба — [x, y, z] в
+      # дюймах.
+      def self.position_delta(world_min, target)
+        [target[0] - world_min[0],
+         target[1] - world_min[1],
+         target[2] - world_min[2]]
       end
 
       def self.default_segments_for(type)
@@ -317,13 +306,14 @@ module MCPforSketchUp
         group
       end
 
-      def self.apply_rotation(entity, rot_degrees)
-        center = entity.bounds.center
-        axes = [Geom::Vector3d.new(1, 0, 0), Geom::Vector3d.new(0, 1, 0), Geom::Vector3d.new(0, 0, 1)]
+      # Turns about the world X, then Y, then Z axis through `center`, the
+      # centre of the world bbox taken once before the first turn; zero angles
+      # are skipped. `parent` is the matrix of the entity's parents
+      # (Frames.placement).
+      def self.apply_rotation(entity, rot_degrees, parent, center)
         rot_degrees.each_with_index do |deg, i|
           next if deg == 0
-          rad = deg * Math::PI / 180
-          entity.transform!(Geom::Transformation.rotation(center, axes[i], rad))
+          entity.transform!(F.transformation(F.conjugate(F.rotation(center, i, deg), parent)))
         end
       end
     end

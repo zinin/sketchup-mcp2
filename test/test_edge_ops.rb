@@ -24,6 +24,7 @@ require_relative "support/singleton_stubs"
 module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
@@ -33,6 +34,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
 
@@ -47,7 +50,7 @@ class TestEdgeOps < Minitest::Test
   FakeBounds = Struct.new(:min, :max)
   BOUNDS = FakeBounds.new(FakePt.new(-50.0, -50.0, 0.0), FakePt.new(50.0, 50.0, 100.0))
 
-  FakeDefinition = Struct.new(:entities)
+  FakeDefinition = Struct.new(:entities, :name)
 
   # Logs [:start, label], :commit and :abort; find_entity_by_id resolves the
   # registered bodies.
@@ -189,9 +192,36 @@ class TestEdgeOps < Minitest::Test
       self
     end
 
+    # Name, tag and material: what identity_of reads and restore_identity!
+    # writes back on the result.
     def name
       alive!
-      ""
+      @name || ""
+    end
+
+    def name=(value)
+      alive!
+      @name = value
+    end
+
+    def layer
+      alive!
+      @layer
+    end
+
+    def layer=(value)
+      alive!
+      @layer = value
+    end
+
+    def material
+      alive!
+      @material
+    end
+
+    def material=(value)
+      alive!
+      @material = value
     end
 
     def bounds
@@ -227,6 +257,15 @@ class TestEdgeOps < Minitest::Test
   # No entities of its own: the edges and faces live in the definition.
   class FakeInstance < Sketchup::ComponentInstance
     include FakeSolid
+    attr_writer :definition_name
+
+    # SketchUp's make_unique gives the instance a copy of its definition,
+    # named "<name>#1".
+    def make_unique
+      alive!
+      @definition_name = "#{@definition_name}#1" if @definition_name
+      self
+    end
 
     def typename
       "ComponentInstance"
@@ -234,7 +273,7 @@ class TestEdgeOps < Minitest::Test
 
     def definition
       alive!
-      FakeDefinition.new(contents)
+      FakeDefinition.new(contents, @definition_name)
     end
   end
 
@@ -377,6 +416,29 @@ class TestEdgeOps < Minitest::Test
                  "(all 496 edges are surface seams)", err.message
     assert_equal [[:start, "Chamfer Edges"], :abort], @scene.model.log
     assert_equal 0, @scene.subtract_calls
+  end
+
+  # §6.3: the cut body comes back as a new group with a new id and keeps the
+  # target's name, tag and material.
+  def test_chamfered_body_keeps_its_name_tag_and_material
+    body = @scene.body(EdgeFakes.prism(24))
+    body.name = "Lid"
+    body.layer = :lid_tag
+    body.material = :walnut
+    res = chamfer(body)
+    refute_equal body.entityID, res["id"]
+    fresh = @scene.model.find_entity_by_id(res["id"])
+    assert_equal ["Lid", :lid_tag, :walnut], [fresh.name, fresh.layer, fresh.material]
+    assert_equal "Lid", res["name"]
+  end
+
+  # An unnamed component instance is named by its definition in the Outliner;
+  # the group that replaces it takes that name.
+  def test_unnamed_instance_result_takes_the_definition_name
+    instance = @scene.instance(EdgeFakes.prism(24))
+    instance.definition_name = "Lid"
+    res = chamfer(instance)
+    assert_equal "Lid", @scene.model.find_entity_by_id(res["id"]).name
   end
 
   def test_component_instance_target_uses_definition_entities

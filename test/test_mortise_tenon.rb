@@ -13,26 +13,41 @@
 # rail 200 x 20 x 80 mm against its +X face, centred on it. The joint is 10
 # wide, 40 high and 20 deep (8 000 mm³).
 #
+# Block A (§6.6a): the boxes are WORLD boxes — each board's definition
+# bounds through the matrix of its parents and its own transformation
+# (Frames) — so the joint follows the model's X, Y and Z in every edit
+# state, a board must be aligned with the model's axes, and the cutter and
+# the tenon piece, built at world coordinates beside the boards, are taken
+# into the parent's frame (transform! by the parent's inverse). Volumes are
+# in the parent's frame: the expected ones are divided by the parent's
+# volume scale. A pocket that frees less than its box gets its own advice.
+#
 # Fakes: a recording model whose log holds [:start, label], :commit and :abort
 # and nothing else, and which finds the boards by id (nothing is open for
-# editing unless a test sets active_path, active_entities and
-# edit_transform); a parent whose entities are a sentinel; boards that
-# subclass the guarded Sketchup::Group or Sketchup::ComponentInstance (the
-# handler checks is_a?); results whose faces answer all_connected. make_box
-# is stubbed: it records its arguments and returns the cutter, then the
-# tenon piece, whose subtract / union record their operand and return the
-# configured result (or nil). Lengths are written in mm and converted with
-# mm / mm3. Under run_all every test file loads before any test runs and
-# some reopen the Sketchup stubs, so the fakes define every method the
-# handler calls on them.
+# editing unless a test sets active_path); a parent whose entities are a
+# sentinel (the model: the walk stops at it), or a FrameFakes::Definition
+# placed at a matrix (a group around the boards); boards that subclass the
+# guarded Sketchup::Group or Sketchup::ComponentInstance (the handler checks
+# is_a?), whose transformation is a matrix and whose definition's bounds are
+# their bounds taken back through it (as SketchUp's are for an axis-aligned
+# board); results whose faces answer all_connected. make_box is stubbed: it
+# records its arguments and returns the cutter, then the tenon piece, whose
+# subtract / union record their operand and return the configured result (or
+# nil), and whose transform! records the matrix Frames.transformation was
+# given (stubbed). Lengths are written in mm and converted with mm / mm3.
+# Under run_all every test file loads before any test runs and some reopen
+# the Sketchup stubs, so the fakes define every method the handler calls on
+# them.
 require "minitest/autorun"
 
 require_relative "support/singleton_stubs"
+require_relative "support/frame_fakes"
 
 module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
   class Face; end unless defined?(Face)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
@@ -40,6 +55,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints"
 
@@ -47,6 +64,7 @@ class TestMortiseTenon < Minitest::Test
   include SingletonStubs
 
   J  = MCPforSketchUp::Handlers::Joints
+  F  = MCPforSketchUp::Helpers::Frames
   EH = MCPforSketchUp::Helpers::Entities
   HG = MCPforSketchUp::Helpers::Geometry
   StructuredError = MCPforSketchUp::Core::StructuredError
@@ -55,13 +73,15 @@ class TestMortiseTenon < Minitest::Test
 
   FakePoint  = Struct.new(:x, :y, :z)
   FakeBounds = Struct.new(:min, :max)
-  # Struct#to_a is [x, y, z], as Geom::Vector3d#to_a is.
-  FakeVector = Struct.new(:x, :y, :z)
-  FakeTransformation = Struct.new(:xaxis, :yaxis, :zaxis, :origin)
+  # A board's definition: what the handler reads from it.
+  BoardDefinition = Struct.new(:name, :bounds)
+  # What the stubbed Frames.transformation returns: the matrix it was given.
+  Marker = Struct.new(:matrix)
 
+  # A transformation: to_a gives its 16 numbers, column-major like
+  # Geom::Transformation#to_a — the three axes, then the origin.
   def self.axes(x, y, z, origin = [0, 0, 0])
-    FakeTransformation.new(FakeVector.new(*x), FakeVector.new(*y), FakeVector.new(*z),
-                           FakePoint.new(*origin))
+    FrameFakes::Transform.new([*x, 0, *y, 0, *z, 0, *origin, 1].map(&:to_f))
   end
 
   C45 = Math.sqrt(0.5)
@@ -71,10 +91,6 @@ class TestMortiseTenon < Minitest::Test
   ROTATED_45 = axes([C45, C45, 0], [-C45, C45, 0], [0, 0, 1])
   ROTATED_30 = axes([C30, 0.5, 0], [-0.5, C30, 0], [0, 0, 1])
   MOVED      = axes([1, 0, 0], [0, 1, 0], [0, 0, 1], [1000 / 25.4, 0, 0])  # 1000 mm along X
-
-  # model.active_entities: its parent is the context open for editing (the
-  # model when nothing is open).
-  FakeEntities = Struct.new(:parent)
 
   # The boards' parent (the model, or a group's definition). make_box must
   # build the cutter and the tenon piece in its entities, beside the boards.
@@ -100,7 +116,7 @@ class TestMortiseTenon < Minitest::Test
   module FakeSolid
     attr_accessor :entityID, :name, :layer, :material, :bounds, :transformation,
                   :parent, :volume, :entities
-    attr_writer :manifold, :valid
+    attr_writer :manifold, :valid, :definition_name
 
     def initialize(id, name, bounds, volume, parent)
       @entityID = id
@@ -123,6 +139,15 @@ class TestMortiseTenon < Minitest::Test
     def valid?
       @valid
     end
+
+    # Its bounds (in the parent's frame) taken back through its own
+    # transformation, as a definition's are for an axis-aligned board; the
+    # name is what the Outliner shows for an unnamed instance.
+    def definition
+      local = F.world_box(@bounds, F.inverse(F.matrix_of(@transformation)))
+      BoardDefinition.new(@definition_name,
+                          FakeBounds.new(FakePoint.new(*local[0]), FakePoint.new(*local[1])))
+    end
   end
 
   class GroupBoard < Sketchup::Group
@@ -133,11 +158,8 @@ class TestMortiseTenon < Minitest::Test
     end
   end
 
-  FakeDefinition = Struct.new(:name)
-
   class InstanceBoard < Sketchup::ComponentInstance
     include FakeSolid
-    attr_accessor :definition
 
     def typename
       "ComponentInstance"
@@ -147,11 +169,17 @@ class TestMortiseTenon < Minitest::Test
   # What make_box returns: the cutter (subtract), then the tenon piece
   # (union). Each records its operand and returns the configured result.
   class FakeTool
-    attr_reader :operands
+    attr_reader :operands, :transforms
 
     def initialize(result)
       @result = result
       @operands = []
+      @transforms = []
+    end
+
+    def transform!(transformation)
+      @transforms << transformation
+      self
     end
 
     def subtract(other)
@@ -170,14 +198,12 @@ class TestMortiseTenon < Minitest::Test
   # as SketchUp's is at the top level.
   class RecordingModel
     attr_reader :log
-    attr_accessor :active_path, :edit_transform, :active_entities
+    attr_accessor :active_path
 
     def initialize
       @log = []
       @by_id = {}
       @active_path = nil
-      @edit_transform = UNROTATED
-      @active_entities = FakeEntities.new(self)
     end
 
     def register(*entities)
@@ -254,6 +280,27 @@ class TestMortiseTenon < Minitest::Test
       calls << args
       tools.shift
     end
+    stub_singleton(F, :transformation) { |m| Marker.new(m) }
+  end
+
+  # Puts the boards and the results in a definition placed `copies` times
+  # in the model at `matrix`: a group around the boards, closed (its contents
+  # in its own frame) or, with the identity, open (SketchUp reports the
+  # contents of the open group in world coordinates).
+  def parent_at(matrix, copies: 1)
+    definition = FrameFakes::Definition.new("Group#1", group: true)
+    copies.times { |i| FrameFakes.place(definition, id: 900 + i, parent: Object.new, matrix: matrix) }
+    [@leg, @rail, @pocketed, @tenoned].each { |b| b.parent = definition }
+    @parent = definition
+  end
+
+  # The matrix each tool was transformed by, as markers record it.
+  def tool_transforms(tool)
+    tool.transforms.map(&:matrix)
+  end
+
+  def assert_matrix(expected, actual, tol = 1e-9)
+    expected.each_with_index { |v, i| assert_in_delta v, actual[i], tol, "element #{i} of #{actual.inspect}" }
   end
 
   # Runs the handler on @leg (mortise) and @rail (tenon) with the joint of the
@@ -384,7 +431,7 @@ class TestMortiseTenon < Minitest::Test
   def test_component_instance_boards_are_accepted
     @leg  = board(InstanceBoard, 101, "leg instance", [0, 0, 0],     [50, 50, 300],  750_000)
     @rail = board(InstanceBoard, 102, "",             [50, 15, 110], [250, 35, 190], 320_000)
-    @rail.definition = FakeDefinition.new("Rail")  # unnamed: the Outliner shows "Rail"
+    @rail.definition_name = "Rail"  # unnamed: the Outliner shows "Rail"
 
     result = joint
 
@@ -458,12 +505,14 @@ class TestMortiseTenon < Minitest::Test
     assert_unsuitable(/does not fit/, "width" => 30)  # the rail is 20 mm wide
   end
 
-  # ---------- a group open for editing ----------
+  # ---------- a group open for editing, and world axes ----------
   #
-  # While a group is open, SketchUp reports the transformations and bounds
-  # of its entities in world coordinates, and model.edit_transform holds the
-  # group's own transformation. A board that is itself open reports an
-  # identity transformation.
+  # While a group is open, SketchUp reports the instance on the open path
+  # with an identity transformation and the transformations and bounds of
+  # its contents in world coordinates. The world boxes come out the same
+  # open or closed, so the joint does too. A board that is itself open
+  # reports an identity transformation, and the solid operations would erase
+  # the group the user is working in.
 
   def test_board_open_for_editing_is_refused
     [[@leg, "mortise board"], [@rail, "tenon board"]].each do |open_board, label|
@@ -474,37 +523,132 @@ class TestMortiseTenon < Minitest::Test
     end
   end
 
-  def test_boards_in_an_open_rotated_group_are_refused_with_close_advice
-    @model.active_path = [Object.new]  # the instance of @parent, opened
-    @model.active_entities = FakeEntities.new(@parent)
-    @model.edit_transform = ROTATED_30
-    @leg.transformation = ROTATED_30   # the boards, seen in world coordinates
-    @rail.transformation = ROTATED_30
-
-    err = assert_unsuitable(/group or component that holds the boards is open for editing/)
-    assert_match(/close it and try again/, err.message)
-    refute_match(/rotate the board/, err.message)
-  end
-
   def test_boards_in_an_open_axis_aligned_group_still_join
-    @model.active_path = [Object.new]
-    @model.active_entities = FakeEntities.new(@parent)
-    @model.edit_transform = MOVED
+    parent_at(F::IDENTITY)                         # open: reported with the identity
+    @model.active_path = [@parent.instances.first]
+    @leg.transformation = MOVED                    # the boards, seen in world coordinates
+    @rail.transformation = MOVED
+    @leg.bounds  = bounds_mm([1000, 0, 0],    [1050, 50, 300])
+    @rail.bounds = bounds_mm([1050, 15, 110], [1250, 35, 190])
 
     joint
 
     assert_committed
+    pocket = [[1030, 20, 130], [20, 10, 40]]
+    assert_boxes pocket, pocket
   end
 
-  # The open group's rotation only matters to the entities it holds.
-  def test_boards_outside_an_open_rotated_group_still_join
-    @model.active_path = [Object.new]
-    @model.active_entities = FakeEntities.new(FakeParent.new)  # another group is open
-    @model.edit_transform = ROTATED_30
+  def test_parent_rotated_90_builds_in_world_axes
+    turn = F.rotation([0, 0, 0], 2, 90)
+    parent_at(turn)
+    # Local boxes that the turn puts where the probe's boards are.
+    @leg.bounds  = bounds_mm([0, -50, 0],    [50, 0, 300])
+    @rail.bounds = bounds_mm([15, -250, 110], [35, -50, 190])
 
     joint
 
     assert_committed
+    pocket = [[30, 20, 130], [20, 10, 40]]  # in world coordinates, as for the probe
+    assert_boxes pocket, pocket
+    [@cutter, @piece].each do |tool|
+      assert_equal 1, tool.transforms.size
+      assert_matrix F.inverse(turn), tool_transforms(tool).first
+    end
+  end
+
+  def test_open_and_closed_parent_give_the_same_joint
+    turn = F.rotation([0, 0, 0], 2, 90)
+    parent_at(turn)
+    @leg.bounds  = bounds_mm([0, -50, 0],    [50, 0, 300])
+    @rail.bounds = bounds_mm([15, -250, 110], [35, -50, 190])
+    joint
+    closed = @box_calls.map { |_entities, *numbers| numbers }
+
+    # The same group, open: its instance reports the identity, the boards
+    # their world transformation and world bounds.
+    @box_calls.clear
+    @model.log.clear
+    @cutter = FakeTool.new(@pocketed)
+    @piece  = FakeTool.new(@tenoned)
+    parent_at(F::IDENTITY)
+    @model.active_path = [@parent.instances.first]
+    [@leg, @rail].each { |b| b.transformation = FrameFakes::Transform.new(turn) }
+    @leg.bounds  = bounds_mm([0, 0, 0],     [50, 50, 300])
+    @rail.bounds = bounds_mm([50, 15, 110], [250, 35, 190])
+    joint
+
+    assert_committed
+    open = @box_calls.map { |_entities, *numbers| numbers }
+    assert_equal closed.size, open.size
+    closed.flatten.zip(open.flatten).each { |c, o| assert_in_delta c, o, 1e-9 }
+    assert_empty @cutter.transforms, "an open parent is the world frame: nothing to take back"
+  end
+
+  def test_parent_rotated_30_is_refused_with_the_model_axes_message
+    parent_at(F.rotation([0, 0, 0], 2, 30))
+    err = assert_unsuitable(/multiple of 90/)
+    assert_equal "the mortise board #{J::ROTATION_MESSAGE}", err.message
+  end
+
+  # §6.6a: the boards of an open group rotated by 30° get the same message as
+  # with the group closed — not the advice to close it, nor to rotate a
+  # board that is placed correctly inside it.
+  def test_open_parent_rotated_30_gets_the_same_message
+    parent_at(F::IDENTITY)
+    @model.active_path = [@parent.instances.first]
+    @leg.transformation = ROTATED_30
+    @rail.transformation = ROTATED_30
+    err = assert_unsuitable(/multiple of 90/)
+    assert_equal "the mortise board #{J::ROTATION_MESSAGE}", err.message
+  end
+
+  # The boards sit in P beside the group Q that is open inside it.
+  def test_boards_beside_an_open_group_get_the_same_message
+    parent_at(F::IDENTITY)
+    @model.active_path = [@parent.instances.first, Object.new]
+    @leg.transformation = ROTATED_30
+    @rail.transformation = ROTATED_30
+    err = assert_unsuitable(/multiple of 90/)
+    assert_equal "the mortise board #{J::ROTATION_MESSAGE}", err.message
+  end
+
+  def test_shared_board_is_refused
+    parent_at(F::IDENTITY, copies: 2)
+    err = assert_unsuitable(/placed 2 times in the model/)
+    assert_match(/\Athe mortise board is inside an unnamed group, which is placed 2 times in the model, so changing it would change every copy/,
+                 err.message)
+  end
+
+  # The parent scales by 2: its contents' volumes, which SketchUp reports in
+  # the parent's frame, are an eighth of the world's.
+  def scaled_scene
+    scale = F.scaling([0, 0, 0], 2, 2, 2)
+    parent_at(scale)
+    @leg.bounds  = bounds_mm([0, 0, 0],      [25, 25, 150])
+    @rail.bounds = bounds_mm([25, 7.5, 55],  [125, 17.5, 95])
+    @leg.volume  = mm3(93_750)
+    @rail.volume = mm3(40_000)
+    scale
+  end
+
+  def test_scaled_parent_divides_the_expected_volumes
+    scale = scaled_scene
+    @pocketed.volume = mm3(92_750)  # the world's 8 000 mm³ pocket is 1 000 here
+    @tenoned.volume  = mm3(41_000)
+
+    joint
+
+    assert_committed
+    pocket = [[30, 20, 130], [20, 10, 40]]  # make_box works in world coordinates
+    assert_boxes pocket, pocket
+    assert_matrix F.inverse(scale), tool_transforms(@cutter).first
+  end
+
+  def test_scaled_parent_refuses_world_sized_volumes
+    scaled_scene
+    @pocketed.volume = mm3(85_750)  # 8 000 mm³ gone: eight times the pocket
+    @tenoned.volume  = mm3(48_000)
+    assert_refused(-32603, /mortise board lost 8000\.0 mm³ \(expected a loss of 1000\.0 mm³\)/)
   end
 
   # ---------- a solid operation fails: all or nothing ----------
@@ -600,5 +744,14 @@ class TestMortiseTenon < Minitest::Test
     @pocketed.volume = mm3(738_000)  # the new one meets it: the leg loses 4 000 mm³, not 8 000
     err = assert_refused(-32603, /was not committed: mortise board lost 4000\.0 mm³ \(expected a loss of 8000\.0 mm³\)/)
     assert_match(/must not meet an earlier one/, err.message)
+  end
+
+  # §6.6a: a shortfall is not the coplanar-faces case the cut's advice is for.
+  def test_volume_shortfall_gets_its_own_advice
+    @leg.volume = mm3(742_000)
+    @pocketed.volume = mm3(738_000)
+    err = assert_refused(-32603, /mortise board lost 4000\.0 mm³/)
+    assert err.message.end_with?(J::SHORTFALL_ADVICE), err.message
+    refute_includes err.message, J::CUT_ADVICE
   end
 end

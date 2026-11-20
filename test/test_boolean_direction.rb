@@ -18,6 +18,7 @@ require "minitest/autorun"
 module Sketchup
   class Group; end unless defined?(Group)
   class ComponentInstance; end unless defined?(ComponentInstance)
+  class ComponentDefinition; end unless defined?(ComponentDefinition)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
@@ -27,6 +28,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/operations"
 
@@ -63,9 +66,12 @@ class TestBooleanDirection < Minitest::Test
     end
   end
 
+  # name is the label until a test or restore_identity! sets one; layer and
+  # material are what identity_of reads and restore_identity! writes back.
   class FakeSolid < Sketchup::Group
     attr_reader :label, :bounds
-    attr_accessor :parent
+    attr_accessor :parent, :layer, :material
+    attr_writer :name
     def initialize(log, label:, bounds:)
       @log, @label, @bounds = log, label, bounds
       @valid = true
@@ -86,7 +92,7 @@ class TestBooleanDirection < Minitest::Test
       object_id
     end
     def name
-      @label
+      @name || @label
     end
     def union(other)
       @log << [:union, self, other]
@@ -103,8 +109,11 @@ class TestBooleanDirection < Minitest::Test
 
     private
 
+    # SketchUp names a solid tool's result itself ("Union", ...): "result".
     def spawn_result
-      FakeSolid.new(@log, label: "result", bounds: @bounds)
+      result = FakeSolid.new(@log, label: "result", bounds: @bounds)
+      @log << [:result, result]
+      result
     end
   end
 
@@ -180,6 +189,37 @@ class TestBooleanDirection < Minitest::Test
     intersect_call = @log.find { |entry| entry[0] == :intersect }
     refute_nil intersect_call
     assert_equal "copy_of_target", intersect_call[1].label
+  end
+
+  def result_solid
+    entry = @log.find { |e| e[0] == :result }
+    refute_nil entry, "the solid operation must return a result"
+    entry[1]
+  end
+
+  # §6.3: a result that replaces its target takes the target's name, tag and
+  # material.
+  def test_delete_originals_gives_the_result_the_targets_identity
+    @target.name = "Seat"
+    @target.layer = :seat_tag
+    @target.material = :oak
+    res = OPS.boolean_operation("operation" => "union", "target_id" => 101, "tool_id" => 202,
+                                "delete_originals" => true)
+    result = result_solid
+    assert_equal ["Seat", :seat_tag, :oak], [result.name, result.layer, result.material]
+    assert_equal "Seat", res["name"]
+  end
+
+  # While the target stays, the result keeps SketchUp's own name: copying the
+  # target's would leave two entities with one name.
+  def test_kept_originals_leave_the_result_name_alone
+    @target.name = "Seat"
+    @target.layer = :seat_tag
+    res = run_op("union")
+    result = result_solid
+    assert_equal "result", result.name
+    assert_nil result.layer
+    assert_equal "result", res["name"]
   end
 
   def test_originals_survive_when_delete_originals_false

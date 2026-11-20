@@ -59,6 +59,8 @@ def test_format_error_truncates_non_ascii_by_bytes():
 import json as _json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from mcp.types import CallToolResult
+
 # asyncio_mode = "auto" in pyproject.toml → async test functions are
 # auto-marked; sync tests stay unmarked. No module-level pytestmark needed.
 
@@ -96,7 +98,16 @@ async def test_call_returns_json_dump_when_no_mcp_shape(mock_send_command, mock_
     assert await _call(mock_ctx, "test_tool") == _json.dumps({"some": "thing"})
 
 
-async def test_call_handles_connection_error_gracefully(mock_ctx):
+# M-12 (spec §6.6): a tool error reaches the client as an error result —
+# isError true — with the text it always had.
+def _error_text(result) -> str:
+    assert isinstance(result, CallToolResult), f"expected an error result, got {result!r}"
+    assert result.isError is True
+    assert len(result.content) == 1
+    return result.content[0].text
+
+
+async def test_connection_down_is_an_error_result(mock_ctx):
     from sketchup_mcp.tools import _call
 
     with patch(
@@ -104,19 +115,18 @@ async def test_call_handles_connection_error_gracefully(mock_ctx):
         AsyncMock(side_effect=ConnectionError("refused")),
     ):
         result = await _call(mock_ctx, "x")
-    assert "SketchUp not running" in result
-    assert "refused" in result
+    assert _error_text(result) == "SketchUp not running or extension not started: refused"
 
 
-async def test_call_formats_sketchup_error(mock_send_command, mock_ctx):
+async def test_ruby_error_is_an_error_result_with_the_same_text(mock_send_command, mock_ctx):
     from sketchup_mcp.tools import _call
 
-    mock_send_command.send_command.side_effect = SketchUpError(
-        -32000, "boom", {"tool": "x", "params": {}}
-    )
-    result = await _call(mock_ctx, "x")
-    assert result.startswith("[-32000] boom")
-    assert "tool=x" in result
+    err = SketchUpError(-32000, "boom", {"tool": "x", "params": {}})
+    mock_send_command.send_command.side_effect = err
+    text = _error_text(await _call(mock_ctx, "x"))
+    assert text == format_error(err)
+    assert text.startswith("[-32000] boom")
+    assert "tool=x" in text
 
 
 async def test_call_fills_tool_name_when_error_lacks_it(mock_send_command, mock_ctx):
@@ -127,9 +137,9 @@ async def test_call_fills_tool_name_when_error_lacks_it(mock_send_command, mock_
     mock_send_command.send_command.side_effect = SketchUpError(
         -32000, "connection error: Connection lost"
     )
-    result = await _call(mock_ctx, "transform_component", id="5")
-    assert "tool=transform_component" in result
-    assert "tool=?" not in result
+    text = _error_text(await _call(mock_ctx, "transform_component", id="5"))
+    assert "tool=transform_component" in text
+    assert "tool=?" not in text
 
 
 # --- T-22: валидация через РЕАЛЬНЫЕ схемы (mcp.call_tool), не TypeAdapter-зеркала.
@@ -455,33 +465,27 @@ async def test_eval_ruby_no_longer_returns_old_success_wrapper(
     mock_send_command.send_command.side_effect = SketchUpError(
         -32000, "boom", {"tool": "eval_ruby", "params": {"code": "..."}}
     )
-    out = await eval_ruby(mock_ctx, code="raise 'x'")
-    assert out.startswith("[-32000] boom")
-    assert '"success"' not in out
+    text = _error_text(await eval_ruby(mock_ctx, code="raise 'x'"))
+    assert text.startswith("[-32000] boom")
+    assert '"success"' not in text
 
 
-async def test_eval_ruby_returns_actionable_text_on_minus32010(
+async def test_eval_gate_message_is_an_error_result_verbatim(
     mock_send_command, mock_ctx
 ):
-    """When Ruby returns -32010 (eval gate closed), Python wrapper returns
-    a plain text suitable for Claude to surface to the end user — not a
-    raised SketchUpError. The LLM should see "eval_ruby is disabled..."
-    and pass it through verbatim. Contract pinned per spec §4.4.
+    """When Ruby returns -32010 (eval gate closed), the wrapper returns an
+    error result whose text is the gate's message verbatim, so Claude can
+    surface it to the end user — not the [-32010] format_error string, and
+    not a raised SketchUpError. Contract pinned per spec §4.4 (part 1) and
+    §6.6 (block A: isError).
     """
     from sketchup_mcp.tools import eval_ruby
 
+    message = "eval_ruby is disabled. Open Plugins → MCP Server → Settings..."
     mock_send_command.send_command.side_effect = SketchUpError(
-        -32010,
-        "eval_ruby is disabled. Open Plugins → MCP Server → Settings...",
-        {"tool": "eval_ruby", "params": {}},
+        -32010, message, {"tool": "eval_ruby", "params": {}},
     )
-    out = await eval_ruby(mock_ctx, code="puts 'x'")
-    assert isinstance(out, str)
-    assert "eval_ruby is disabled" in out
-    assert "Settings" in out
-    # Must NOT be the [-32010] formatted-error string from format_error — the
-    # spec wants the raw human-readable message to flow through.
-    assert not out.startswith("[-32010]")
+    assert _error_text(await eval_ruby(mock_ctx, code="puts 'x'")) == message
 
 
 async def test_eval_ruby_fills_tool_name_when_error_lacks_it(mock_send_command, mock_ctx):
@@ -493,6 +497,38 @@ async def test_eval_ruby_fills_tool_name_when_error_lacks_it(mock_send_command, 
     mock_send_command.send_command.side_effect = SketchUpError(
         -32000, "connection error: Connection lost"
     )
-    out = await eval_ruby(mock_ctx, code="1 + 1")
-    assert "tool=eval_ruby" in out
-    assert "tool=?" not in out
+    text = _error_text(await eval_ruby(mock_ctx, code="1 + 1"))
+    assert "tool=eval_ruby" in text
+    assert "tool=?" not in text
+
+
+async def test_get_version_is_never_an_error_result(mock_ctx):
+    """get_version always returns its payload, even when nothing answers."""
+    from sketchup_mcp.tools import get_version
+
+    with patch(
+        "sketchup_mcp.tools.get_connection",
+        AsyncMock(side_effect=ConnectionError("refused")),
+    ):
+        out = await get_version(mock_ctx)
+    assert isinstance(out, str)
+    payload = _json.loads(out)
+    assert payload["compatible"] is False
+    assert "refused" in payload["error"]
+
+
+async def test_success_is_a_list_without_structured_content(dispatch_conn):
+    """A str result reaches the client as one text block; FastMCP returns a
+    tuple when it adds structured content beside it (M-18)."""
+    result = await mcp.call_tool("list_layers", {})
+    assert isinstance(result, list)
+    assert [block.text for block in result] == ["ok"]
+
+
+async def test_error_result_reaches_the_client_unchanged(dispatch_conn):
+    """Through FastMCP's dispatcher: the error result passes as it is, with no
+    "Error executing tool" prefix."""
+    err = SketchUpError(-32602, "entity 7 is inside component 'Chair'", {"tool": "set_material"})
+    dispatch_conn.send_command.side_effect = err
+    result = await mcp.call_tool("set_material", {"id": 7, "material": "red"})
+    assert _error_text(result) == format_error(err)

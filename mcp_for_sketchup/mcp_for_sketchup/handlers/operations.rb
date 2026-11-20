@@ -5,6 +5,8 @@ module MCPforSketchUp
       V = MCPforSketchUp::Helpers::Validation
       E = MCPforSketchUp::Helpers::Entities
       U = MCPforSketchUp::Helpers::Units
+      O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       OPS = %w[union difference intersection].freeze
 
@@ -27,12 +29,21 @@ module MCPforSketchUp
         delete_originals = V.optional_bool(params, "delete_originals", false)
 
         model = E.active_model!
-        model.start_operation("Boolean #{operation.capitalize}", true)
-        begin
+        O.run(model, "Boolean #{operation.capitalize}") do
           target = E.find!(target_id)
           tool   = E.find!(tool_id)
           E.require_group_or_component!(target, "target")
           E.require_group_or_component!(tool,   "tool")
+          # Both operands: the result lands beside the target, and the tool
+          # is erased with delete_originals (its copy is consumed otherwise).
+          F.require_unshared!(target, "target (entity #{target_id})")
+          F.require_unshared!(tool,   "tool (entity #{tool_id})")
+          # §6.3: a result that replaces its target (delete_originals) takes
+          # the target's name, tag and own material. While the target stays,
+          # the result keeps SketchUp's name ("Union", "Difference",
+          # "Intersection"): copying the target's would leave two entities
+          # with one name for find_components to return.
+          identity = E.identity_of(target) if delete_originals
 
           target_copy = duplicate_group(model, target)
           tool_copy   = duplicate_group(model, tool)
@@ -62,13 +73,10 @@ module MCPforSketchUp
           if delete_originals
             target.erase! if target.valid?
             tool.erase!   if tool.valid?
+            E.restore_identity!(result, identity)
           end
 
-          model.commit_operation
           MCPforSketchUp::Handlers::Geometry.describe_entity(result)
-        rescue StandardError
-          MCPforSketchUp::Handlers::Geometry.safe_abort(model)
-          raise
         end
       end
 
@@ -131,7 +139,7 @@ module MCPforSketchUp
       EDGE_OP_BUDGET_S = 30.0
 
       # The stats of a chamfer/fillet call before anything is counted.
-      # run_edge_op counts into a copy.
+      # run_edge_op counts into a copy and returns it in its response.
       ZERO_STATS = { "attempted" => 0, "skipped_no_match" => 0,
                      "subtract_failed" => 0, "succeeded" => 0,
                      "skipped_seam" => 0, "skipped_concave" => 0,
@@ -141,9 +149,9 @@ module MCPforSketchUp
         entity_id = V.require_id(params, "entity_id")
         distance_in = U.mm_to_inch(V.require_positive(params, "distance"))
         edge_indices = params["edge_indices"]
-        run_edge_op(entity_id, edge_indices, "Chamfer Edges", distance_in * 2) do |cutter_entities, spec|
+        run_edge_op(entity_id, edge_indices, "Chamfer Edges", distance_in * 2, "edges_chamfered") do |cutter_entities, spec|
           build_chamfer_profile(cutter_entities, spec, distance_in)
-        end.merge("edges_chamfered" => last_edges_done, "stats" => last_stats)
+        end
       end
 
       def self.fillet_edges(params)
@@ -153,10 +161,10 @@ module MCPforSketchUp
         # in tools.py (a direct TCP client bypasses the schema).
         segments  = V.optional_int_range(params, "segments", min: 1, max: 32, default: 8)
         edge_indices = params["edge_indices"]
-        run_edge_op(entity_id, edge_indices, "Fillet Edges", radius_in * 2,
+        run_edge_op(entity_id, edge_indices, "Fillet Edges", radius_in * 2, "edges_filleted",
                     skip_curved: true) do |cutter_entities, spec|
           build_fillet_profile(cutter_entities, spec, radius_in, segments)
-        end.merge("edges_filleted" => last_edges_done, "stats" => last_stats)
+        end
       end
 
       # Shared driver for chamfer/fillet. Snapshots edge specs ONCE in parent frame,
@@ -181,8 +189,12 @@ module MCPforSketchUp
       # way round: a convex edge as concave, a concave one as convex. A body
       # the subtract destroyed and a breach of EDGE_OP_BUDGET_S raise like
       # any other failure, so the whole call rolls back.
-      def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in, skip_curved: false)
-        # Type-guard edge_indices BEFORE start_operation: a non-Array (String/
+      #
+      # Returns the whole response: the description of the cut body, the
+      # number of edges cut under `done_key` ("edges_chamfered" /
+      # "edges_filleted") and the stats.
+      def self.run_edge_op(entity_id, edge_indices, op_name, match_tolerance_in, done_key, skip_curved: false)
+        # Type-guard edge_indices BEFORE the operation starts: a non-Array (String/
         # Integer/Hash from a direct/malformed TCP client that bypasses the
         # FastMCP schema) would reach filter_edges -> indices.include?(i) and
         # raise TypeError/NoMethodError, surfacing as a generic -32603 instead
@@ -192,12 +204,18 @@ module MCPforSketchUp
             "edge_indices must be an array of integers (got #{edge_indices.class})")
         end
         model = E.active_model!
-        model.start_operation(op_name, true)
-        @_last_edges_done = 0
-        @_last_stats = ZERO_STATS.dup
-        begin
+        O.run(model, op_name) do
+          edges_done = 0
+          stats = ZERO_STATS.dup
           entity = E.find!(entity_id)
           E.require_group_or_component!(entity, "#{op_name} target")
+          F.require_unshared!(entity, "entity #{entity_id}")
+          # §6.3: the cut body comes back as a new group with a new id; it
+          # takes the target's name, tag and own material. Taken before
+          # make_unique (mutable_entity_collection), which renames an unnamed
+          # instance's definition ("Oak Chair" → "Oak Chair#1"): identity_of
+          # names such an instance by its definition, as the Outliner did.
+          identity = E.identity_of(entity)
           target_entities = E.mutable_entity_collection(entity)
           edges = target_entities.grep(Sketchup::Edge)
           # A body whose faces all point into it reads every edge the wrong
@@ -226,9 +244,9 @@ module MCPforSketchUp
           # (the wedge would cut into the body) and, with skip_curved, curved
           # rims (a per-segment fillet cannot cut them).
           selection = select_feature_edges(edges, skip_curved: skip_curved)
-          @_last_stats["skipped_seam"] = selection[:skipped_seam]
-          @_last_stats["skipped_concave"] = selection[:skipped_concave]
-          @_last_stats["skipped_curved"] = selection[:skipped_curved]
+          stats["skipped_seam"] = selection[:skipped_seam]
+          stats["skipped_concave"] = selection[:skipped_concave]
+          stats["skipped_curved"] = selection[:skipped_curved]
           if selection[:edges].empty?
             raise no_feature_edges_error(op_name, entity_id, edges.length, skip_curved,
                                          selection[:skipped_concave] > 0)
@@ -237,7 +255,7 @@ module MCPforSketchUp
 
           # Snapshot original specs (parent-frame) BEFORE any destructive op.
           original_specs = edges.map { |e| edge_spec(e, entity.transformation) }
-          @_last_stats["attempted"] = original_specs.length
+          stats["attempted"] = original_specs.length
           total = original_specs.length
 
           # Track the most-recent successful subtract result by ID. Group#subtract
@@ -264,7 +282,7 @@ module MCPforSketchUp
             # (possibly already-modified) entity.
             live_spec = find_current_edge_spec(entity, orig, match_tolerance_in)
             if live_spec.nil?
-              @_last_stats["skipped_no_match"] += 1
+              stats["skipped_no_match"] += 1
               next  # original edge was consumed by a prior chamfer face
             end
 
@@ -285,7 +303,7 @@ module MCPforSketchUp
               end
               # Subtract failed for this edge — clean up the orphan cutter
               # and continue with the remaining edges rather than aborting.
-              @_last_stats["subtract_failed"] += 1
+              stats["subtract_failed"] += 1
               cutter.erase! if cutter.valid?
               next
             end
@@ -293,11 +311,11 @@ module MCPforSketchUp
             # stale proxy can also throw "reference to deleted DrawingElement".
             last_result_id = result.entityID
             entity = result
-            @_last_edges_done += 1
-            @_last_stats["succeeded"] += 1
+            edges_done += 1
+            stats["succeeded"] += 1
           end
 
-          if @_last_edges_done == 0
+          if edges_done == 0
             raise Core::StructuredError.new(-32603,
               "#{op_name}: no edges could be cut on target_id=#{entity_id} " \
               "(geometry may be non-manifold)")
@@ -310,29 +328,19 @@ module MCPforSketchUp
           # start_operation transaction is fragile across many destructive
           # steps. The Integer ID cached at subtract-time is stable; the fresh
           # proxy from find_entity_by_id is safe to read .bounds from.
-          # describe_entity is intentionally called BEFORE commit_operation —
-          # commit has been observed to invalidate solid-tool result proxies.
+          # The response is the block's value, so describe_entity runs BEFORE
+          # commit_operation — commit has been observed to invalidate
+          # solid-tool result proxies.
           fresh = last_result_id ? model.find_entity_by_id(last_result_id) : nil
           if fresh.nil? || !fresh.valid?
             raise Core::StructuredError.new(-32603,
               "#{op_name}: final entity invalid after subtract chain " \
-              "(id=#{last_result_id}, edges_done=#{@_last_edges_done})")
+              "(id=#{last_result_id}, edges_done=#{edges_done})")
           end
-          description = MCPforSketchUp::Handlers::Geometry.describe_entity(fresh)
-          model.commit_operation
-          description
-        rescue StandardError
-          MCPforSketchUp::Handlers::Geometry.safe_abort(model)
-          raise
+          E.restore_identity!(fresh, identity)
+          MCPforSketchUp::Handlers::Geometry.describe_entity(fresh)
+            .merge(done_key => edges_done, "stats" => stats)
         end
-      end
-
-      def self.last_edges_done
-        @_last_edges_done || 0
-      end
-
-      def self.last_stats
-        @_last_stats || ZERO_STATS
       end
 
       # Monotonic seconds for EDGE_OP_BUDGET_S: unlike Time.now it does not

@@ -6,7 +6,7 @@ Pre-conditions:
      viewport-screenshot tool, verified on SketchUp 2026 only).
   2. Ruby SketchUp plugin is installed and started via Plugins → MCP Server →
      Start. The plugin version must be at least MIN_RUBY from
-     src/sketchup_mcp/compat.py; step 26 verifies this.
+     src/sketchup_mcp/compat.py; step 28 verifies this.
   3. Run with the same Python venv used by the MCP server.
   4. Optional: SKETCHUP_MCP_HOST / SKETCHUP_MCP_PORT to override 127.0.0.1:9876.
      When SketchUp runs remotely, step 18 (export_scene) degrades to asserting
@@ -154,6 +154,59 @@ pts = face.vertices.map { |v| t * v.position }
 [pts.map(&:y).min, pts.map(&:y).max, pts.map(&:z).min, pts.map(&:z).max].map { |v| (v * 25.4).round(1) }.to_json
 """
 
+
+# Ruby for step 24: group "smoke_outer" (a 100 mm cube) turned 90° about Z at the
+# origin and moved 1000 mm along X, with group "smoke_inner" (a 50 mm cube at
+# local z = 200 mm) inside it. Their ids, as JSON.
+_NESTED_RUBY = """
+mm = 1 / 25.4
+model = Sketchup.active_model
+outer = model.entities.add_group
+outer.name = "smoke_outer"
+base = outer.entities.add_face([0, 0, 0], [100 * mm, 0, 0], [100 * mm, 100 * mm, 0], [0, 100 * mm, 0])
+base.pushpull(base.normal.z >= 0 ? 100 * mm : -100 * mm)
+inner = outer.entities.add_group
+inner.name = "smoke_inner"
+top = inner.entities.add_face([0, 0, 200 * mm], [50 * mm, 0, 200 * mm], [50 * mm, 50 * mm, 200 * mm], [0, 50 * mm, 200 * mm])
+top.pushpull(top.normal.z >= 0 ? 50 * mm : -50 * mm)
+outer.transform!(Geom::Transformation.translation([1000 * mm, 0, 0]) *
+                 Geom::Transformation.rotation(ORIGIN, Z_AXIS, 90.degrees))
+{ "outer" => outer.entityID, "inner" => inner.entityID }.to_json
+"""
+
+
+# Ruby for step 25: component "smoke_shared_def" holding group
+# "smoke_shared_part" (a 40 mm cube), placed twice at x = 1500 and 1700 mm.
+# Their ids, as JSON.
+_SHARED_RUBY = """
+mm = 1 / 25.4
+model = Sketchup.active_model
+definition = model.definitions.add("smoke_shared_def")
+part = definition.entities.add_group
+part.name = "smoke_shared_part"
+face = part.entities.add_face([0, 0, 0], [40 * mm, 0, 0], [40 * mm, 40 * mm, 0], [0, 40 * mm, 0])
+face.pushpull(face.normal.z >= 0 ? 40 * mm : -40 * mm)
+a = model.entities.add_instance(definition, Geom::Transformation.translation([1500 * mm, 0, 0]))
+b = model.entities.add_instance(definition, Geom::Transformation.translation([1700 * mm, 0, 0]))
+{ "a" => a.entityID, "b" => b.entityID, "part" => part.entityID }.to_json
+"""
+
+# Ruby for step 25's cleanup: the definition stays after its instances are
+# deleted; remove it so that runs do not pile up smoke_shared_def#1, #2, …
+_SHARED_PURGE_RUBY = """
+definitions = Sketchup.active_model.definitions
+definition = definitions["smoke_shared_def"]
+definitions.remove(definition) if definition
+"ok"
+"""
+
+
+def _assert_bbox(bbox: dict, lo: list, hi: list, what: str, tol: float = 0.01) -> None:
+    """bbox_mm {min, max} within tol mm of [lo, hi]."""
+    got = bbox["min"] + bbox["max"]
+    want = lo + hi
+    assert all(abs(g - w) <= tol for g, w in zip(got, want)), (
+        f"{what}: bbox_mm {bbox}, expected min {lo} max {hi}")
 
 async def main() -> int:
     conn = SketchUpConnection(host=config.HOST, port=config.PORT, timeout=30.0)
@@ -457,9 +510,59 @@ async def main() -> int:
             assert inward == [0, 0, 0, 0], (
                 f"faces pointing into the body, [cone, sphere, cube, cylinder] at z=50 mm: {inward}")
 
+        step = 24; print(f"[{step}] nested group in a moved, rotated group — world bbox and a world move")
+        # Block A (M-03): every bbox_mm is world, and transform_component's
+        # position a world target, for nested entities too.
+        raw = await _maybe_skip_eval(
+            "eval_ruby step 24 (nested groups)", call(conn, "eval_ruby", code=_NESTED_RUBY))
+        if raw is None:
+            eval_skipped[0] += 1
+        else:
+            nested = parse(raw)
+            try:
+                info = parse(await call(conn, "get_component_info", id=str(nested["inner"])))
+                _assert_bbox(info["bbox_mm"], [950, 0, 200], [1000, 50, 250], "smoke_inner in the world")
+                assert info["depth"] == 1, f"smoke_inner depth {info['depth']}, expected 1"
+                moved = parse(await call(conn, "transform_component",
+                                         id=str(nested["inner"]), position=[1200, 0, 0]))
+                _assert_bbox(moved["bbox_mm"], [1200, 0, 0], [1250, 50, 50], "smoke_inner moved")
+                again = parse(await call(conn, "get_component_info", id=str(nested["inner"])))
+                _assert_bbox(again["bbox_mm"], [1200, 0, 0], [1250, 50, 50], "smoke_inner read back")
+                assert again["depth"] == 1, f"smoke_inner depth {again['depth']}, expected 1"
+            finally:
+                await call(conn, "delete_component", id=str(nested["outer"]))
+
+        step = 25; print(f"[{step}] a component placed twice — its child is shared and refused")
+        # Block A (M-03, M-17): the child of a definition placed twice is shared,
+        # edits to it are refused, and find_components matches the definition's
+        # name of the unnamed instances.
+        raw = await _maybe_skip_eval(
+            "eval_ruby step 25 (shared component)", call(conn, "eval_ruby", code=_SHARED_RUBY))
+        if raw is None:
+            eval_skipped[0] += 1
+        else:
+            shared = parse(raw)
+            try:
+                parts = parse(await call(conn, "find_components", name="smoke_shared_part"))
+                assert parts["total"] == 2, f"smoke_shared_part rows: {parts}"
+                assert all(r["shared"] for r in parts["components"]), f"not flagged shared: {parts}"
+                placed = parse(await call(conn, "find_components", name="smoke_shared_def"))
+                assert placed["total"] == 2, f"smoke_shared_def rows: {placed}"
+                assert all(r.get("definition") == "smoke_shared_def" for r in placed["components"]), placed
+                try:
+                    await call(conn, "set_material", id=str(shared["part"]), material="red")
+                except SketchUpError as e:
+                    assert e.code == -32602 and "placed 2 times" in e.message, f"[{e.code}] {e.message}"
+                else:
+                    raise AssertionError("set_material on a child of a component placed twice was not refused")
+            finally:
+                for key in ("a", "b"):
+                    await call(conn, "delete_component", id=str(shared[key]))
+                await call(conn, "eval_ruby", code=_SHARED_PURGE_RUBY)
+
         # NB: cleanup must precede undo, and the undo step is NOT a rollback
         # of the modeling steps: `delete_component` is itself an undoable
-        # operation, so after the loop below step 25's undo rolls back the
+        # operation, so after the loop below step 27's undo rolls back the
         # LAST delete — resurrecting the most recently deleted ID — not the
         # last modeling op (the step-21 mortise-tenon). One resurrected group is expected to remain
         # in the model after the run. Running undo before cleanup would
@@ -468,7 +571,7 @@ async def main() -> int:
         # id1/id2 (post-chamfer/post-fillet) are live here: boolean_operation
         # copies its operands (delete_originals=false), so the step-11 union
         # consumed copies, not the originals. Same for id_sph/id_cub in step 20.
-        step = 24; print(f"[{step}] cleanup: delete created components")
+        step = 26; print(f"[{step}] cleanup: delete created components")
         for cid in [id1, id2, id_bool, b_mortise, b_tenon,
                     id_sph, id_cub, id_sph_union, b_leg, b_rail]:
             try:
@@ -476,10 +579,10 @@ async def main() -> int:
             except Exception as e:
                 print(f"    (cleanup non-fatal: {e})")
 
-        step = 25; print(f"[{step}] undo — verify the tool runs without error")
+        step = 27; print(f"[{step}] undo — verify the tool runs without error")
         await call(conn, "undo")
 
-        step = 26; print(f"[{step}] version handshake — in-repo pair must report compatible=true")
+        step = 28; print(f"[{step}] version handshake — in-repo pair must report compatible=true")
         # smoke_check.py talks to Ruby directly (no FastMCP), so this returns
         # the raw handlers/system.rb output. Replicate the two-way verdict
         # that src/sketchup_mcp/tools.py::get_version computes: each side's
@@ -499,7 +602,7 @@ async def main() -> int:
         print("\nALL STEPS PASSED ✓")
         skips = (f", {eval_skipped[0]} skipped (eval gate closed)"
                  if eval_skipped[0] else "")
-        print(f"Smoke complete: 26 steps total{skips}")
+        print(f"Smoke complete: 28 steps total{skips}")
         return 0
     except Exception as e:
         print(f"\nFAILED at step {step}: {e}", file=sys.stderr)

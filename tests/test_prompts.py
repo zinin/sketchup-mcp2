@@ -35,6 +35,9 @@ async def test_prompt_anchor_phrases():
         "eval_ruby",
         "boolean_operation",
         "bbox_mm",
+        "world (model) coordinates",
+        "placed more than once",
+        "shared undo stack",
     ]:
         assert anchor in text, f"missing anchor phrase: {anchor!r}"
 
@@ -62,3 +65,12 @@ async def test_prompt_description_present():
     p = next(p for p in prompts if p.name == "sketchup_modeling_strategy")
     assert p.description
     assert "SketchUp" in p.description
+
+
+async def test_prompt_says_entity_count_is_top_level_only():
+    """M-24: entity_count counts top-level entities only; the pre-flight
+    line must not call it the total."""
+    result = await mcp.get_prompt("sketchup_modeling_strategy", {})
+    text = result.messages[0].content.text
+    assert "total entity count" not in text
+    assert "top-level entities only" in text

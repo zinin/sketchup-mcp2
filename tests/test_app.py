@@ -105,3 +105,19 @@ async def test_lifespan_degrades_when_eager_connect_fails(monkeypatch):
 
     async with app_module.server_lifespan(app_module.mcp) as state:
         assert state == {}
+
+
+# M-12 (spec §6.6): the server's instructions are a condensed strategy.
+INSTRUCTIONS = """\
+SketchUp modeling over MCP. Lengths are millimeters and angles degrees; every
+position, bbox_mm and transform target is in world (model) coordinates, nested
+entities included. Prefer the typed tools; use eval_ruby (inches, no undo step
+of its own) only when none fits. After each change read the returned bbox_mm.
+Boolean, edge and joinery results get new ids and keep their names. Edits
+inside a component or group placed more than once are refused; new objects go
+into a group open for editing. A refused call says what to change. The
+sketchup_modeling_strategy prompt has the full guide."""
+
+
+async def test_server_instructions_are_the_condensed_strategy():
+    assert app_module.mcp.instructions == INSTRUCTIONS

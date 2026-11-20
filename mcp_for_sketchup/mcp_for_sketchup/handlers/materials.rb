@@ -4,6 +4,8 @@ module MCPforSketchUp
     module Materials
       V = MCPforSketchUp::Helpers::Validation
       E = MCPforSketchUp::Helpers::Entities
+      O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       NAMED_COLORS = {
         "red"     => [255, 0, 0],
@@ -29,21 +31,19 @@ module MCPforSketchUp
         name = V.require_string(params, "material")
 
         model = E.active_model!
-        model.start_operation("Set Material (#{name.capitalize})", true)
-        begin
+        O.run(model, "Set Material (#{name.capitalize})") do
           entity = E.find!(id)
           require_paintable!(entity, id)
+          # A face or edge inside a shared definition would change in every
+          # copy; a top-level group or instance is made unique below (T-16).
+          F.require_unshared!(entity, "entity #{id}")
           material = ensure_material(model, name)
           apply_to_entity(entity, material)
-          # Describe BEFORE the commit: a failure here must roll the paint
-          # back, not leave it in the model behind an error the client will
-          # answer with a retry or an undo.
-          description = MCPforSketchUp::Handlers::Geometry.describe_entity(entity)
-          model.commit_operation
-          description
-        rescue StandardError
-          MCPforSketchUp::Handlers::Geometry.safe_abort(model)
-          raise
+          # The description is the block's value, so it is built BEFORE the
+          # commit: a failure here must roll the paint back, not leave it in
+          # the model behind an error the client will answer with a retry or
+          # an undo.
+          MCPforSketchUp::Handlers::Geometry.describe_entity(entity)
         end
       end
 

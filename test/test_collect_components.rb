@@ -14,24 +14,33 @@ require "set"
 # without a live SketchUp process.
 
 module Sketchup
+  # parent stays nil (the walk up the parents stops at once) unless a test
+  # sets it; a group's definition and a definition's instances default to a
+  # fresh definition and an empty list. Identical in test_collect_components,
+  # test_model_empty_bbox and test_model_pagination: under run_all the three
+  # reopen the same classes.
   class Group
-    attr_accessor :entities, :name, :entityID, :transformation, :bounds, :layer
+    attr_accessor :entities, :name, :entityID, :transformation, :bounds, :layer, :parent
+    attr_writer :definition
     def initialize
       @transformation = Geom::Transformation.new
       @entities = []
     end
+    def definition; @definition ||= Sketchup::ComponentDefinition.new; end
     def valid?; true; end
   end
 
   class ComponentDefinition
-    attr_accessor :entities, :entityID
+    attr_accessor :entities, :entityID, :name, :bounds
+    attr_writer :instances
     def initialize
       @entities = []
     end
+    def instances; @instances ||= []; end
   end
 
   class ComponentInstance
-    attr_accessor :definition, :name, :entityID, :transformation, :bounds, :layer
+    attr_accessor :definition, :name, :entityID, :transformation, :bounds, :layer, :parent
     def initialize
       @transformation = Geom::Transformation.new
     end
@@ -58,6 +67,7 @@ module Geom
   class Transformation
     def initialize; end
     def *(other); other; end  # identity for these tests
+    def to_a; [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]; end
   end
 end
 
@@ -66,6 +76,8 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/model"
 
 class TestCollectComponentsRepeatedInstances < Minitest::Test
@@ -119,7 +131,7 @@ class TestCollectComponentsRepeatedInstances < Minitest::Test
   def test_recursive_returns_nested_for_every_instance_of_same_definition
     components = M.collect_components(
       [@chair_a, @chair_b],
-      Geom::Transformation.new,
+      MCPforSketchUp::Helpers::Frames::IDENTITY,
       recursive: true, depth: 0, max_depth: 3, seen: Set.new
     )
     names = components.map { |c| c["name"] }
@@ -138,7 +150,7 @@ class TestCollectComponentsRepeatedInstances < Minitest::Test
 
     components = M.collect_components(
       [outer],
-      Geom::Transformation.new,
+      MCPforSketchUp::Helpers::Frames::IDENTITY,
       recursive: true, depth: 0, max_depth: 100, seen: Set.new
     )
 
@@ -155,29 +167,23 @@ end
 # Regression test for get_component_info world-frame fix (disputed #2 A').
 # The old implementation returned describe_component(entity) with an identity
 # parent_t, so a NESTED entity's bbox came back in its PARENT frame (local),
-# not WORLD. get_component_info now reuses collect_components, so the bbox +
-# depth match list_components exactly. We prove that for a nested cushion the
-# returned bbox is the WORLD-frame one (translated by the parent's transform),
-# NOT the un-translated parent-frame bbox.
+# not WORLD. get_component_info now walks up from the entity (Frames.placement:
+# cushion → the chair's definition → its one instance, the chair → the model),
+# so the bbox + depth match list_components exactly. We prove that for a nested
+# cushion the returned bbox is the WORLD-frame one (translated by the parent's
+# transform), NOT the un-translated parent-frame bbox.
 class TestGetComponentInfoWorldFrame < Minitest::Test
   M = MCPforSketchUp::Handlers::Model
 
-  # Translating transformation double. `*` either translates a Point3d by
-  # (dx,dy,dz) or composes with another transformation. Composing with the
-  # identity stub (Geom::Transformation, whose `*` returns its argument) yields
-  # `self`, so `identity * this == this` — the chair's translation survives the
-  # root identity parent_t in get_component_info.
+  # Translating transformation double: to_a gives its matrix, column-major
+  # like Geom::Transformation#to_a (Helpers::Frames reads nothing else).
   class Translate
     def initialize(dx, dy, dz)
       @dx, @dy, @dz = dx, dy, dz
     end
 
-    def *(other)
-      if other.is_a?(Geom::Point3d)
-        Geom::Point3d.new(other.x + @dx, other.y + @dy, other.z + @dz)
-      else
-        self  # compose with identity -> self (sufficient for one nesting level)
-      end
+    def to_a
+      [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, @dx, @dy, @dz, 1.0]
     end
   end
 
@@ -209,6 +215,13 @@ class TestGetComponentInfoWorldFrame < Minitest::Test
     @chair.bounds = make_bbox
     @chair.transformation = Translate.new(10, 20, 30)
     @chair.entities = [@cushion]
+    # The walk up: the cushion lives in the chair's definition, whose one
+    # instance is the chair, which sits in the model (parent nil stops it).
+    @chair.definition.instances = [@chair]
+    @cushion.parent = @chair.definition
+    # Below the model, a group is boxed by its definition's bounds through
+    # the parents' matrix and its own transformation.
+    @cushion.definition.bounds = make_bbox
 
     @model_entities = [@chair]
 
@@ -244,7 +257,7 @@ class TestGetComponentInfoWorldFrame < Minitest::Test
 
   def test_nested_entity_returns_world_frame_bbox_matching_collect_components
     # World-frame bbox computed the same way list_components would.
-    world = M.collect_components(@model_entities, Geom::Transformation.new,
+    world = M.collect_components(@model_entities, MCPforSketchUp::Helpers::Frames::IDENTITY,
                                  recursive: true, depth: 0, max_depth: 64,
                                  seen: Set.new)
     cushion_world = world.find { |c| c["id"] == 100 }

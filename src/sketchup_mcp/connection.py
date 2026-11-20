@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sketchup_mcp import compat, config
+from sketchup_mcp.annotations import read_only_wire_names
 from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError
 
 logger = logging.getLogger("sketchup_mcp.connection")
@@ -44,22 +45,12 @@ class _StaleSocketError(SketchUpError):
 
 
 # Tools без побочных эффектов на модель — безопасно retry'ить при stale-socket.
-# Список синхронизирован с handlers/* на Ruby: всё, что не пишет в модель и не
-# выполняет произвольный Ruby. Любая правка списка требует ревью соответствующего
-# Ruby-handler'а на side effects.
-_RETRY_SAFE_TOOLS: frozenset[str] = frozenset(
-    {
-        "get_model_info",
-        "list_components",
-        "get_component_info",
-        "find_components",
-        "list_layers",
-        "get_selection",
-        "get_viewport_screenshot",  # read-only viewport capture; idempotent in
-                                    # both restore_view modes (no document state changes)
-        "get_version",              # read-only diagnostic; no side effects
-    }
-)
+# M-18: это wire-имена тулов, аннотированных read-only в annotations.py, —
+# одна таблица даёт и аннотации, и этот список, так что mutating tool не
+# попадёт сюда, не став read-only для клиента. Любая правка read-only-аннотации
+# требует ревью соответствующего Ruby-handler'а на side effects;
+# tests/test_contract.py сверяет список с READ_ONLY_TOOLS в dispatch.rb.
+_RETRY_SAFE_TOOLS: frozenset[str] = read_only_wire_names()
 
 
 @dataclass
