@@ -4,11 +4,9 @@
 # restore_identity! возвращает на результат.
 require "minitest/autorun"
 
-unless defined?(Sketchup)
-  module Sketchup
-    class Group; end
-    class ComponentInstance; end
-  end
+module Sketchup
+  class Group; end unless defined?(Group)
+  class ComponentInstance; end unless defined?(ComponentInstance)
 end
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
@@ -39,6 +37,38 @@ class TestEntitiesIdentity < Minitest::Test
     assert_equal "probe_rail", target.name
     assert_same layer, target.layer
     assert_same mat, target.material
+  end
+
+  FakeDefinition = Struct.new(:name)
+
+  # Подклассы guarded-стабов: identity_of различает их через is_a?.
+  class FakeInstance < Sketchup::ComponentInstance
+    attr_accessor :name, :layer, :material, :definition
+    def initialize(name, definition_name)
+      @name = name
+      @layer = nil
+      @material = nil
+      @definition = FakeDefinition.new(definition_name)
+    end
+  end
+
+  class FakeGroup < Sketchup::Group
+    attr_accessor :name, :layer, :material, :definition
+    def initialize(name, definition_name)
+      @name = name
+      @layer = nil
+      @material = nil
+      @definition = FakeDefinition.new(definition_name)
+    end
+  end
+
+  # Компонент из 3D Warehouse или импорта обычно без имени экземпляра:
+  # Outliner показывает имя определения, его и сохраняем. Группа держит своё
+  # имя (её определение — автоматическое «Group#N»).
+  def test_unnamed_component_instance_takes_its_definition_name
+    assert_equal "Chair", E.identity_of(FakeInstance.new("", "Chair"))[:name]
+    assert_equal "left chair", E.identity_of(FakeInstance.new("left chair", "Chair"))[:name]
+    assert_equal "", E.identity_of(FakeGroup.new("", "Group#3"))[:name]
   end
 
   def test_nil_material_leaves_the_target_alone

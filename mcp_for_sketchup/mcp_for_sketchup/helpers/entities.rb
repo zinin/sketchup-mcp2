@@ -52,8 +52,15 @@ module MCPforSketchUp
       # Solid-операции (subtract/union) возвращают НОВУЮ группу и теряют имя,
       # тег (layer) и собственный материал исходной. identity_of снимает их
       # до операции, restore_identity! возвращает на результат.
+      # Экземпляр компонента без собственного имени (из 3D Warehouse, импорта)
+      # Outliner показывает по имени определения — его и берём. Группа держит
+      # своё имя: её определение названо автоматически («Group#N»).
       def self.identity_of(entity)
-        { name: entity.name, layer: entity.layer, material: entity.material }
+        name = entity.name
+        if name.to_s.empty? && entity.is_a?(Sketchup::ComponentInstance)
+          name = entity.definition.name
+        end
+        { name: name, layer: entity.layer, material: entity.material }
       end
 
       # Material ставится только если он был (nil — не трогаем у цели свой).

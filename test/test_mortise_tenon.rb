@@ -131,8 +131,11 @@ class TestMortiseTenon < Minitest::Test
     end
   end
 
+  FakeDefinition = Struct.new(:name)
+
   class InstanceBoard < Sketchup::ComponentInstance
     include FakeSolid
+    attr_accessor :definition
 
     def typename
       "ComponentInstance"
@@ -377,15 +380,16 @@ class TestMortiseTenon < Minitest::Test
   end
 
   def test_component_instance_boards_are_accepted
-    @leg  = board(InstanceBoard, 101, "leg instance",  [0, 0, 0],     [50, 50, 300],  750_000)
-    @rail = board(InstanceBoard, 102, "rail instance", [50, 15, 110], [250, 35, 190], 320_000)
+    @leg  = board(InstanceBoard, 101, "leg instance", [0, 0, 0],     [50, 50, 300],  750_000)
+    @rail = board(InstanceBoard, 102, "",             [50, 15, 110], [250, 35, 190], 320_000)
+    @rail.definition = FakeDefinition.new("Rail")  # unnamed: the Outliner shows "Rail"
 
     result = joint
 
     assert_committed
     assert_operand :subtract, @leg, @cutter
     assert_operand :union, @rail, @piece
-    assert_equal [["group", "leg instance"], ["group", "rail instance"]],
+    assert_equal [["group", "leg instance"], ["group", "Rail"]],
                  result.values_at("mortise", "tenon").map { |d| d.values_at("type", "name") }
   end
 
