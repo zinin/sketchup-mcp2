@@ -21,6 +21,7 @@ def env_clean(monkeypatch):
         "SKETCHUP_MCP_HOST",
         "SKETCHUP_MCP_TIMEOUT",
         "SKETCHUP_MCP_LOG_LEVEL",
+        "SKETCHUP_MCP_TOKEN",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -101,3 +102,20 @@ def test_warn_level_accepted(env_clean, monkeypatch):
     """Регрессия: задокументированный алиас WARN не должен попасть под warning."""
     monkeypatch.setenv("SKETCHUP_MCP_LOG_LEVEL", "warn")
     assert reload_config().LOG_LEVEL == "WARN"
+
+
+# M-06 (spec §7.1): the token comes from SKETCHUP_MCP_TOKEN, copied by hand from
+# SketchUp's Settings into the MCP client's config — whitespace a paste brings
+# along is dropped; an empty value is no token.
+def test_token_is_stripped_of_whitespace(monkeypatch, env_clean):
+    monkeypatch.setenv("SKETCHUP_MCP_TOKEN", "  " + "0123456789abcdef" * 4 + "\n")
+    assert reload_config().TOKEN == "0123456789abcdef" * 4
+
+
+def test_blank_token_is_none(monkeypatch, env_clean):
+    monkeypatch.setenv("SKETCHUP_MCP_TOKEN", "   ")
+    assert reload_config().TOKEN is None
+
+
+def test_unset_token_is_none(env_clean):
+    assert reload_config().TOKEN is None

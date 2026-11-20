@@ -2,6 +2,7 @@
 import asyncio
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -72,3 +73,25 @@ async def make_connection(fake_streams):
         return conn
 
     return _make
+
+
+# One handshake's values (spec §7.2), computed with Python's hmac and Ruby's
+# OpenSSL::HMAC and pinned in both suites — test/support/auth_vectors.rb holds
+# the same ones — so the two halves of the handshake cannot drift apart.
+_AUTH_VECTORS = SimpleNamespace(
+    token="0123456789abcdef" * 4,
+    client_nonce="a" * 64,
+    server_nonce="b" * 64,
+    server_proof="a1069e0a855573049322f60ceb171ea5e84780060a85dbd060bcbbec96df272d",
+    client_proof="c968a257091ddea88a25001b219ab21a1609e2d5991b92adb3445c5bfdc7e279",
+)
+
+
+@pytest.fixture
+def auth_vectors(monkeypatch):
+    """The pinned handshake values, with the client's nonce fixed to
+    ``client_nonce``: a scripted server can answer ``hello`` with
+    ``server_nonce`` and ``server_proof`` and expect ``client_proof`` in
+    ``auth``. Build connections with ``token=auth_vectors.token``."""
+    monkeypatch.setattr("sketchup_mcp.auth.new_nonce", lambda: _AUTH_VECTORS.client_nonce)
+    return _AUTH_VECTORS

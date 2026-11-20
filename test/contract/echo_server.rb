@@ -2,6 +2,9 @@
 # M-09: the real Ruby server for tests/test_contract_wire.py, with an echo in
 # place of every handler.
 #
+# The client must complete the full handshake (hello, then auth) with the token
+# in SKETCHUP_MCP_TOKEN, which the test sets.
+#
 # Loads core/ (all but application.rb) and handlers/dispatch.rb without
 # SketchUp and serves them on a real TCP socket. Every module that
 # Dispatch.call_handler routes to becomes an echo module; the routes are read
@@ -30,7 +33,7 @@ $stdout = $stderr
 PLUGIN_DIR = File.expand_path("../../mcp_for_sketchup/mcp_for_sketchup", __dir__)
 
 %w[
-  core/errors core/compat core/config core/logger core/framing
+  core/errors core/compat core/auth core/net core/config core/logger core/framing
   core/client_state core/server handlers/dispatch
 ].each { |path| require File.join(PLUGIN_DIR, path) }
 
@@ -86,9 +89,13 @@ end
 config = MCPforSketchUp::Core::Config
 config.host      = "127.0.0.1"
 config.port      = 0
-# INFO, not the plugin's WARN: a rejected handshake is logged at INFO, and the
-# connect/handshake trail is what a failing run needs on stderr.
+# INFO, not the plugin's WARN: the connect/handshake trail (hello_ok,
+# handshake_ok) is logged at INFO, and it is what a failing run needs on
+# stderr; refusals log at WARN either way.
 config.log_level = "INFO"
+# M-06: the token the client must prove it knows. tests/test_contract_wire.py
+# passes it in the environment and builds its connection with the same one.
+config.token     = ENV.fetch("SKETCHUP_MCP_TOKEN")
 
 server = MCPforSketchUp::Core::Server.new
 server.start

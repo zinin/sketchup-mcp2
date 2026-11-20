@@ -9,10 +9,15 @@ _PARAMS_TRUNCATE_AT = 512  # bytes of JSON; больше — обрезаем
 class SketchUpError(Exception):
     """Wraps a JSON-RPC error returned by the Ruby side or raised locally."""
 
-    def __init__(self, code: int, message: str, data: dict[str, Any] | None = None):
+    def __init__(self, code: int, message: str, data: Any = None):
         self.code = code
         self.message = message
-        self.data = data or {}
+        # M-31: a peer may put anything under error.data; callers read a dict.
+        if data is None:
+            data = {}
+        elif not isinstance(data, dict):
+            data = {"raw": data}
+        self.data = data
         super().__init__(message)
 
 
@@ -24,6 +29,15 @@ class IncompatibleVersionError(SketchUpError):
     """
     def __init__(self, message: str):
         super().__init__(code=-32001, message=message)
+
+
+class AuthenticationError(SketchUpError):
+    """The token check failed (spec §7.2, M-06): no token or a malformed one,
+    a server that does not know the token, or one that refused this client's
+    proof. Code -32003, the plugin's code for a refused proof. The message says
+    where to copy the token from, so it reaches the user verbatim."""
+    def __init__(self, message: str):
+        super().__init__(code=-32003, message=message)
 
 
 def _short_json(value: object) -> str:

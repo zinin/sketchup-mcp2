@@ -55,6 +55,11 @@ PORT: int = _env_port("SKETCHUP_MCP_PORT", "9876")
 HOST: str = os.getenv("SKETCHUP_MCP_HOST", "127.0.0.1")
 TIMEOUT: float = _env_timeout("SKETCHUP_MCP_TIMEOUT", "60")
 LOG_LEVEL: str = _env_log_level("SKETCHUP_MCP_LOG_LEVEL", "INFO")
+# M-06: the token from the plugin's Settings, copied by hand. Whitespace a paste
+# brings along is dropped; a blank value is no token. Its form is checked when
+# connecting (auth.check_token), so a bad one gets the instruction from every
+# tool instead of stopping the server here.
+TOKEN: str | None = os.getenv("SKETCHUP_MCP_TOKEN", "").strip() or None
 
 MAX_MESSAGE_SIZE: int = 64 * 1024 * 1024  # 64 MiB; запас для PNG/DAE/SKP-экспортов
 

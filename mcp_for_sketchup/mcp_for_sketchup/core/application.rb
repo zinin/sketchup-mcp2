@@ -42,7 +42,7 @@ module MCPforSketchUp
         rescue StandardError => e
           Logger.log_error("application.start", e)
           ::UI.messagebox("MCP Server failed to start:\n\n#{e.message}\n\n" \
-                          "Check Plugins → MCP Server → Show Log for details.")
+                          "Check Extensions → MCP Server → Show Log for details.")
           begin
             @server&.stop
           rescue StandardError => stop_err
@@ -68,6 +68,13 @@ module MCPforSketchUp
       def self.restart
         stop if @running
         start
+      end
+
+      # Settings → Regenerate (spec §7.1): close every connected client, so a
+      # session opened with the old token ends. Nothing to do when stopped.
+      def self.disconnect_clients(reason)
+        return unless @running && @server
+        @server.close_all_clients(reason)
       end
 
       def self.show_log

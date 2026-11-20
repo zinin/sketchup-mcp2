@@ -9,7 +9,7 @@ joist arrays, follow_me extrusions, transforms, world-space queries.
 > **eval_ruby gate.** Every recipe in this cookbook is delivered to
 > SketchUp via the MCP `eval_ruby` tool. It ships enabled; if the gate has
 > been closed, calls come back as a message instead of running — open
-> `Plugins → MCP Server → Settings...` and check «Enable Ruby evaluation»
+> `Extensions → MCP Server → Settings...` and check «Enable Ruby evaluation»
 > (you will be asked to confirm a security warning).
 
 ## Units: always convert mm ↔ inches

@@ -10,15 +10,36 @@ module MCPforSketchUp
 
       def self.log(level, msg)
         return if Config.level_value_for(level) < Config.level_value
-        line = "[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [#{level}] #{msg}"
+        line = "[#{Time.now.utc.iso8601}] #{LINE_PREFIX} [#{level}] #{sanitize(msg)}"
         _emit(line)
       end
+
+      CONTROL_ESCAPES = { "\n" => "\\n", "\r" => "\\r", "\t" => "\\t" }.freeze
+
+      # M-31: one line is one log record. Control characters — in a model
+      # name, an exception message or a peer's input — are written as \n, \r,
+      # \t, \xNN or \uNNNN (C1 controls and the Unicode line separators, which
+      # some consoles also break on), so nothing a message carries can forge a
+      # line of its own. The text becomes UTF-8 first, with '?' for invalid or
+      # binary bytes: gsub raises on invalid bytes, and logging must never
+      # break the data path.
+      def self.sanitize(text)
+        utf8 = text.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "?").scrub("?")
+        utf8.gsub(/[\x00-\x1F\x7F\u0080-\u009F\u2028\u2029]/) do |c|
+          CONTROL_ESCAPES.fetch(c) { c.ord < 0x80 ? format("\\x%02X", c.ord) : format("\\u%04X", c.ord) }
+        end
+      end
+
+      # M-21: the statuses a user must see at the default WARN level — a
+      # refused or failed handshake, and a client dropped for being stuck.
+      WARN_STATUSES = %w[handshake_rejected auth_failed write_timeout
+                         pre_handshake_timeout pending_write_overflow].freeze
 
       def self.log_tool(tool, status, extra = nil, client_label: nil)
         body = "tool=#{tool} status=#{status}"
         body << " client=#{client_label}" if client_label
         body << " #{extra}" if extra
-        log("INFO", body)
+        log(WARN_STATUSES.include?(status) ? "WARN" : "INFO", body)
       end
 
       def self.log_error(tool, exception, client_label: nil)
@@ -30,7 +51,7 @@ module MCPforSketchUp
         # Backtrace continuation lines carry the prefix (CONCERN-1) but no
         # timestamp — they continue the preceding ERROR record rather than
         # standing as independent log events.
-        exception.backtrace.first(3).each { |bt| _emit("#{LINE_PREFIX}     #{bt}") }
+        exception.backtrace.first(3).each { |bt| _emit("#{LINE_PREFIX}     #{sanitize(bt)}") }
       end
 
       # Single emission point. Task 5 extends this with the log-to-file

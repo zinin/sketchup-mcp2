@@ -13,7 +13,7 @@ module MCPforSketchUp
       # Mirrored in src/sketchup_mcp/compat.py::EVAL_DISABLED_CODE (Python side).
 
       EVAL_DISABLED_MESSAGE = (
-        "eval_ruby is disabled. Open Plugins → MCP Server → Settings... " \
+        "eval_ruby is disabled. Open Extensions → MCP Server → Settings... " \
         "and check 'Enable Ruby evaluation'. " \
         "WARNING: this grants the MCP server arbitrary code execution " \
         "including filesystem and shell access."

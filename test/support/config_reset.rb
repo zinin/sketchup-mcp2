@@ -12,6 +12,7 @@ module ConfigReset
     c.eval_enabled   = nil
     c.log_to_file    = nil
     c.log_file_path  = nil
+    c.token          = nil
     # Logger's one-shot log-file-failure flag is module-global state too: clear
     # it between tests so a write failure in one test cannot suppress the
     # fallback notice expected by another (test_logger). Guarded because

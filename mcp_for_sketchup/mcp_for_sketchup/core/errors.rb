@@ -25,13 +25,16 @@ module MCPforSketchUp
         }
       end
 
-      def self.exception_to_data(exception, tool, params)
-        {
+      # backtrace: false leaves the backtrace out — for a client that has not
+      # completed the handshake (M-31).
+      def self.exception_to_data(exception, tool, params, backtrace: true)
+        data = {
           "tool"      => tool,
           "params"    => truncate_params(params),
           "timestamp" => Time.now.utc.iso8601,
-          "backtrace" => (exception.backtrace || []).first(3)
         }
+        data["backtrace"] = (exception.backtrace || []).first(3) if backtrace
+        data
       end
 
       def self.truncate_params(params)
@@ -39,9 +42,11 @@ module MCPforSketchUp
         return params if json.bytesize <= PARAMS_TRUNCATE_AT
         truncated = safe_byte_truncate(json, PARAMS_TRUNCATE_AT) + "...<truncated>"
         { "_truncated" => truncated }
-      rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
-        # The params themselves are un-encodable (e.g. a non-JSON object, or a
-        # string with invalid bytes). Error formatting must never itself crash —
+      rescue JSON::JSONError, Encoding::UndefinedConversionError => e
+        # The params themselves are un-encodable (e.g. a non-JSON object, a
+        # string with invalid bytes, or — M-14 — nesting past JSON's depth
+        # limit: NestingError is a ParserError, hence JSON::JSONError rather
+        # than GeneratorError). Error formatting must never itself crash —
         # fall back to a safe marker rather than letting build_error_response
         # propagate a second exception. Mirrors server.rb#encode_response_body.
         { "_unserializable" => "#{e.class.name}: #{e.message.to_s.scrub("?")}" }

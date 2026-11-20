@@ -65,6 +65,16 @@ class TestExceptionToData < Minitest::Test
     assert_equal [], data["backtrace"]
   end
 
+  # M-31: a refusal to a client that has not completed the handshake leaves
+  # the backtrace out.
+  def test_exception_to_data_can_leave_out_the_backtrace
+    e = StandardError.new("x")
+    e.set_backtrace(["a.rb:1"])
+    data = MCPforSketchUp::Core::Errors.exception_to_data(e, "hello", {}, backtrace: false)
+    refute data.key?("backtrace")
+    assert_equal "hello", data["tool"]
+  end
+
   def test_timestamp_is_iso8601_utc
     e = StandardError.new("x")
     data = MCPforSketchUp::Core::Errors.exception_to_data(e, "t", {})
@@ -114,5 +124,17 @@ class TestTruncateParams < Minitest::Test
     data = MCPforSketchUp::Core::Errors.exception_to_data(e, "some_tool", bad)
     assert_equal "some_tool", data["tool"]
     assert data["params"].key?("_unserializable")
+  end
+end
+
+class TestTruncateParamsNesting < Minitest::Test
+  # M-14: params nested past JSON's depth limit (JSON::NestingError, a
+  # ParserError, not a GeneratorError) must not crash the error path that
+  # reports them.
+  def test_truncate_params_survives_a_nesting_error
+    deep = (1..120).reduce([]) { |acc, _| [acc] }
+    out = MCPforSketchUp::Core::Errors.truncate_params({ "x" => deep })
+    assert out.key?("_unserializable"), out.inspect
+    assert_includes out["_unserializable"], "JSON::NestingError"
   end
 end

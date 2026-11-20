@@ -4,18 +4,25 @@
 ``tools.py`` can do ``from sketchup_mcp.app import mcp`` without dragging in the
 entry-point and creating a circular import.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
 
-from sketchup_mcp import __version__
+from sketchup_mcp import __version__, config
 from sketchup_mcp.config import setup_logging
 from sketchup_mcp.connection import close_connection, get_connection
 from sketchup_mcp.errors import SketchUpError
 
 logger = logging.getLogger("sketchup_mcp.app")
+
+# §7.4: the eager connect at startup has a bound of its own, apart from
+# SKETCHUP_MCP_TIMEOUT, so a SketchUp that accepts and then stalls cannot hold
+# the server past Claude Code's 30-second start window. The first tool call
+# connects lazily with the full timeout.
+STARTUP_CONNECT_TIMEOUT = 5.0
 
 
 @asynccontextmanager
@@ -34,11 +41,22 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     instead of the server failing to load with no diagnostics in Claude Desktop.
     Любое другое исключение — конфиг или баг кода — пробрасываем, сервер
     падает на старте с точной ошибкой вместо молчаливого деградирования.
+
+    The eager connect is bounded by STARTUP_CONNECT_TIMEOUT; past it the server
+    starts degraded the same way. A missing or malformed token is an
+    AuthenticationError, a SketchUpError: no socket opens, and every tool
+    answers with the instruction.
     """
     setup_logging()
+    # M-21: one line says which version runs and where it looks for SketchUp.
+    logger.info("sketchup-mcp2 %s starting; SketchUp plugin expected at %s:%s",
+                __version__, config.HOST, config.PORT)
     try:
         conn = await get_connection()
-        await conn.ensure_connected()
+        await asyncio.wait_for(conn.ensure_connected(), STARTUP_CONNECT_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("SketchUp did not answer within %ss at startup; "
+                       "the first tool call will connect", STARTUP_CONNECT_TIMEOUT)
     except (ConnectionError, SketchUpError) as e:
         logger.warning(f"Could not connect on startup: {e}")
     try:

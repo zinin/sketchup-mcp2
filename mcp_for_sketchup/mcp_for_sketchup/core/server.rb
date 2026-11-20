@@ -27,7 +27,12 @@ module MCPforSketchUp
       # запечатывает стоп полностью.
       DISPATCH_MAX_PER_TICK     = 50      # фреймов за тик; флуд мелких фреймов не должен морозить UI (T-13.2)
       FRAME_QUEUE_SOFT_MAX      = 256     # очередь насыщена — чтение приостанавливается (T-13.2, P-06)
-      PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект без валидного hello закрывается (T-13.5)
+      PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект, не прошедший handshake (hello и auth), закрывается (T-13.5)
+      # M-15: one client cannot fill the shared queue — it is no longer read
+      # while this many of its frames wait (TCP holds the rest); and a burst of
+      # connects is accepted a few per tick, the rest waiting in the backlog.
+      PER_CLIENT_QUEUE_MAX      = 32
+      ACCEPTS_PER_TICK_MAX      = 16
 
       def initialize
         @server         = nil
@@ -67,17 +72,14 @@ module MCPforSketchUp
         @server = nil
       end
 
-      private
-
-      # Loopback hosts that keep the server reachable only from this machine.
-      # Anything else (0.0.0.0, ::, an explicit LAN IP, …) is reachable by other
-      # hosts on the network and warrants the exposure warning.
-      LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"].freeze
-
-      def loopback_host?(host)
-        h = host.to_s.strip.downcase
-        LOOPBACK_HOSTS.include?(h) || h.start_with?("127.")
+      # Settings → Regenerate (spec §7.1): every client, authenticated with the
+      # old token, is closed. A frame still queued for one is dropped when the
+      # queue reaches it (process_frame_queue skips closed clients).
+      def close_all_clients(reason)
+        @clients.values.each { |state| close_client(state, reason) }
       end
+
+      private
 
       # T-13.4: все дедлайны — на монотонных часах; wall-clock (Time.now)
       # прыгает при NTP-коррекции и переводе времени.
@@ -85,15 +87,17 @@ module MCPforSketchUp
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
-      # Concise server-log echo of the UI's host-security warning. Emitted at
-      # bind for any non-loopback host: such a bind exposes the unauthenticated
-      # MCP server — including eval_ruby (arbitrary Ruby) — to the LAN.
+      # Server-log echo of the Settings dialog's host warning, at bind, for any
+      # host that is not loopback — by the check the dialog uses (Core::Net).
+      # It says what the token protects (who can connect) and what it does not
+      # (the traffic is not encrypted), spec §7.3.
       def warn_if_exposed_bind(host)
-        return if loopback_host?(host)
+        return if Net.loopback?(host)
         Logger.log("WARN",
-          "bound to non-loopback host #{host} — the MCP server (incl. eval_ruby: " \
-          "arbitrary Ruby) is reachable by other machines on the network with NO " \
-          "authentication. Use 127.0.0.1 unless this is a trusted isolated network.")
+          "bound to non-loopback host #{host}: other machines can reach the MCP server. " \
+          "A client needs the token to connect, but the traffic is not encrypted; on a " \
+          "network you do not trust, bind 127.0.0.1 and use an SSH tunnel " \
+          "(README → Security model).")
       end
 
       def on_timer_tick
@@ -127,18 +131,24 @@ module MCPforSketchUp
         end
       end
 
+      # M-15: at most ACCEPTS_PER_TICK_MAX sockets per tick, registered or
+      # refused; the rest wait in the kernel backlog. Refusals past MAX_CLIENTS
+      # make one log line for the tick, not one each.
       def accept_pending_clients
         aborted = 0
-        loop do
+        accepted = 0
+        rejected = 0
+        while accepted < ACCEPTS_PER_TICK_MAX
           begin
             sock = @server.accept_nonblock
           rescue IO::WaitReadable
-            return
+            break
           rescue Errno::ECONNABORTED
             aborted += 1
-            return if aborted >= ACCEPT_ABORTED_MAX
+            break if aborted >= ACCEPT_ABORTED_MAX
             next
           end
+          accepted += 1
           # Refuse connections beyond MAX_CLIENTS to bound FD/memory use when
           # bound to a non-loopback host (review F3). Close without registering
           # — keeps the registered-or-closed invariant.
@@ -149,8 +159,7 @@ module MCPforSketchUp
               Logger.log("DEBUG",
                 "Server.accept: over-cap close raised: #{e.class}: #{e.message}")
             end
-            Logger.log_tool("server", "client_rejected",
-              "reason=max_clients limit=#{MAX_CLIENTS}")
+            rejected += 1
             next
           end
           begin
@@ -172,9 +181,12 @@ module MCPforSketchUp
           @clients[sock] = state
           Logger.log_tool("server", "client_connected", client_label: state.label)
         end
+        return if rejected.zero?
+        Logger.log_tool("server", "client_rejected",
+          "reason=max_clients limit=#{MAX_CLIENTS} count=#{rejected}")
       end
 
-      # T-13.5: коннект, не приславший валидный hello за
+      # T-13.5: коннект, не прошедший handshake (hello и auth, блок C) за
       # PRE_HANDSHAKE_DEADLINE_S, закрывается. Без этого 64 молчаливых
       # TCP-коннекта навсегда исчерпывают слоты MAX_CLIENTS (DoS при
       # exposed-bind; до дедлайна слоты, естественно, заняты — 30 с и есть
@@ -250,6 +262,9 @@ module MCPforSketchUp
         # T-13.1: решение о закрытии принято (framing/parse-ошибка) — стрим
         # рассинхронизирован, новые чтения бессмысленны до close-after-drain.
         return if state.close_after_response
+        # M-15: this client already has its share of the queue; TCP keeps the
+        # rest in the kernel buffer until its frames are dispatched.
+        return if state.queued_frames >= PER_CLIENT_QUEUE_MAX
         iterations = 0
         loop do
           if iterations >= READ_MAX_ITERATIONS
@@ -264,6 +279,9 @@ module MCPforSketchUp
           # ограничен фреймами ОДНОГО read_nonblock-куска (≤64 KiB), а не
           # всем бюджетом READ_MAX_ITERATIONS.
           break if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX
+          # M-15: likewise for this client's own cap; the overshoot is bounded
+          # by the frames of one read_nonblock chunk.
+          break if state.queued_frames >= PER_CLIENT_QUEUE_MAX
           iterations += 1
         end
       rescue IO::WaitReadable
@@ -334,17 +352,30 @@ module MCPforSketchUp
       rescue StandardError => e
         Logger.log_error("server.handler", e, client_label: state.label)
         rid = request.is_a?(Hash) ? request["id"] : nil
+        # M-31: a client that has not completed the handshake gets no
+        # backtrace, and is closed once the answer is written, like every
+        # other refusal before the handshake.
+        state.close_after_response = true unless state.handshaked
         Errors.build_error_response(-32603, e.message,
-          Errors.exception_to_data(e, "?", {}), rid)
+          Errors.exception_to_data(e, "?", {}, backtrace: state.handshaked), rid)
       end
 
+      # M-06 (spec §7.2): two round trips before any tool runs. hello proves
+      # the plugin knows the token, auth proves the client does; neither sends
+      # it. A client is handshaked only after auth.
       def handle_pre_handshake(state, request)
         unless request.is_a?(Hash) && request["jsonrpc"] == "2.0"
           return reject_handshake(state, request,
             StructuredError.new(-32600, "invalid envelope (pre-handshake)"))
         end
-        method = request["method"]
+        return handle_hello(state, request) if state.server_nonce.nil?
+        handle_auth(state, request)
+      end
 
+      # Step 1. The version check comes first, so a client too old to
+      # authenticate hears that it must upgrade, not that its token is wrong.
+      def handle_hello(state, request)
+        method = request["method"]
         unless method == "hello"
           return reject_handshake(state, request,
             StructuredError.new(-32600,
@@ -364,37 +395,102 @@ module MCPforSketchUp
           return reject_handshake(state, request, e)
         end
 
-        state.handshaked     = true
+        client_nonce = params["client_nonce"]
+        if client_nonce.nil?
+          return reject_handshake(state, request,
+            StructuredError.new(-32001,
+              Core::Compat.msg_python_unauthenticated(params["client_version"])))
+        end
+        unless Auth.hex64?(client_nonce)
+          return reject_handshake(state, request,
+            StructuredError.new(-32602,
+              "hello requires params.client_nonce (64 lowercase hex characters)"))
+        end
+        token = Config.token
+        return reject_handshake(state, request, no_token_error) unless Auth.hex64?(token)
+
         state.client_version = params["client_version"]
+        state.client_nonce   = client_nonce
+        state.server_nonce   = Auth.nonce
+        Logger.log_tool("server", "hello_ok",
+          "client_version=#{state.client_version}",
+          client_label: state.label)
+        handshake_result(request,
+          "server_version" => Core::Compat::SERVER_VERSION,
+          "server_nonce"   => state.server_nonce,
+          "server_proof"   => Auth.proof(token, "server", client_nonce, state.server_nonce))
+      end
+
+      # Step 2. A proof of any other value, of any length, is -32003: the
+      # answer says nothing about how close it came.
+      def handle_auth(state, request)
+        method = request["method"]
+        unless method == "auth"
+          return reject_handshake(state, request,
+            StructuredError.new(-32600,
+              "expected 'auth' after 'hello' (got: #{method.inspect})"), tool: "auth")
+        end
+
+        params = request["params"]
+        client_proof = params.is_a?(Hash) ? params["client_proof"] : nil
+        unless client_proof.is_a?(String)
+          return reject_handshake(state, request,
+            StructuredError.new(-32602, "auth requires params.client_proof (string)"), tool: "auth")
+        end
+        token = Config.token
+        return reject_handshake(state, request, no_token_error, tool: "auth") unless Auth.hex64?(token)
+
+        expected = Auth.proof(token, "client", state.client_nonce, state.server_nonce)
+        unless Auth.secure_equal?(client_proof, expected)
+          return reject_handshake(state, request,
+            StructuredError.new(-32003, "authentication failed"),
+            tool: "auth", status: "auth_failed")
+        end
+
+        state.handshaked = true
+        state.reader.max_frame = Config::MAX_MESSAGE_SIZE
         Logger.log_tool("server", "handshake_ok",
           "client_version=#{state.client_version}",
           client_label: state.label)
-
-        # Build a raw JSON-RPC envelope inline — do NOT use
-        # Handlers::Dispatch.build_success_response. That wrapper turns
-        # `result` into the MCP `tools/call` shape
-        # `{content:[{type:text,text:...}], isError:false}`, which would
-        # break the Python client's `result.server_version` / `result.client_id`
-        # reads on the handshake response.
-        {
-          "jsonrpc" => "2.0",
-          "result"  => {
-            "server_version" => Core::Compat::SERVER_VERSION,
-            "client_id"      => state.id,
-          },
-          "id"      => request["id"],
-        }
+        handshake_result(request, "client_id" => state.id)
       end
 
-      def reject_handshake(state, request, structured_error)
+      def no_token_error
+        StructuredError.new(-32603, "the plugin has no token; restart SketchUp to create one")
+      end
+
+      # A raw JSON-RPC envelope — not Handlers::Dispatch.build_success_response,
+      # whose tools/call shape {content:[{type:text,text:...}], isError:false}
+      # would hide result.server_version, result.server_proof and
+      # result.client_id from the Python client.
+      def handshake_result(request, result)
+        { "jsonrpc" => "2.0", "result" => result, "id" => request["id"] }
+      end
+
+      # Every refusal before the handshake completes: logged, answered without
+      # a backtrace (M-31), and the socket closed once the answer is written.
+      # The log line carries the client label, code and message — never the
+      # token or a proof.
+      def reject_handshake(state, request, structured_error, tool: "hello", status: "handshake_rejected")
         rid = request.is_a?(Hash) ? request["id"] : nil
-        Logger.log_tool("server", "handshake_rejected",
-          "code=#{structured_error.code} msg=#{structured_error.message}",
+        Logger.log_tool("server", status,
+          "code=#{structured_error.code} msg=#{log_excerpt(structured_error.message)}",
           client_label: state.label)
         state.close_after_response = true
         Errors.build_error_response(structured_error.code,
           structured_error.message,
-          Errors.exception_to_data(structured_error, "hello", {}), rid)
+          Errors.exception_to_data(structured_error, tool, {}, backtrace: false), rid)
+      end
+
+      # A refusal before the handshake can carry up to 4 KiB of the peer's text
+      # (a method name, a version); its log line keeps the first
+      # LOG_EXCERPT_MAX characters, enough for every message of our own.
+      LOG_EXCERPT_MAX = 400
+
+      def log_excerpt(text)
+        text = text.to_s
+        return text if text.length <= LOG_EXCERPT_MAX
+        "#{text[0, LOG_EXCERPT_MAX]}... (#{text.length} chars)"
       end
 
       def write_response(state, response)
@@ -467,14 +563,6 @@ module MCPforSketchUp
         return if state.closed?
         return if state.pending_write_empty?
 
-        if state.pending_write_deadline_at &&
-           monotonic_now > state.pending_write_deadline_at
-          Logger.log_tool("server", "write_timeout",
-            client_label: state.label)
-          close_client(state, "write_timeout")
-          return
-        end
-
         loop do
           n = state.sock.write_nonblock(state.pending_write_bytes)
           state.consume_pending_write(n)
@@ -492,15 +580,16 @@ module MCPforSketchUp
             state.pending_write_deadline_at = monotonic_now + WRITE_DEADLINE_S
           else
             # Defensive: write_nonblock claimed success but wrote zero bytes.
-            # Break out to avoid a tight loop; treat it like WaitWritable —
-            # retry next tick (deadline preserved, so a true stall still fires).
+            # No progress, as with WaitWritable: check the deadline, and retry
+            # next tick if it has not passed.
+            close_if_write_stalled(state)
             return
           end
         end
       rescue IO::WaitWritable
-        # Kernel send-buffer full — preserve buffer + deadline; retry next tick.
-        # No forward progress here, so the deadline is deliberately NOT extended.
-        return
+        # Kernel send-buffer full — no progress, so the deadline is checked
+        # here and NOT extended; buffer and deadline wait for the next tick.
+        close_if_write_stalled(state)
       rescue Errno::EPIPE, Errno::ECONNRESET, IOError
         close_client(state, "write_failed")
       rescue StandardError => e
@@ -511,9 +600,22 @@ module MCPforSketchUp
         close_client(state, "write_error: #{e.class.name}")
       end
 
+      # M-13: the idle deadline is checked only when a write makes no
+      # progress, never before trying. A peer whose socket drained while a long
+      # tool call held the UI thread past WRITE_DEADLINE_S is written to, not
+      # closed; only a socket still full past the deadline is a stall.
+      def close_if_write_stalled(state)
+        deadline = state.pending_write_deadline_at
+        return unless deadline && monotonic_now > deadline
+        Logger.log_tool("server", "write_timeout", client_label: state.label)
+        close_client(state, "write_timeout")
+      end
+
       def encode_response_body(response)
         JSON.generate(response)
-      rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
+      rescue JSON::JSONError, Encoding::UndefinedConversionError => e
+        # M-14: JSON::JSONError covers GeneratorError and NestingError (a
+        # result nested past JSON's depth limit), which is a ParserError.
         Logger.log_error("server.encode", e)
         rid = response.is_a?(Hash) ? response["id"] : nil
         safe_msg = e.message.encode("utf-8", invalid: :replace, undef: :replace)

@@ -87,6 +87,9 @@ Follow this strategy to be effective and avoid common pitfalls.
   copy. To change all copies, edit the definition through eval_ruby; to
   change one, make it unique first (instance.make_unique through
   eval_ruby) and use the new ids of the entities inside it.
+- If a tool says SKETCHUP_MCP_TOKEN is not set or the token is wrong,
+  repeat the message to the user verbatim: only they can copy the token
+  from SketchUp.
 
 # 6. Known traps
 - Group#subtract is REVERSED: A.subtract(B) returns B - A. Inside
@@ -124,7 +127,7 @@ your code: it is the extension's actionable instruction for the user.
 Surface the full message to the user verbatim — do not paraphrase, do
 not retry the same code, do not silently fall back to typed tools
 without telling the user that eval was unavailable. The user can enable Ruby evaluation in
-Plugins → MCP Server → Settings... — the checkbox is «Enable Ruby
+Extensions → MCP Server → Settings... — the checkbox is «Enable Ruby
 evaluation».
 """
 

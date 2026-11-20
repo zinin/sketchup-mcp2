@@ -40,6 +40,10 @@ _ECHO_SERVER = (
 )
 _WAIT = 10.0  # seconds: the longest any wait on the echo server may block
 
+# M-06: the token the echo server is given in SKETCHUP_MCP_TOKEN and the client
+# proves it knows: the full handshake (hello, then auth) runs as in production.
+_TOKEN = "0123456789abcdef" * 4
+
 # The screenshot wrapper decodes png_base64 from the reply, which an echo does
 # not carry, so after the round trip its call returns an error result naming
 # png_base64. Every other wrapper returns the reply as text.
@@ -60,6 +64,7 @@ class _EchoServer:
     def __init__(self) -> None:
         self._proc = subprocess.Popen(
             ["ruby", str(_ECHO_SERVER)],
+            env={**os.environ, "SKETCHUP_MCP_TOKEN": _TOKEN},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
@@ -172,7 +177,7 @@ async def test_every_mcp_tool_reaches_ruby_with_the_arguments_it_sent(
             "contract test needs it to run test/contract/echo_server.rb"
         )
     echo_server = request.getfixturevalue("echo_server")
-    conn = SketchUpConnection("127.0.0.1", echo_server.port, timeout=5)
+    conn = SketchUpConnection("127.0.0.1", echo_server.port, timeout=5, token=_TOKEN)
     sent = []
     send_command = conn.send_command
 
@@ -219,6 +224,6 @@ async def test_every_mcp_tool_reaches_ruby_with_the_arguments_it_sent(
             )
         # One handler line per tool and no other: nothing ran that no tool asked for.
         echo_server.assert_no_more_lines()
-        # The real hello handshake succeeded: the first call went through.
+        # The real handshake (hello, then auth) succeeded: the first call went through.
     finally:
         await conn.aclose()

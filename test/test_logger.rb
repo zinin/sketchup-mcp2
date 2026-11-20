@@ -55,6 +55,49 @@ class TestLogger < Minitest::Test
       last_line)
   end
 
+  # M-21: the statuses a user must see log at WARN, so the default WARN level
+  # shows them; the rest stay at INFO.
+  def test_warn_statuses_log_at_warn
+    MCPforSketchUp::Core::Config.log_level = "WARN"
+    MCPforSketchUp::Core::Logger.log_tool("server", "client_connected")
+    assert_empty captured_lines
+    %w[handshake_rejected auth_failed write_timeout pre_handshake_timeout pending_write_overflow].each do |status|
+      MCPforSketchUp::Core::Logger.log_tool("server", status)
+      assert_match(/\[WARN\] tool=server status=#{status}\z/, last_line)
+    end
+  end
+
+  # M-31: one line is one log record. Control characters in a message (a
+  # model name, an exception message, a peer's input) are escaped, not
+  # emitted, so nothing can forge a line of its own.
+  def test_control_characters_are_escaped
+    MCPforSketchUp::Core::Logger.log("WARN", "a\nb\rc\td\x01e\x7Ff")
+    assert_equal 1, captured_lines.length, captured_lines.inspect
+    assert last_line.end_with?('a\nb\rc\td\x01e\x7Ff'), last_line
+  end
+
+  # Final review minor: C1 controls and the Unicode line separators end a line
+  # in some consoles too.
+  def test_c1_controls_and_unicode_line_separators_are_escaped
+    out = MCPforSketchUp::Core::Logger.sanitize("a\u0085b\u2028c\u2029d\u009Be")
+    assert_equal 'a\u0085b\u2028c\u2029d\u009Be', out
+  end
+
+  # Text read from a socket is binary; a high byte becomes '?' instead of
+  # breaking the escaping.
+  def test_binary_text_with_high_bytes_is_sanitized
+    assert_equal 'ok?\n', MCPforSketchUp::Core::Logger.sanitize("ok\xFF\n".b)
+  end
+
+  def test_backtrace_lines_are_escaped
+    MCPforSketchUp::Core::Config.log_level = "DEBUG"
+    err = RuntimeError.new("boom")
+    err.set_backtrace(["evil.rb:1\n[forged] line", "b.rb:2", "c.rb:3"])
+    MCPforSketchUp::Core::Logger.log_error("server.timer", err)
+    assert_equal 4, captured_lines.length, captured_lines.inspect
+    assert_includes captured_lines[1], 'evil.rb:1\n[forged] line'
+  end
+
   def test_log_error_without_client_label_is_unchanged
     err = RuntimeError.new("boom")
     MCPforSketchUp::Core::Logger.log_error("server.timer", err)

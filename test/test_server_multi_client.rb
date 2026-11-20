@@ -7,6 +7,7 @@ require "json"
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/compat"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/auth"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/framing"
@@ -14,25 +15,24 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/client_state"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/server"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/dispatch"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/system"
+require_relative "support/singleton_stubs"
 require_relative "support/fake_socket"
 require_relative "support/frame_helpers"
 
 class TestServerMultiClient < Minitest::Test
   include FrameHelpers
+  include SingletonStubs
 
-  # Prepend this to read_chunks of any test that wants to drive
-  # post-handshake traffic. The server now requires the first frame
-  # from any client to be a JSON-RPC `hello` carrying client_version.
-  def hello_frame
-    fr("jsonrpc" => "2.0", "method" => "hello",
-       "params" => { "client_version" => MCPforSketchUp::Core::Compat::MIN_PYTHON },
-       "id" => 0)
-  end
+  # A test that drives post-handshake traffic prepends handshake_frames (hello,
+  # then auth: two replies, both with id 0) to the client's first chunk. A test
+  # about the hello reply alone sends hello_frame. use_auth_vectors in setup
+  # gives the server the token and nonce those frames were computed for.
 
   def setup
     MCPforSketchUp::Core::Config.host      = "127.0.0.1"
     MCPforSketchUp::Core::Config.port      = 9876
     MCPforSketchUp::Core::Config.log_level = "ERROR"   # silence INFO chatter
+    use_auth_vectors
   end
 
   # Build a Server with a FakeServer in place of TCPServer and run a
@@ -96,14 +96,13 @@ class TestServerMultiClient < Minitest::Test
     req = fr("jsonrpc" => "2.0", "method" => "tools/call",
              "params" => { "name" => "get_version", "arguments" => {} },
              "id" => 1)
-    sock = FakeSocket.new(read_chunks: [hello_frame + req])
+    sock = FakeSocket.new(read_chunks: [handshake_frames + req])
     fs = FakeServer.new([sock])
     run_one_tick(fs)
     frames = all_frames(sock.written)
-    assert_equal 2, frames.size                # hello reply + get_version reply
-    assert_equal 0, frames[0]["id"]            # hello id
-    assert_equal 1, frames[1]["id"]            # get_version id
-    refute_nil frames[1]["result"]
+    assert_equal 3, frames.size                # hello reply + auth reply + get_version reply
+    assert_equal [0, 0, 1], frames.map { |f| f["id"] }
+    refute_nil frames[2]["result"]
   end
 
   # ---------- Global FIFO across clients ----------
@@ -115,13 +114,13 @@ class TestServerMultiClient < Minitest::Test
     req_b = fr("jsonrpc" => "2.0", "method" => "tools/call",
                "params" => { "name" => "get_version", "arguments" => {} },
                "id" => 200)
-    a = FakeSocket.new(read_chunks: [hello_frame + req_a])
-    b = FakeSocket.new(read_chunks: [hello_frame + req_b])
+    a = FakeSocket.new(read_chunks: [handshake_frames + req_a])
+    b = FakeSocket.new(read_chunks: [handshake_frames + req_b])
     fs = FakeServer.new([a, b])
     run_one_tick(fs)
-    # hello reply (id=0) + get_version reply
-    assert_equal [0, 100], all_frames(a.written).map { |f| f["id"] }
-    assert_equal [0, 200], all_frames(b.written).map { |f| f["id"] }
+    # hello and auth replies (id=0) + get_version reply
+    assert_equal [0, 0, 100], all_frames(a.written).map { |f| f["id"] }
+    assert_equal [0, 0, 200], all_frames(b.written).map { |f| f["id"] }
   end
 
   def test_pipelined_frames_from_one_client_processed_before_next_client
@@ -133,12 +132,12 @@ class TestServerMultiClient < Minitest::Test
     b_chunk = fr("jsonrpc" => "2.0", "method" => "tools/call",
                  "params" => { "name" => "get_version", "arguments" => {} },
                  "id" => 99)
-    a = FakeSocket.new(read_chunks: [hello_frame + a_chunks.join])
-    b = FakeSocket.new(read_chunks: [hello_frame + b_chunk])
+    a = FakeSocket.new(read_chunks: [handshake_frames + a_chunks.join])
+    b = FakeSocket.new(read_chunks: [handshake_frames + b_chunk])
     fs = FakeServer.new([a, b])
     run_one_tick(fs)
-    assert_equal [0, 1, 2, 3], all_frames(a.written).map { |f| f["id"] }
-    assert_equal [0, 99],      all_frames(b.written).map { |f| f["id"] }
+    assert_equal [0, 0, 1, 2, 3], all_frames(a.written).map { |f| f["id"] }
+    assert_equal [0, 0, 99],      all_frames(b.written).map { |f| f["id"] }
   end
 
   # ---------- Per-client error isolation ----------
@@ -149,12 +148,12 @@ class TestServerMultiClient < Minitest::Test
     b_req = fr("jsonrpc" => "2.0", "method" => "tools/call",
                "params" => { "name" => "get_version", "arguments" => {} },
                "id" => 1)
-    b = FakeSocket.new(read_chunks: [hello_frame + b_req])
+    b = FakeSocket.new(read_chunks: [handshake_frames + b_req])
     fs = FakeServer.new([a, b])
     srv = run_one_tick(fs)
     assert a.closed?, "A should be closed on EOF"
     refute b.closed?, "B should remain connected"
-    assert_equal [0, 1], all_frames(b.written).map { |f| f["id"] }
+    assert_equal [0, 0, 1], all_frames(b.written).map { |f| f["id"] }
   end
 
   def test_parse_error_on_one_client_closes_only_that_client
@@ -165,7 +164,7 @@ class TestServerMultiClient < Minitest::Test
     b_req = fr("jsonrpc" => "2.0", "method" => "tools/call",
                "params" => { "name" => "get_version", "arguments" => {} },
                "id" => 7)
-    b = FakeSocket.new(read_chunks: [hello_frame + b_req])
+    b = FakeSocket.new(read_chunks: [handshake_frames + b_req])
     fs = FakeServer.new([a, b])
     run_one_tick(fs)
     assert a.closed?
@@ -173,7 +172,7 @@ class TestServerMultiClient < Minitest::Test
     frames_a = all_frames(a.written)
     assert_equal 1, frames_a.size
     assert_equal(-32700, frames_a[0]["error"]["code"])
-    assert_equal [0, 7], all_frames(b.written).map { |f| f["id"] }
+    assert_equal [0, 0, 7], all_frames(b.written).map { |f| f["id"] }
   end
 
   def test_framing_oversize_closes_only_that_client
@@ -184,12 +183,12 @@ class TestServerMultiClient < Minitest::Test
     b_req = fr("jsonrpc" => "2.0", "method" => "tools/call",
                "params" => { "name" => "get_version", "arguments" => {} },
                "id" => 9)
-    b = FakeSocket.new(read_chunks: [hello_frame + b_req])
+    b = FakeSocket.new(read_chunks: [handshake_frames + b_req])
     fs = FakeServer.new([a, b])
     run_one_tick(fs)
     assert a.closed?
     refute b.closed?
-    assert_equal [0, 9], all_frames(b.written).map { |f| f["id"] }
+    assert_equal [0, 0, 9], all_frames(b.written).map { |f| f["id"] }
   end
 
   def test_disconnect_mid_queue_skips_remaining_pending_frames
@@ -198,14 +197,14 @@ class TestServerMultiClient < Minitest::Test
          "params" => { "name" => "get_version", "arguments" => {} },
          "id" => i)
     }
-    a = FakeSocket.new(read_chunks: [hello_frame + a_chunks.join])
+    a = FakeSocket.new(read_chunks: [handshake_frames + a_chunks.join])
     fs = FakeServer.new([a])
     srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
 
     # Wrap write_response so it closes A right after the first *post-handshake*
-    # write. Hello reply (id=0) is allowed through; A1 (id=1) is the trigger;
+    # write. The hello and auth replies (id=0) are allowed through; A1 (id=1) is the trigger;
     # A2 and A3 should be skipped because state.closed? becomes true.
     closed_after = nil
     orig = MCPforSketchUp::Core::Server.instance_method(:write_response)
@@ -223,8 +222,8 @@ class TestServerMultiClient < Minitest::Test
       MCPforSketchUp::Core::Server.send(:define_method, :write_response, orig)
     end
 
-    assert_equal [0, 1], all_frames(a.written).map { |f| f["id"] },
-      "hello reply + A1 reply only — A2 and A3 skipped after force_close"
+    assert_equal [0, 0, 1], all_frames(a.written).map { |f| f["id"] },
+      "hello and auth replies + A1 reply only — A2 and A3 skipped after force_close"
     assert a.closed?
   end
 
@@ -295,20 +294,20 @@ class TestServerMultiClient < Minitest::Test
              "id" => 1)
     prefix = req.byteslice(0, 10)
     suffix = req.byteslice(10..-1)
-    # Hello arrives complete in tick 1; the tools/call frame is split.
-    a = FakeSocket.new(read_chunks: [hello_frame + prefix])
+    # The handshake arrives complete in tick 1; the tools/call frame is split.
+    a = FakeSocket.new(read_chunks: [handshake_frames + prefix])
     fs = FakeServer.new([a])
     srv = MCPforSketchUp::Core::Server.new
     srv.instance_variable_set(:@server, fs)
     srv.instance_variable_set(:@running, true)
     srv.send(:on_timer_tick)
-    # Only the hello reply lands in tick 1 — the tools/call is still incomplete.
-    assert_equal [0], all_frames(a.written).map { |f| f["id"] },
-      "only the hello reply should be written before the partial frame completes"
+    # Only the handshake replies land in tick 1 — the tools/call is still incomplete.
+    assert_equal [0, 0], all_frames(a.written).map { |f| f["id"] },
+      "only the handshake replies should be written before the partial frame completes"
     a.push_read(suffix)
     srv.send(:on_timer_tick)
     frames = all_frames(a.written)
-    assert_equal [0, 1], frames.map { |f| f["id"] }
+    assert_equal [0, 0, 1], frames.map { |f| f["id"] }
   end
 
   # ---------- D3: non-blocking write path ----------
@@ -319,7 +318,7 @@ class TestServerMultiClient < Minitest::Test
     req = fr("jsonrpc" => "2.0", "method" => "tools/call",
              "params" => { "name" => "get_version", "arguments" => {} },
              "id" => 1)
-    sock = FakeSocket.new(read_chunks: [hello_frame + req])
+    sock = FakeSocket.new(read_chunks: [handshake_frames + req])
     fs = FakeServer.new([sock])
     srv = run_one_tick(fs)
 
@@ -328,7 +327,7 @@ class TestServerMultiClient < Minitest::Test
       "pending_write_bytes should be empty after a single ready tick"
     assert_nil state.pending_write_deadline_at,
       "deadline must be cleared once the buffer drains"
-    assert_equal [0, 1], all_frames(sock.written).map { |f| f["id"] }
+    assert_equal [0, 0, 1], all_frames(sock.written).map { |f| f["id"] }
   end
 
   def test_write_resumes_across_ticks_when_partial
@@ -391,8 +390,8 @@ class TestServerMultiClient < Minitest::Test
     req_b = fr("jsonrpc" => "2.0", "method" => "tools/call",
                "params" => { "name" => "get_version", "arguments" => {} },
                "id" => 200)
-    a = FakeSocket.new(read_chunks: [hello_frame + req_a])
-    b = FakeSocket.new(read_chunks: [hello_frame + req_b])
+    a = FakeSocket.new(read_chunks: [handshake_frames + req_a])
+    b = FakeSocket.new(read_chunks: [handshake_frames + req_b])
     # A raises EPIPE on every write_nonblock — B is normal.
     a.define_singleton_method(:write_nonblock) { |_| raise Errno::EPIPE, "synthetic" }
     fs = FakeServer.new([a, b])
@@ -401,8 +400,8 @@ class TestServerMultiClient < Minitest::Test
     assert a.closed?, "A should be closed when write_nonblock raises EPIPE"
     refute b.closed?, "B must remain connected"
     refute srv.instance_variable_get(:@clients).key?(a)
-    assert_equal [0, 200], all_frames(b.written).map { |f| f["id"] },
-      "B receives both hello reply + get_version reply"
+    assert_equal [0, 0, 200], all_frames(b.written).map { |f| f["id"] },
+      "B receives the hello and auth replies + the get_version reply"
   end
 
   def test_pending_write_overflow_closes_client
@@ -553,10 +552,10 @@ class TestServerMultiClient < Minitest::Test
   end
 
   def test_dispatch_capped_per_tick_preserving_fifo
-    # 1 hello + 60 запросов одним chunk'ом: раньше все 61 диспатчились за
+    # hello + auth + 60 запросов одним chunk'ом: раньше все диспатчились за
     # один тик (флуд мелких фреймов морозит UI SketchUp). Теперь — не больше
     # DISPATCH_MAX_PER_TICK за тик, остаток уходит на следующий, FIFO цел.
-    payload = hello_frame + (1..60).map { |i| gv_frame(i) }.join
+    payload = handshake_frames + (1..60).map { |i| gv_frame(i) }.join
     sock = FakeSocket.new(read_chunks: [payload])
     fs = FakeServer.new([sock])
     srv = run_one_tick(fs)
@@ -568,8 +567,8 @@ class TestServerMultiClient < Minitest::Test
 
     srv.send(:on_timer_tick)
     tick2 = all_frames(sock.written)
-    assert_equal 61, tick2.size, "tick 2 дорабатывает остаток"
-    assert_equal [0] + (1..60).to_a, tick2.map { |f| f["id"] }, "FIFO сохранён"
+    assert_equal 62, tick2.size, "tick 2 дорабатывает остаток"
+    assert_equal [0, 0] + (1..60).to_a, tick2.map { |f| f["id"] }, "FIFO сохранён"
   end
 
   def test_read_backpressure_when_frame_queue_saturated
@@ -606,7 +605,7 @@ class TestServerMultiClient < Minitest::Test
     soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
     flood = (1..(soft_max + 50)).map { |i| gv_frame(i) }.join
     marker = gv_frame(99_999)
-    sock = FakeSocket.new(read_chunks: [hello_frame + flood, marker])
+    sock = FakeSocket.new(read_chunks: [handshake_frames + flood, marker])
     fs = FakeServer.new([sock])
     srv = run_one_tick(fs)
     queue_ids = srv.instance_variable_get(:@frame_queue)
@@ -715,7 +714,7 @@ class TestServerMultiClient < Minitest::Test
   end
 
   def test_handshaked_client_not_touched_by_pre_handshake_deadline
-    sock = FakeSocket.new(read_chunks: [hello_frame])
+    sock = FakeSocket.new(read_chunks: [handshake_frames])
     fs = FakeServer.new([sock])
     srv = run_one_tick(fs)
     state = srv.instance_variable_get(:@clients)[sock]
@@ -755,11 +754,11 @@ class TestServerMultiClient < Minitest::Test
     # одного handshaked-клиента циклически убивал бы все новые подключения
     # по pre-handshake дедлайну (handshaked ставится лишь при диспатче).
     flood = (1..60).map { |i| gv_frame(i) }.join
-    flooder  = FakeSocket.new(read_chunks: [hello_frame + flood])
-    newcomer = FakeSocket.new(read_chunks: [hello_frame])
+    flooder  = FakeSocket.new(read_chunks: [handshake_frames + flood])
+    newcomer = FakeSocket.new(read_chunks: [handshake_frames])
     fs = FakeServer.new([flooder, newcomer])
     srv = run_one_tick(fs)
-    # Тик 1: в очереди 62 фрейма, диспатчнуто 50 — hello новичка (62-й) ждёт.
+    # Тик 1: в очереди 64 фрейма, диспатчнуто 50 — hello и auth новичка ждут.
     state = srv.instance_variable_get(:@clients)[newcomer]
     refute state.handshaked, "precondition: hello новичка ещё не диспатчен"
     assert_operator state.queued_frames, :>, 0,
@@ -791,13 +790,13 @@ class TestServerMultiClient < Minitest::Test
     soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
     cap      = MCPforSketchUp::Core::Server::DISPATCH_MAX_PER_TICK
     flood = (1..(soft_max + 2 * cap + 5)).map { |i| gv_frame(i) }.join
-    flooder  = FakeSocket.new(read_chunks: [hello_frame + flood])
+    flooder  = FakeSocket.new(read_chunks: [handshake_frames + flood])
     newcomer = FakeSocket.new   # hello придёт ПОСЛЕ тика 1
     fs = FakeServer.new([flooder, newcomer])
     srv = run_one_tick(fs)
     # Тик 1: flooder декодирован целиком одним chunk'ом (362 фрейма),
     # диспатчнуто 50 — на входе тиков 2–3 очередь ≥ soft_max: чтений нет.
-    newcomer.push_read(hello_frame)   # hello теперь ЖДЁТ в kernel-буфере
+    newcomer.push_read(handshake_frames)   # hello и auth теперь ЖДУТ в kernel-буфере
     state = srv.instance_variable_get(:@clients)[newcomer]
     assert_equal 0, state.queued_frames,
       "precondition: hello новичка НЕ декодирован (чтение приостановлено)"
@@ -831,7 +830,7 @@ class TestServerMultiClient < Minitest::Test
     # пинили бы слоты MAX_CLIENTS на всё время атаки.
     soft_max = MCPforSketchUp::Core::Server::FRAME_QUEUE_SOFT_MAX
     flood = (1..(soft_max + 55)).map { |i| gv_frame(i) }.join
-    flooder = FakeSocket.new(read_chunks: [hello_frame + flood])
+    flooder = FakeSocket.new(read_chunks: [handshake_frames + flood])
     silent  = FakeSocket.new   # ни hello, ни байта
     fs = FakeServer.new([flooder, silent])
     srv = run_one_tick(fs)
@@ -842,6 +841,28 @@ class TestServerMultiClient < Minitest::Test
     srv.send(:on_timer_tick)   # тик 2: очередь ≥ soft_max, но сокет пуст
     assert silent.closed?, "молчун закрывается по дедлайну и при насыщении"
     refute flooder.closed?, "flooder (handshaked) не задет свипом"
+  end
+
+  # ---------- Settings → Regenerate: close_all_clients ----------
+
+  # Spec §7.1: Regenerate closes every client; a frame still queued for one is
+  # dropped, never answered on a closed socket, and the next tick runs on.
+  def test_close_all_clients_drops_their_queued_frames
+    a = FakeSocket.new(read_chunks: [handshake_frames])
+    b = FakeSocket.new(read_chunks: [handshake_frames])
+    srv = run_one_tick(FakeServer.new([a, b]))
+    a.push_read(gv_frame(5))
+    srv.send(:drain_reads_all_clients)   # a's call is queued, not yet dispatched
+    assert_equal 1, srv.instance_variable_get(:@frame_queue).size
+    written = a.written.dup
+
+    srv.close_all_clients("token_regenerated")
+    assert a.closed?
+    assert b.closed?
+    assert_empty srv.instance_variable_get(:@clients)
+    srv.send(:on_timer_tick)
+    assert_equal written, a.written, "nothing is written for the dropped frame"
+    assert_empty srv.instance_variable_get(:@frame_queue)
   end
 
   # ---------- T-23.1: глобальный FIFO — прямой spy на Dispatch.handle ----------
@@ -859,8 +880,8 @@ class TestServerMultiClient < Minitest::Test
       original.call(request)
     end
     begin
-      a = FakeSocket.new(read_chunks: [hello_frame + gv_frame(1) + gv_frame(2)])
-      b = FakeSocket.new(read_chunks: [hello_frame + gv_frame(101) + gv_frame(102)])
+      a = FakeSocket.new(read_chunks: [handshake_frames + gv_frame(1) + gv_frame(2)])
+      b = FakeSocket.new(read_chunks: [handshake_frames + gv_frame(101) + gv_frame(102)])
       fs = FakeServer.new([a, b])
       run_one_tick(fs)
       assert_equal [1, 2, 101, 102], seen_ids,
@@ -886,9 +907,12 @@ class TestServerMultiClient < Minitest::Test
 
   def test_reads_per_client_capped_per_tick
     cap = MCPforSketchUp::Core::Server::READ_MAX_ITERATIONS
-    # cap+5 чанков по одному мелкому фрейму: за тик — ровно cap чтений,
-    # остаток дочитывается следующим тиком (кап держит UI отзывчивым).
-    chunks = [hello_frame] + (1..(cap + 4)).map { |i| gv_frame(i) }
+    # Handshake, then ONE frame in cap+20 ten-byte pieces: за тик — ровно cap
+    # чтений, остаток дочитывается следующим тиком (кап держит UI
+    # отзывчивым). One frame, not cap+4 small ones: those would meet the
+    # per-client queue cap (PER_CLIENT_QUEUE_MAX, M-15) first.
+    big = gv_frame("x" * ((cap + 20) * 10))
+    chunks = [handshake_frames] + big.bytes.each_slice(10).map { |piece| piece.pack("C*") }
     sock = CountingSocket.new(read_chunks: chunks)
     fs = FakeServer.new([sock])
     srv = run_one_tick(fs)

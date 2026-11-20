@@ -10,15 +10,16 @@ mutation is serialized under the instance lock), and
 :meth:`SketchUpConnection.send_command` for actual JSON-RPC traffic.
 """
 import asyncio
+import hmac
 import json
 import logging
 import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-from sketchup_mcp import compat, config
+from sketchup_mcp import auth, compat, config
 from sketchup_mcp.annotations import read_only_wire_names
-from sketchup_mcp.errors import IncompatibleVersionError, SketchUpError
+from sketchup_mcp.errors import AuthenticationError, IncompatibleVersionError, SketchUpError
 
 logger = logging.getLogger("sketchup_mcp.connection")
 
@@ -53,11 +54,20 @@ class _StaleSocketError(SketchUpError):
 _RETRY_SAFE_TOOLS: frozenset[str] = read_only_wire_names()
 
 
+# A reply to hello or auth, read before the server has proved it knows the
+# token: far above anything the plugin sends there, far below MAX_MESSAGE_SIZE.
+HANDSHAKE_MAX_REPLY = 64 * 1024
+
+
 @dataclass
 class SketchUpConnection:
     host: str
     port: int
     timeout: float
+    # M-06: SKETCHUP_MCP_TOKEN (config.TOKEN for the module singleton). Without
+    # a well-formed one, connect() opens no socket. repr=False: a secret must
+    # not reach a log line or a traceback through repr(connection).
+    token: str | None = field(default=None, repr=False)
     _reader: asyncio.StreamReader | None = None
     _writer: asyncio.StreamWriter | None = None
     _lock: asyncio.Lock | None = field(default=None, init=False, repr=False)
@@ -73,13 +83,15 @@ class SketchUpConnection:
         self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
-        """Open TCP socket and perform the one-time `hello` handshake.
+        """Open TCP socket and perform the one-time handshake (hello, then auth).
 
         On success ``_server_version`` and ``_client_id`` are populated.
         On failure the socket is closed and the original exception is
-        re-raised (``IncompatibleVersionError`` if Ruby replied -32001,
-        ``SketchUpError`` for any other malformed/erroring envelope or
-        for timeout).
+        re-raised (``AuthenticationError`` for a missing or malformed token —
+        before any socket opens — or a proof that does not match;
+        ``IncompatibleVersionError`` if Ruby replied -32001 or predates
+        authentication; ``SketchUpError`` for any other malformed/erroring
+        envelope or for timeout).
 
         CRITICAL: the handshake roundtrip is wrapped in
         ``asyncio.wait_for(..., timeout=self.timeout)`` — without it, a
@@ -96,6 +108,8 @@ class SketchUpConnection:
         # the connect (firewall DROP, half-dead peer) would otherwise block this
         # coroutine until the OS connect timeout (~minutes), hanging MCP startup
         # and defeating app.py's degraded-start design (codex review).
+        # M-06: no socket at all without a token the plugin could have made.
+        auth.check_token(self.token)
         try:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port),
@@ -121,29 +135,69 @@ class SketchUpConnection:
             raise
 
     async def _handshake(self) -> None:
-        """Send `hello` + parse the server's first response.
+        """The two-step handshake (spec §7.2, M-06), one round trip each.
 
-        Every malformed-envelope path (non-dict response, missing
-        result/error dict, JSON decode failure, parse failure) is
-        funneled into ``SketchUpError`` so callers catch a single class.
-        ``IncompatibleVersionError`` is raised only for Ruby's
-        ``-32001`` verdict.
+        1. ``hello {client_version, client_nonce}``: the plugin answers with its
+           version, its nonce and its proof that it knows the token. The
+           version is checked first, then the proof (constant time); a proof
+           that does not match closes the socket before this client proves
+           anything, and the token never crosses the wire.
+        2. ``auth {client_proof}``: the plugin answers with ``client_id``, or
+           -32003 when the proof does not match.
+
+        Every malformed-envelope path is funneled into ``SketchUpError`` so
+        callers catch a single class. ``IncompatibleVersionError`` covers
+        Ruby's ``-32001`` verdict and a plugin that predates authentication,
+        ``AuthenticationError`` a proof that does not match on either side.
         """
-        request = {
-            "jsonrpc": "2.0",
-            "method": "hello",
-            "params": {"client_version": compat.CLIENT_VERSION},
-            "id": 0,
-        }
+        client_nonce = auth.new_nonce()
+        result = await self._handshake_step(
+            "hello", {"client_version": compat.CLIENT_VERSION, "client_nonce": client_nonce})
+        server_version = result.get("server_version")
+        if server_version is None:
+            # New-protocol server replied success but omitted server_version.
+            # Distinct from the "old plugin pre-dates handshake" case that
+            # check_ruby_version handles — surface a clear protocol-violation
+            # error instead of misleading "plugin pre-dates" wording.
+            raise SketchUpError(
+                -32603, "handshake reply missing server_version"
+            )
+        self._server_version = server_version
+        # Belt-and-suspenders: Ruby validated, we validate too. Cheap.
+        # Drift between Python and Ruby compat tables could let one side
+        # accept a peer the other side would reject; this catches it.
+        compat.check_ruby_version(server_version)
+        server_nonce = result.get("server_nonce")
+        server_proof = result.get("server_proof")
+        if server_nonce is None and server_proof is None:
+            raise IncompatibleVersionError(compat._msg_ruby_unauthenticated(server_version))
+        # A nonce and a proof are 64 lowercase hex characters. Anything else is
+        # not the plugin — and checking the form first keeps network text (a
+        # lone surrogate, say) away from the comparison below, which takes only
+        # ASCII str.
+        if not (auth.is_hex64(server_nonce) and auth.is_hex64(server_proof)):
+            raise AuthenticationError(auth.msg_unknown_token(self.host, self.port))
+        expected = auth.proof(self.token, "server", client_nonce, server_nonce)
+        if not hmac.compare_digest(expected, server_proof):
+            raise AuthenticationError(auth.msg_unknown_token(self.host, self.port))
+        result = await self._handshake_step(
+            "auth", {"client_proof": auth.proof(self.token, "client", client_nonce, server_nonce)})
+        self._client_id = result.get("client_id")
+
+    async def _handshake_step(self, method: str, params: dict[str, Any]) -> dict:
+        """Send one handshake request (id 0) and return its ``result``."""
+        request = {"jsonrpc": "2.0", "method": method, "params": params, "id": 0}
         body = json.dumps(request).encode("utf-8")
         if self._writer is None:
             raise SketchUpError(-32603, "internal: writer is None in _handshake")
         self._writer.write(struct.pack(">I", len(body)) + body)
         await self._writer.drain()
         try:
-            response_body = await self._recv_frame()
+            # The reply comes from a server that has not proved it knows the
+            # token yet: read no more of it than the plugin could send here.
+            response_body = await self._recv_frame(HANDSHAKE_MAX_REPLY, "handshake reply")
         except asyncio.IncompleteReadError as e:
-            # Peer accepted TCP but closed before sending the hello reply
+            # Peer accepted TCP but closed before sending the reply
             # (network blip, Ruby crash, sigkill between accept and write).
             # Surface as SketchUpError so callers don't see raw asyncio exns.
             raise SketchUpError(
@@ -156,10 +210,13 @@ class SketchUpConnection:
             ) from e
         try:
             response = json.loads(response_body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (ValueError, RecursionError) as e:
             # UnicodeDecodeError: json.loads(bytes) декодирует UTF-8 сам;
             # не-UTF8 тело кидало голый UnicodeDecodeError мимо таксономии
             # (валил lifespan вместо degraded-старта). T-11/PY-CONN-02.
+            # ValueError covers it and JSONDecodeError; RecursionError is a
+            # reply nested past the parser's depth — a server that has not
+            # proved it knows the token must not crash the client (block C).
             raise SketchUpError(-32700, f"handshake parse error: {e}") from e
         if not isinstance(response, dict):
             raise SketchUpError(
@@ -171,6 +228,8 @@ class SketchUpConnection:
             code = err.get("code", -32000)
             if code == -32001:
                 raise IncompatibleVersionError(err.get("message", "version mismatch"))
+            if code == -32003:
+                raise AuthenticationError(auth.msg_rejected(self.host, self.port))
             raise SketchUpError(
                 code, err.get("message", "handshake failed"), err.get("data")
             )
@@ -180,21 +239,7 @@ class SketchUpConnection:
                 -32603,
                 f"malformed handshake result: {type(result).__name__}",
             )
-        server_version = result.get("server_version")
-        if server_version is None:
-            # New-protocol server replied success but omitted server_version.
-            # Distinct from the "old plugin pre-dates handshake" case that
-            # check_ruby_version handles — surface a clear protocol-violation
-            # error instead of misleading "plugin pre-dates" wording.
-            raise SketchUpError(
-                -32603, "handshake reply missing server_version"
-            )
-        self._server_version = server_version
-        self._client_id = result.get("client_id")
-        # Belt-and-suspenders: Ruby validated, we validate too. Cheap.
-        # Drift between Python and Ruby compat tables could let one side
-        # accept a peer the other side would reject; this catches it.
-        compat.check_ruby_version(server_version)
+        return result
 
     async def disconnect(self) -> None:
         """Close the socket and null the ``_reader``/``_writer`` pair.
@@ -246,18 +291,16 @@ class SketchUpConnection:
         self._writer.write(struct.pack(">I", len(body)) + body)
         await self._writer.drain()
 
-    async def _recv_frame(self) -> bytes:
+    async def _recv_frame(self, max_size: int | None = None, what: str = "message") -> bytes:
         if self._reader is None:
             raise SketchUpError(-32603, "internal: reader is None in _recv_frame")
+        cap = config.MAX_MESSAGE_SIZE if max_size is None else max_size
         header = await self._reader.readexactly(4)
         (length,) = struct.unpack(">I", header)
         if length == 0:
             raise SketchUpError(-32600, "received zero-length frame")
-        if length > config.MAX_MESSAGE_SIZE:
-            raise SketchUpError(
-                -32600,
-                f"message too large: {length} bytes (cap {config.MAX_MESSAGE_SIZE})",
-            )
+        if length > cap:
+            raise SketchUpError(-32600, f"{what} too large: {length} bytes (cap {cap})")
         return await self._reader.readexactly(length)
 
     async def send_command(self, name: str, args: dict[str, Any]) -> Any:
@@ -304,7 +347,15 @@ class SketchUpConnection:
             "params": {"name": name, "arguments": args},
             "id": rid,
         }
-        body = json.dumps(request).encode("utf-8")
+        try:
+            # M-31: allow_nan=False — NaN or infinity is not JSON; Ruby would
+            # answer with a parse error and drop the connection.
+            body = json.dumps(request, allow_nan=False).encode("utf-8")
+        except ValueError as e:
+            raise SketchUpError(
+                -32602,
+                f"arguments for '{name}' contain a number that is not finite (NaN or infinity)",
+            ) from e
         if len(body) > config.MAX_MESSAGE_SIZE:
             raise SketchUpError(
                 -32600,
@@ -372,8 +423,9 @@ class SketchUpConnection:
             raise
         try:
             response = json.loads(response_body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            # См. _handshake: не-UTF8 тело = тот же parse-класс ошибок. T-11.
+        except (ValueError, RecursionError) as e:
+            # См. _handshake_step: не-UTF8 тело и ответ глубже лимита парсера —
+            # тот же parse-класс ошибок. T-11.
             await self.disconnect()
             raise SketchUpError(-32700, f"parse error: {e}") from e
         # Reject malformed non-dict top-level JSON before any .get() call.
@@ -461,7 +513,8 @@ async def get_connection() -> SketchUpConnection:
     async with _get_connection_lock:
         if _connection is None:
             _connection = SketchUpConnection(
-                host=config.HOST, port=config.PORT, timeout=config.TIMEOUT
+                host=config.HOST, port=config.PORT, timeout=config.TIMEOUT,
+                token=config.TOKEN,
             )
         return _connection
 

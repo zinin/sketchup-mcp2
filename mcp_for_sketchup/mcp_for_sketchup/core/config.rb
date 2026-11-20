@@ -1,4 +1,6 @@
 # mcp_for_sketchup/mcp_for_sketchup/core/config.rb
+require "fileutils"
+require "securerandom"
 require "tmpdir"
 
 module MCPforSketchUp
@@ -17,6 +19,10 @@ module MCPforSketchUp
 
       LEVELS           = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3 }.freeze
       MAX_MESSAGE_SIZE = 64 * 1024 * 1024  # 64 MiB; matches Python side
+      # M-15: the cap on a frame until the client completes the handshake —
+      # hello and auth are a few hundred bytes, so nothing larger is buffered
+      # for a client that has not proved it knows the token.
+      PRE_HANDSHAKE_MAX_MESSAGE_SIZE = 4 * 1024
 
       # Validation primitives — kept locally so load_from_defaults! has no
       # dependency on ui/settings_validator (which is loaded later). The dialog
@@ -24,9 +30,18 @@ module MCPforSketchUp
       MAX_HOST_LENGTH = 253
       HOST_CHARSET    = /\A[A-Za-z0-9._\-:]+\z/
 
+      # M-06 (spec §7.1): the MCP token lives in a file of its own,
+      # <application data>/MCPforSketchUp/auth_token (token_path). It is made by
+      # Auth.generate_token, never typed: the challenge-response in the handshake
+      # is only as strong as the token. Not in SketchUp's preferences: SketchUp
+      # writes them to disk only when it closes normally, so after a crash a
+      # regenerated token gave way to the old one (Task 11).
+      TOKEN_DIR_NAME  = "MCPforSketchUp"
+      TOKEN_FILE_NAME = "auth_token"
+
       class << self
         attr_accessor :host, :port, :log_level,
-                      :eval_enabled, :log_to_file, :log_file_path
+                      :eval_enabled, :log_to_file, :log_file_path, :token
       end
 
       # Read persisted prefs into runtime state. Untrusted input — fall back
@@ -74,6 +89,115 @@ module MCPforSketchUp
       end
       private_class_method :coerce_bool_pref
 
+      # The token file: the user's application data, not the Plugins folder (an
+      # uninstall removes that) — %APPDATA% on Windows, ~/Library/Application
+      # Support on macOS, ~/.config anywhere else (tests, development).
+      def self.token_path(env: ENV, platform: RUBY_PLATFORM, home: Dir.home)
+        base =
+          if platform =~ /mswin|mingw|cygwin/
+            env["APPDATA"] || File.join(home, "AppData", "Roaming")
+          elsif platform.include?("darwin")
+            File.join(home, "Library", "Application Support")
+          else
+            File.join(home, ".config")
+          end
+        File.join(base, TOKEN_DIR_NAME, TOKEN_FILE_NAME)
+      end
+
+      # Called once when the plugin loads (main.rb). Keeps a valid token from the
+      # file; a missing or malformed one is replaced by a new token, which is
+      # written. When the write fails the new token still serves this session,
+      # and the next start makes another. A file that cannot be read is left
+      # alone — the token in it may be fine — and this session gets a new one.
+      # The token never reaches a log line.
+      def self.load_token!(path = token_path)
+        with_token_lock(path) { load_token_locked!(path) }
+      end
+
+      def self.load_token_locked!(path)
+        begin
+          saved = File.binread(path).force_encoding(Encoding::UTF_8).scrub("?").strip
+        rescue Errno::ENOENT, Errno::ENOTDIR
+          saved = nil
+        rescue SystemCallError, IOError => e
+          log_warning("config: could not read the MCP token from #{path} (#{e.class}); this session uses a new one")
+          return self.token = Auth.generate_token
+        end
+        return self.token = saved if Auth.hex64?(saved)
+        log_warning("config: #{path} does not hold a valid MCP token; making a new one") unless saved.nil?
+        self.token = Auth.generate_token
+        begin
+          write_token_file(path, token)
+        rescue SystemCallError, IOError => e
+          log_warning("config: could not save the MCP token to #{path} (#{e.class}); a new one will be made at the next start")
+        end
+        token
+      end
+      private_class_method :load_token_locked!
+
+      # Settings → Regenerate. The new token is on disk before it takes effect:
+      # an unwritten one would give way to the old token at the next start, and
+      # the old token would work again. So a failed write raises and keeps the
+      # old one.
+      def self.regenerate_token!(path = token_path)
+        fresh = Auth.generate_token
+        with_token_lock(path) { write_token_file(path, fresh) }
+        self.token = fresh
+      end
+
+      # SketchUp processes of one user share the token file (2026 and 2027, or
+      # two windows), so each read-decide-write holds an exclusive lock on
+      # auth_token.lock: two first starts at once would otherwise each make a
+      # token, and one would be gone at the next start (Codex review, PR #23).
+      # The lock is best effort: when it cannot be taken (no directory, no
+      # permission), the write that follows fails the same way and says so.
+      def self.with_token_lock(path)
+        lock = begin
+          FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
+          file = File.open("#{path}.lock", File::RDWR | File::CREAT | File::BINARY, 0o600)
+          file.flock(File::LOCK_EX)
+          file
+        rescue SystemCallError, IOError
+          file&.close
+          nil
+        end
+        yield
+      ensure
+        lock&.close
+      end
+      private_class_method :with_token_lock
+
+      # Written where a crash cannot undo it: a temporary file next to the
+      # target, flushed to disk, then renamed over it, so the file holds the old
+      # token or the new one, never part of one. The temporary file is this
+      # write's own (process id and a random suffix, created exclusively), and
+      # only it is removed. Private to the user: the directory 0700 and the file
+      # 0600 (on Windows the profile's ACL does it).
+      def self.write_token_file(path, token)
+        tmp = "#{path}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
+        FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
+        File.open(tmp, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600) do |file|
+          file.write(token)
+          file.flush
+          file.fsync
+        end
+        File.rename(tmp, path)
+      ensure
+        begin
+          File.delete(tmp) if tmp && File.exist?(tmp)
+        rescue SystemCallError
+          nil
+        end
+      end
+      private_class_method :write_token_file
+
+      # Guarded like warn_invalid_pref: config.rb can run before core/logger is
+      # loaded, or in a test that loads config.rb alone.
+      def self.log_warning(message)
+        Logger.log("WARN", message) if defined?(Core::Logger)
+      end
+      private_class_method :log_warning
+
       def self.valid_host?(host)
         !host.empty? && host !~ /\s/ && host.length <= MAX_HOST_LENGTH && host =~ HOST_CHARSET
       end
@@ -102,9 +226,11 @@ module MCPforSketchUp
       # partial write may still leave the NON-security keys (host/port/log_level/
       # log_to_file/log_file_path) in a mixed new/old state; that is reconciled
       # on the next SketchUp restart when load_from_defaults! re-reads each pref.
-      # eval_enabled is exempt: it is persisted LAST (see the writes array
-      # below) so it never reaches disk unless every other key already
-      # succeeded — the gate is fail-closed on disk too, not just in-session.
+      # eval_enabled is exempt, both ways fail-closed (see the writes array
+      # below): opening the gate is persisted LAST, so it never reaches disk
+      # unless every other key already succeeded; closing it (M-31) is
+      # persisted FIRST and never rolled back, so a save that fails later
+      # cannot reopen it, in the session or on disk.
       # write_default==false is a vanishingly-rare fault (corrupt prefs, disk
       # full); the rollback + raise paths are covered by FailingWriter tests in
       # test_config.rb.
@@ -131,8 +257,13 @@ module MCPforSketchUp
           self.eval_enabled   = (eval_enabled == true) unless eval_enabled.nil?
           self.log_to_file    = !!log_to_file    unless log_to_file.nil?
           self.log_file_path  = log_file_path    unless log_file_path.nil?
+          closing = !eval_enabled.nil? && self.eval_enabled == false
 
-          writes = [
+          writes = []
+          # M-31: closing the gate is persisted FIRST — before any write that
+          # could fail — and the rescue below keeps it closed.
+          writes << ["eval_enabled",  false] if closing
+          writes += [
             ["host",          host],
             ["port",          port_int],
             ["log_level",     log_level],
@@ -144,7 +275,7 @@ module MCPforSketchUp
           # closed: any earlier failure aborts before this write (gate keeps its
           # prior closed value), and if this write itself fails it is likewise
           # never persisted. Disk-level fail-closed for the code-exec gate.
-          writes << ["eval_enabled",  self.eval_enabled]   unless eval_enabled.nil?
+          writes << ["eval_enabled",  true]   if !eval_enabled.nil? && !closing
           writes.each do |key, value|
             raise "Sketchup.write_default failed for #{key}" unless writer.write_default(SECTION, key, value)
           end
@@ -155,7 +286,8 @@ module MCPforSketchUp
           self.host          = snapshot[:host]
           self.port          = snapshot[:port]
           self.log_level     = snapshot[:log_level]
-          self.eval_enabled  = snapshot[:eval_enabled]
+          # A gate this call closed stays closed (M-31).
+          self.eval_enabled  = closing ? false : snapshot[:eval_enabled]
           self.log_to_file   = snapshot[:log_to_file]
           self.log_file_path = snapshot[:log_file_path]
           raise

@@ -129,6 +129,28 @@ async def test_ruby_error_is_an_error_result_with_the_same_text(mock_send_comman
     assert "tool=x" in text
 
 
+# M-06: the user must act on a token problem, so its message reaches the client
+# verbatim — no "[code]" prefix, no tool/params tail — like the eval-gate one.
+async def test_authentication_error_is_an_error_result_verbatim(mock_send_command, mock_ctx):
+    from sketchup_mcp.errors import AuthenticationError
+    from sketchup_mcp.tools import _call
+
+    message = ("SKETCHUP_MCP_TOKEN is not set. Copy the token from SketchUp (Extensions → "
+               "MCP Server → Settings...) into SKETCHUP_MCP_TOKEN in the MCP client's config, "
+               "then restart the MCP client.")
+    mock_send_command.send_command.side_effect = AuthenticationError(message)
+    assert _error_text(await _call(mock_ctx, "get_model_info")) == message
+
+
+# M-31: a peer may put anything under error.data; format_error reads it as a dict.
+def test_non_dict_error_data_is_normalised():
+    assert SketchUpError(1, "m", "x").data == {"raw": "x"}
+    assert SketchUpError(1, "m", ["a"]).data == {"raw": ["a"]}
+    assert SketchUpError(1, "m", None).data == {}
+    assert SketchUpError(1, "m", {"tool": "t"}).data == {"tool": "t"}
+    assert format_error(SketchUpError(1, "m", "x")).startswith("[1] m — tool=?")
+
+
 async def test_call_fills_tool_name_when_error_lacks_it(mock_send_command, mock_ctx):
     """A locally-raised transport error carries no 'tool' in data (renders tool=?);
     _call must fill it from the tool name so format_error shows tool=<name>."""
@@ -481,7 +503,7 @@ async def test_eval_gate_message_is_an_error_result_verbatim(
     """
     from sketchup_mcp.tools import eval_ruby
 
-    message = "eval_ruby is disabled. Open Plugins → MCP Server → Settings..."
+    message = "eval_ruby is disabled. Open Extensions → MCP Server → Settings..."
     mock_send_command.send_command.side_effect = SketchUpError(
         -32010, message, {"tool": "eval_ruby", "params": {}},
     )

@@ -10,6 +10,11 @@ module MCPforSketchUp
       # cluster together. SketchUp uses this only for remembering dialog
       # position/size — not related to our host/port/log_level prefs.
       DIALOG_PREFS = "#{MCPforSketchUp::Core::Config::SECTION}_SettingsDialog".freeze
+      # The window's content area, in logical pixels: SketchUp multiplies them
+      # by the display scaling. The settings are one compact column (Task 10)
+      # and scroll inside it when they have to.
+      DIALOG_WIDTH  = 560
+      DIALOG_HEIGHT = 400
 
       @dialog = nil
 
@@ -24,17 +29,34 @@ module MCPforSketchUp
         end
         @dialog = build_dialog
         @dialog.show
+        fit_window(@dialog)
       end
+
+      # SketchUp saves a dialog's size under its preferences_key and may reopen
+      # it at that size — 500×780 from releases before the compact layout — so
+      # the size is set again once the dialog is shown. set_content_size came
+      # with SketchUp 2021.1; before it, set_size sets the outer frame.
+      def self.fit_window(dialog)
+        if dialog.respond_to?(:set_content_size)
+          dialog.set_content_size(DIALOG_WIDTH, DIALOG_HEIGHT)
+        else
+          dialog.set_size(DIALOG_WIDTH, DIALOG_HEIGHT)
+        end
+      end
+      private_class_method :fit_window
 
       def self.build_dialog
         dialog = ::UI::HtmlDialog.new(
-          dialog_title:    DIALOG_TITLE,
-          preferences_key: DIALOG_PREFS,
-          scrollable:      true,
-          resizable:       false,
-          width:           500,
-          height:          680,
-          style:           ::UI::HtmlDialog::STYLE_DIALOG
+          dialog_title:     DIALOG_TITLE,
+          preferences_key:  DIALOG_PREFS,
+          scrollable:       true,
+          resizable:        false,
+          # width and height are the content area, not the outer frame with
+          # its title bar (SketchUp 2021.1+).
+          use_content_size: true,
+          width:            DIALOG_WIDTH,
+          height:           DIALOG_HEIGHT,
+          style:            ::UI::HtmlDialog::STYLE_DIALOG
         )
 
         dialog.add_action_callback("load_state") { |_ctx|       on_load_state(dialog) }
@@ -43,6 +65,11 @@ module MCPforSketchUp
         # Windows-quirk reason we wrap UI.messagebox below — cheap insurance.
         # close_dialog_safely guarantees @dialog is reset even if close raises.
         dialog.add_action_callback("cancel")     { |_ctx|       ::UI.start_timer(0, false) { close_dialog_safely(dialog) } }
+        # M-06: Regenerate shows a native confirm, so it too leaves the
+        # action_callback frame first (the Windows messagebox quirk below).
+        dialog.add_action_callback("regenerate_token") { |_ctx| ::UI.start_timer(0, false) { on_regenerate_token(dialog) } }
+        # §7.3: JavaScript cannot resolve names, so the host warning asks Ruby.
+        dialog.add_action_callback("check_host") { |_ctx, host| on_check_host(dialog, host) }
 
         # Drop the @dialog singleton on close (Save / Cancel / OS X-button) so
         # the next `show` rebuilds a fresh HtmlDialog instead of probing a
@@ -69,6 +96,10 @@ module MCPforSketchUp
           eval_enabled:   MCPforSketchUp::Core::Config.eval_enabled?,
           running:        MCPforSketchUp::Core::Application.running?,
           current:        MCPforSketchUp::Core::Application.running_config,
+          # M-06: shown read-only, for Copy; the user never types it.
+          token:          MCPforSketchUp::Core::Config.token,
+          # §7.3: the saved host, by the check the server's bind warning uses.
+          host_loopback:  MCPforSketchUp::Core::Net.loopback?(MCPforSketchUp::Core::Config.host),
         }
       end
 
@@ -191,15 +222,64 @@ module MCPforSketchUp
       def self.confirm_eval_enable
         answer = ::UI.messagebox(
           "You are about to enable Ruby evaluation.\n\n" \
-          "This lets anything that can connect to the MCP server's port — " \
-          "any local process, and other machines if Host is not a loopback " \
-          "address — run arbitrary Ruby code inside SketchUp with FULL " \
-          "access to your filesystem, network, and shell.\n\n" \
+          "This lets any MCP client that has the token run arbitrary Ruby code " \
+          "inside SketchUp with FULL access to your filesystem, network, and " \
+          "shell. The token keeps out clients that do not have it; the traffic " \
+          "itself is not encrypted.\n\n" \
           "Only enable this on a machine and network you trust.\n\n" \
           "Continue?",
           ::MB_YESNO,
         )
         answer == ::IDYES
+      end
+
+      REGENERATE_PROMPT =
+        "Regenerate the MCP token?\n\n" \
+        "Every connected MCP client is disconnected now, and each one needs the " \
+        "new token in SKETCHUP_MCP_TOKEN (and a restart of that client) before " \
+        "it can connect again."
+
+      # Blocking native confirm, like confirm_eval_enable; the caller defers it
+      # out of the action_callback frame.
+      def self.confirm_regenerate
+        ::UI.messagebox(REGENERATE_PROMPT, ::MB_YESNO) == ::IDYES
+      end
+
+      # Settings → Regenerate (spec §7.1). The new token is saved before it takes
+      # effect; then every client is closed, so sessions opened with the old
+      # token end, and the dialog shows the new token — in the token field
+      # only, so edits the user has not saved stay in the form. A failed save
+      # keeps the old token, and the clients using it. Every path answers
+      # onTokenResult, which re-enables the button the dialog disabled.
+      def self.on_regenerate_token(dialog)
+        unless confirm_regenerate
+          dialog.execute_script("window.onTokenResult(#{js_safe_json({ ok: false, cancelled: true })})")
+          return
+        end
+        begin
+          MCPforSketchUp::Core::Config.regenerate_token!
+        rescue StandardError => e
+          MCPforSketchUp::Core::Logger.log_error("settings_dialog.regenerate_token", e)
+          result = { ok: false, error: "Could not save the new token: #{e.message.to_s.scrub('?')}" }
+          dialog.execute_script("window.onTokenResult(#{js_safe_json(result)})")
+          return
+        end
+        MCPforSketchUp::Core::Application.disconnect_clients("token_regenerated")
+        result = { ok: true, token: MCPforSketchUp::Core::Config.token }
+        dialog.execute_script("window.onTokenResult(#{js_safe_json(result)})")
+      rescue StandardError => e
+        report_general_error(dialog, e, tag: "settings_dialog.regenerate_token")
+      end
+
+      # §7.3: whether the host typed in the dialog is loopback, by the server's
+      # check, without a name lookup: it runs as the user types, on SketchUp's
+      # UI thread (the dialog debounces the calls). A name counts as not
+      # loopback until it is saved; the saved host is then judged with a lookup.
+      def self.on_check_host(dialog, host)
+        result = { host: host.to_s, loopback: MCPforSketchUp::Core::Net.loopback?(host, resolve: false) }
+        dialog.execute_script("window.onHostCheck(#{js_safe_json(result)})")
+      rescue StandardError => e
+        MCPforSketchUp::Core::Logger.log_error("settings_dialog.check_host", e)
       end
 
       # Report an unexpected exception to the dialog as a _general error.
