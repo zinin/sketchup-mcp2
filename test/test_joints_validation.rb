@@ -21,6 +21,7 @@ end
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/joints"
 
 class TestJointsValidation < Minitest::Test

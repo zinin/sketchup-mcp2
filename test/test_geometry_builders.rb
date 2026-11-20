@@ -49,6 +49,7 @@ module Sketchup
   class Face; end unless defined?(Sketchup::Face)
 end
 
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 
 class TestGeometryBuilders < Minitest::Test

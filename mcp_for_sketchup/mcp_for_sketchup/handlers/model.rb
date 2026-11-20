@@ -7,6 +7,7 @@ module MCPforSketchUp
       V = MCPforSketchUp::Helpers::Validation
       E = MCPforSketchUp::Helpers::Entities
       U = MCPforSketchUp::Helpers::Units
+      O = MCPforSketchUp::Helpers::Operation
 
       DEFAULT_MAX_DEPTH = 3
       DEFAULT_LIMIT = 50
@@ -272,14 +273,9 @@ module MCPforSketchUp
       def self.create_layer(params)
         name = V.require_string(params, "name")
         m = E.active_model!
-        m.start_operation("Create Layer (#{name})", true)
-        begin
+        O.run(m, "Create Layer (#{name})") do
           layer = m.layers.add(name)
-          m.commit_operation
           { "id" => layer.entityID, "name" => layer.name, "visible" => layer.visible? }
-        rescue StandardError
-          MCPforSketchUp::Handlers::Geometry.safe_abort(m)
-          raise
         end
       end
 
@@ -288,7 +284,7 @@ module MCPforSketchUp
       # SketchUp's Ruby API has no Model#undo. Programmatic undo dispatches the
       # editUndo action via Sketchup.send_action — this triggers the same code
       # path as Edit → Undo in the menu, popping one entry off the undo stack
-      # built by start_operation/commit_operation.
+      # built by the handlers' operations (Helpers::Operation.run).
 
       def self.undo(_params)
         E.active_model!  # ensure a model is active; raises if not

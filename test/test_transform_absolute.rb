@@ -17,6 +17,7 @@ module MCPforSketchUp
     module Units; end
   end
 end
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 
 class TestTransformAbsolute < Minitest::Test

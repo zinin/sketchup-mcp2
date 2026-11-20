@@ -6,17 +6,7 @@ module MCPforSketchUp
       E = MCPforSketchUp::Helpers::Entities
       G = MCPforSketchUp::Helpers::Geometry
       U = MCPforSketchUp::Helpers::Units
-
-      # Wrap abort_operation so its own potential exception (NoMethodError on
-      # older SU, "no operation active" if double-abort) never shadows the
-      # original handler exception.
-      def self.safe_abort(model)
-        model.abort_operation if model.respond_to?(:abort_operation)
-      rescue StandardError => e
-        MCPforSketchUp::Core::Logger.log("DEBUG",
-          "Geometry.safe_abort: model.abort_operation raised: " \
-          "#{e.class}: #{e.message}")
-      end
+      O = MCPforSketchUp::Helpers::Operation
 
       def self.create_component(params)
         type = V.require_enum(params, "type", %w[cube cylinder cone sphere])
@@ -36,8 +26,7 @@ module MCPforSketchUp
         name = params.key?("name") ? V.require_string(params, "name") : nil
 
         model = E.active_model!
-        model.start_operation("Create Component (#{type.capitalize})", true)
-        begin
+        O.run(model, "Create Component (#{type.capitalize})") do
           group = case type
                   when "cube"     then build_cube(model.active_entities, pos, dims)
                   when "cylinder" then build_cylinder(model.active_entities, pos, dims, segments)
@@ -45,11 +34,7 @@ module MCPforSketchUp
                   when "sphere"   then build_sphere(model.active_entities, pos, dims, segments)
                   end
           group.name = name if name
-          model.commit_operation
           describe_entity(group)
-        rescue StandardError
-          safe_abort(model)
-          raise
         end
       end
 
@@ -86,16 +71,11 @@ module MCPforSketchUp
       def self.delete_component(params)
         id = V.require_id(params)
         model = E.active_model!
-        model.start_operation("Delete Component", true)
-        begin
+        O.run(model, "Delete Component") do
           entity = E.find!(id)
           E.require_group_or_component!(entity, "entity #{id}")
           entity.erase!
-          model.commit_operation
           { "ok" => true }
-        rescue StandardError
-          safe_abort(model)
-          raise
         end
       end
 
@@ -129,8 +109,7 @@ module MCPforSketchUp
         position    = position_mm&.map { |v| U.mm_to_inch(v) }
 
         model = E.active_model!
-        model.start_operation("Transform Component", true)
-        begin
+        O.run(model, "Transform Component") do
           entity = E.find!(id)
           E.require_group_or_component!(entity, "entity #{id}")
           if rotation
@@ -145,11 +124,7 @@ module MCPforSketchUp
             entity.transform!(Geom::Transformation.translation(
               Geom::Point3d.new(delta[0], delta[1], delta[2])))
           end
-          model.commit_operation
           describe_entity(entity)
-        rescue StandardError
-          safe_abort(model)
-          raise
         end
       end
 

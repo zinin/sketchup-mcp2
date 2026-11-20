@@ -5,6 +5,7 @@ module MCPforSketchUp
       V = MCPforSketchUp::Helpers::Validation
       E = MCPforSketchUp::Helpers::Entities
       U = MCPforSketchUp::Helpers::Units
+      O = MCPforSketchUp::Helpers::Operation
 
       TOUCH_TOL   = 0.001 # SketchUp's tolerance, inches
       VOLUME_RTOL = 1e-4
@@ -43,8 +44,7 @@ module MCPforSketchUp
         depth      = U.mm_to_inch(depth_mm)
 
         model = E.active_model!
-        model.start_operation("Mortise and Tenon", true)
-        begin
+        O.run(model, "Mortise and Tenon") do
           mortise_board = E.find!(mortise_id)
           tenon_board   = E.find!(tenon_id)
           E.require_group_or_component!(mortise_board, "mortise board")
@@ -68,18 +68,13 @@ module MCPforSketchUp
           E.restore_identity!(mortise, mortise_identity)
           E.restore_identity!(tenon,   tenon_identity)
 
-          # The response is built before commit_operation: commit has been
-          # seen to invalidate the proxies of solid-operation results
-          # (operations.rb, run_edge_op).
-          response = {
+          # The response is the block's value, so it is built before
+          # commit_operation: commit has been seen to invalidate the proxies
+          # of solid-operation results (operations.rb, run_edge_op).
+          {
             "mortise" => MCPforSketchUp::Handlers::Geometry.describe_entity(mortise),
             "tenon"   => MCPforSketchUp::Handlers::Geometry.describe_entity(tenon)
           }
-          model.commit_operation
-          response
-        rescue StandardError
-          MCPforSketchUp::Handlers::Geometry.safe_abort(model)
-          raise
         end
       end
 
