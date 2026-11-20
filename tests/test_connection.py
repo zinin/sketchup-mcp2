@@ -1078,7 +1078,8 @@ async def test_wrong_server_proof_is_refused_without_auth(auth_vectors):
 
 
 async def test_plugin_without_nonce_is_too_old(auth_vectors):
-    # A 0.4.0 plugin answers hello the old way: a version and a client id.
+    # A plugin that passes the version check but answers hello the old way —
+    # a version and a client id, no nonce and no proof.
     old = encode_frame(json.dumps({"jsonrpc": "2.0", "id": 0, "result": {
         "server_version": compat.MIN_RUBY, "client_id": 0}}).encode("utf-8"))
     async with FakeServer([old]) as fs:
