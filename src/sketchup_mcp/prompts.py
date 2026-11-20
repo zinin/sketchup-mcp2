@@ -54,9 +54,10 @@ Follow this strategy to be effective and avoid common pitfalls.
   an error. When bbox_mm is present, read it to confirm the result matches
   the intent before the next step (and to relocate the entity if its id
   becomes stale after destructive operations).
-- create_mortise_tenon returns ONE OBJECT PER BOARD — {mortise, tenon},
-  each {id, name, type, bbox_mm} — plus boolean_cuts {attempted, failed}:
-  treat failed > 0 as a partial failure and verify via bbox_mm.
+- create_mortise_tenon returns {mortise, tenon}, each {id, name, type,
+  bbox_mm}. Both boards come back with new ids and keep their names. The
+  boards must touch face to face; a joint that cannot be built is
+  refused, and nothing is half-built.
 - Other tools — delete_component, create_layer, undo, list/find
   queries, get_model_info, get_selection — have their own response
   shapes; see the tool docs.

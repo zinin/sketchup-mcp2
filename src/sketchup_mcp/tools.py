@@ -295,21 +295,33 @@ async def create_mortise_tenon(
     height: Annotated[float, Field(gt=0, description="Joint height in mm")] = 25.0,
     depth: Annotated[float, Field(gt=0, description="Joint depth in mm")] = 10.0,
     offset_x: Annotated[float, Field(
-        description="Joint offset from the board face's center along X, mm")] = 0.0,
+        description="Joint offset from the center of the contact area along X, mm")] = 0.0,
     offset_y: Annotated[float, Field(
-        description="Joint offset from the board face's center along Y, mm")] = 0.0,
+        description="Joint offset from the center of the contact area along Y, mm")] = 0.0,
     offset_z: Annotated[float, Field(
-        description="Joint offset from the board face's center along Z, mm")] = 0.0,
+        description="Joint offset from the center of the contact area along Z, mm")] = 0.0,
 ) -> str:
-    """Create a mortise-and-tenon joint between two boards.
+    """Create a mortise-and-tenon joint between two boards that touch face to face.
 
-    All dimensions in millimeters; offsets shift the joint from the board
-    face's center. Defaults are sized for ~100 mm boards. The two boards must
-    already touch/overlap along the joint axis.
+    All dimensions in millimeters. The boards must be solid groups or
+    component instances in the same parent, rotated only by multiples of 90
+    degrees, and touch along one face: no gap and no overlap. The joint is centred on
+    the area where they touch; offsets move it along the two axes across the
+    joint (the offset along the joint axis is ignored). width runs along the
+    first cross axis and height along the second: for a joint along X, width
+    is along Y and height along Z; along Y, width along X and height along Z;
+    along Z, width along X and height along Y. depth is how far the tenon
+    reaches into the mortise board; a depth beyond its thickness makes a
+    through mortise. The joint must fit inside the contact area and may reach
+    its edge. Defaults are sized for ~100 mm boards.
 
-    Returns: JSON {mortise: {id, name, type, bbox_mm|null}, tenon: {...},
-    boolean_cuts: {attempted, failed}} — non-zero failed means some cuts did
-    not apply (likely non-manifold geometry); verify via bbox_mm.
+    The mortise is cut into the mortise board and the tenon is joined to the
+    tenon board as one solid. Both boards come back as new groups with new
+    ids and keep their names, tags and materials. A joint that cannot be
+    built is refused: -32602 for boards that do not suit, -32603 when
+    SketchUp's solid operations fail. Nothing is half-built.
+
+    Returns: JSON {mortise: {id, name, type, bbox_mm|null}, tenon: {...}}.
     """
     return await _call(
         ctx,
