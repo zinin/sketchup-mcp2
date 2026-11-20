@@ -5,24 +5,33 @@ require "minitest/autorun"
 require "set"
 
 module Sketchup
+  # parent stays nil (the walk up the parents stops at once) unless a test
+  # sets it; a group's definition and a definition's instances default to a
+  # fresh definition and an empty list. Identical in test_collect_components,
+  # test_model_empty_bbox and test_model_pagination: under run_all the three
+  # reopen the same classes.
   class Group
-    attr_accessor :entities, :name, :entityID, :transformation, :bounds, :layer
+    attr_accessor :entities, :name, :entityID, :transformation, :bounds, :layer, :parent
+    attr_writer :definition
     def initialize
       @transformation = Geom::Transformation.new
       @entities = []
     end
+    def definition; @definition ||= Sketchup::ComponentDefinition.new; end
     def valid?; true; end
   end
 
   class ComponentDefinition
-    attr_accessor :entities, :entityID
+    attr_accessor :entities, :entityID, :name
+    attr_writer :instances
     def initialize
       @entities = []
     end
+    def instances; @instances ||= []; end
   end
 
   class ComponentInstance
-    attr_accessor :definition, :name, :entityID, :transformation, :bounds, :layer
+    attr_accessor :definition, :name, :entityID, :transformation, :bounds, :layer, :parent
     def initialize
       @transformation = Geom::Transformation.new
     end
@@ -49,6 +58,7 @@ module Geom
   class Transformation
     def initialize; end
     def *(other); other; end
+    def to_a; [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]; end
   end
 end
 
@@ -58,6 +68,7 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/model"
 
 class TestModelPagination < Minitest::Test
@@ -125,7 +136,7 @@ class TestModelPagination < Minitest::Test
     with_model_stub do
       page = M.list_components({ "limit" => 2, "response_format" => "concise" })
       entry = page["components"].first
-      assert_equal %w[depth id layer name type], entry.keys.sort
+      assert_equal %w[depth id layer name shared type], entry.keys.sort
       refute entry.key?("bbox_mm")
     end
   end
@@ -190,16 +201,17 @@ class TestModelPagination < Minitest::Test
     end
   end
 
-  def test_find_component_by_id_early_exit_does_not_touch_later_siblings
-    # Бомба на id=7: обход, дошедший до последнего сиблинга ПОСЛЕ находки
-    # id=1, взорвётся. Ранний выход обязан вернуться до неё.
-    bomb = @groups.last
-    bomb.define_singleton_method(:entityID) { raise "full traversal detected" }
+  def test_get_component_info_walks_up_instead_of_traversing_the_model
+    # M-19: get_component_info идёт от entity вверх по родителям
+    # (Frames.placement), а не обходит модель от корня. Бомба на
+    # model.entities: любой обход взорвётся.
+    target = @groups[0]
+    @model.define_singleton_method(:entities) { raise "model traversal detected" }
+    @model.define_singleton_method(:find_entity_by_id) { |id| id == 1 ? target : nil }
     with_model_stub do
-      found = M.find_component_by_id(
-        @model.entities, 1, Geom::Transformation.new,
-        depth: 0, max_depth: 64, seen: Set.new)
-      assert_equal "G1", found["name"]
+      info = M.get_component_info({ "id" => 1 })
+      assert_equal "G1", info["name"]
+      assert_equal 0, info["depth"]
     end
   end
 

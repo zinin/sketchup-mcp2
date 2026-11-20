@@ -8,17 +8,11 @@ module MCPforSketchUp
       E = MCPforSketchUp::Helpers::Entities
       U = MCPforSketchUp::Helpers::Units
       O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       DEFAULT_MAX_DEPTH = 3
       DEFAULT_LIMIT = 50
       LIMIT_MAX     = 500   # верхняя граница limit — зеркало Python Field(le=500)
-
-      # get_component_info reuses find_component_by_id (see below) so a nested
-      # entity's bbox is world-correct. That traversal needs a depth bound;
-      # this one is deliberately generous (64) — it only limits how deeply
-      # nested an entity can be and still resolve via the world-frame path,
-      # falling back to describe_component (parent-frame) only beyond it.
-      LOOKUP_MAX_DEPTH = 64
 
       # ===== get_model_info ==================================================
 
@@ -31,7 +25,11 @@ module MCPforSketchUp
           "units"       => "mm",
           "bounding_box_mm" => bbox_mm_or_nil(bb),
           "entity_count" => m.entities.length,
-          "layers"       => m.layers.map(&:name)
+          "layers"       => m.layers.map(&:name),
+          # The groups and components open for editing, outermost first:
+          # create_component builds in the last one, and refuses while any of
+          # them is shared (Frames.require_open_path_unshared!).
+          "editing"      => F.editing(m)
         }
       end
 
@@ -43,16 +41,18 @@ module MCPforSketchUp
       # children of every distinct instance of a shared definition (e.g.
       # four chairs around a table). Bounds are returned in WORLD coordinates
       # (chain of parent transformations applied) so Claude doesn't have to
-      # know about local-space nesting.
+      # know about local-space nesting. Every row carries `shared`: true for
+      # the contents of a definition placed more than once, which the
+      # mutating tools refuse to edit; a component row also carries its
+      # `definition` name.
 
       def self.list_components(params)
         recursive = V.optional_bool(params, "recursive", false)
         max_depth = V.optional_int_range(params, "max_depth", min: 1, max: 10, default: DEFAULT_MAX_DEPTH)
         limit, offset, response_format = pagination_params(params)
         m = E.active_model!
-        identity = Geom::Transformation.new
         seen = Set.new
-        components = collect_components(m.entities, identity,
+        components = collect_components(m.entities, F::IDENTITY,
                                         recursive: recursive,
                                         depth: 0,
                                         max_depth: max_depth,
@@ -60,19 +60,20 @@ module MCPforSketchUp
         paginate(components, limit, offset, response_format)
       end
 
-      # parent_t is the accumulated world transformation; bounds in describe
-      # use it to project back to world space.
+      # parent_matrix is the accumulated world matrix (Helpers::Frames);
+      # describe_component maps the bounds through it to world space.
+      # `shared` is true below a definition with more than one instance.
       #
       # `seen` tracks ComponentDefinition IDs that are currently active on the
       # recursion *path* — definitions are added before descending and removed
       # after. This blocks true cycles (a definition that contains itself)
       # without skipping siblings that merely share a definition.
-      def self.collect_components(entities, parent_t, recursive:, depth:, max_depth:, seen:)
+      def self.collect_components(entities, parent_matrix, recursive:, depth:, max_depth:, seen:, shared: false)
         out = []
         return out if depth > max_depth
         entities.each do |entity|
           next unless entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
-          out << describe_component(entity, parent_t, depth: depth)
+          out << describe_component(entity, parent_matrix, depth: depth, shared: shared)
           next unless recursive
           def_id = nil
           if entity.is_a?(Sketchup::ComponentInstance)
@@ -82,12 +83,13 @@ module MCPforSketchUp
           end
           begin
             sub = E.entity_collection(entity)
-            child_t = parent_t * entity.transformation
-            out.concat(collect_components(sub, child_t,
+            child_matrix = F.multiply(parent_matrix, F.matrix_of(entity.transformation))
+            out.concat(collect_components(sub, child_matrix,
                                           recursive: true,
                                           depth: depth + 1,
                                           max_depth: max_depth,
-                                          seen: seen))
+                                          seen: seen,
+                                          shared: shared || F.shared?(entity.definition)))
           ensure
             seen.delete(def_id) if def_id
           end
@@ -95,69 +97,32 @@ module MCPforSketchUp
         out
       end
 
-      # T-07: тот же DFS, что collect_components (включая path-local cycle
-      # guard), но с ранним выходом на первом совпадении id — get_component_info
-      # больше не обходит всю модель ради одного entity.
-      def self.find_component_by_id(entities, target_id, parent_t, depth:, max_depth:, seen:)
-        return nil if depth > max_depth
-        entities.each do |entity|
-          next unless entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
-          return describe_component(entity, parent_t, depth: depth) if entity.entityID == target_id
-          def_id = nil
-          if entity.is_a?(Sketchup::ComponentInstance)
-            def_id = entity.definition.entityID
-            next if seen.include?(def_id)
-            seen.add(def_id)
-          end
-          begin
-            found = find_component_by_id(E.entity_collection(entity), target_id,
-                                         parent_t * entity.transformation,
-                                         depth: depth + 1, max_depth: max_depth,
-                                         seen: seen)
-            return found if found
-          ensure
-            seen.delete(def_id) if def_id
-          end
-        end
-        nil
+      # One row: {id, name, type, layer, depth, shared, bbox_mm}, plus
+      # `definition` (the definition's name, which the Outliner shows for an
+      # unnamed instance) for a component instance; a group's definition is
+      # auto-named "Group#N" and is left out. bbox_mm maps the entity's
+      # bounds (in its parent's frame) through parent_matrix to world mm, and
+      # is null for empty bounds (T-55).
+      def self.describe_component(entity, parent_matrix = F::IDENTITY, depth: 0, shared: false)
+        row = {
+          "id"     => entity.entityID,
+          "name"   => entity.name,
+          "type"   => entity.is_a?(Sketchup::Group) ? "group" : "component",
+          "layer"  => entity.layer.name,
+          "depth"  => depth,
+          "shared" => shared
+        }
+        row["definition"] = entity.definition.name if entity.is_a?(Sketchup::ComponentInstance)
+        row["bbox_mm"] = F.bbox_mm(entity.bounds, parent_matrix)
+        row
       end
 
-      def self.describe_component(entity, parent_t = Geom::Transformation.new, depth: 0)
-        bb = entity.bounds
-        if MCPforSketchUp::Helpers::Geometry.empty_bbox?(bb)  # T-55
-          return {
-            "id"    => entity.entityID,
-            "name"  => entity.name,
-            "type"  => entity.is_a?(Sketchup::Group) ? "group" : "component",
-            "layer" => entity.layer.name,
-            "depth" => depth,
-            "bbox_mm" => nil
-          }
-        end
-        # Project local-space bounds corners through parent transformation chain
-        # to get world-space bbox. For top-level entities, parent_t = identity,
-        # behaviour identical to monolith.
-        world_corners = [
-          bb.min, bb.max,
-          Geom::Point3d.new(bb.min.x, bb.min.y, bb.max.z),
-          Geom::Point3d.new(bb.min.x, bb.max.y, bb.min.z),
-          Geom::Point3d.new(bb.min.x, bb.max.y, bb.max.z),
-          Geom::Point3d.new(bb.max.x, bb.min.y, bb.min.z),
-          Geom::Point3d.new(bb.max.x, bb.min.y, bb.max.z),
-          Geom::Point3d.new(bb.max.x, bb.max.y, bb.min.z)
-        ].map { |p| parent_t * p }
-        xs = world_corners.map(&:x); ys = world_corners.map(&:y); zs = world_corners.map(&:z)
-        {
-          "id"    => entity.entityID,
-          "name"  => entity.name,
-          "type"  => entity.is_a?(Sketchup::Group) ? "group" : "component",
-          "layer" => entity.layer.name,
-          "depth" => depth,
-          "bbox_mm" => {
-            "min" => [U.inch_to_mm(xs.min), U.inch_to_mm(ys.min), U.inch_to_mm(zs.min)],
-            "max" => [U.inch_to_mm(xs.max), U.inch_to_mm(ys.max), U.inch_to_mm(zs.max)]
-          }
-        }
+      # The row of one entity, wherever it is: the walk up its parents gives
+      # the world matrix, the depth and whether it is shared (for a shared
+      # entity, the first placement's box).
+      def self.describe_placed(entity)
+        placement = F.placement(entity)
+        describe_component(entity, placement.matrix, depth: placement.depth, shared: !placement.shared.nil?)
       end
 
       # T-55: пустые bounds наружу утекали как ±2.54e31 мм и выглядели
@@ -190,7 +155,7 @@ module MCPforSketchUp
       def self.paginate(components, limit, offset, response_format)
         page = components.slice(offset, limit) || []
         if response_format == "concise"
-          page = page.map { |c| c.slice("id", "name", "type", "layer", "depth") }
+          page = page.map { |c| c.slice("id", "name", "type", "layer", "depth", "shared", "definition") }
         end
         {
           "components" => page,
@@ -202,30 +167,17 @@ module MCPforSketchUp
 
       # ===== get_component_info ==============================================
       #
-      # Uses find_component_by_id (early-exit DFS, same world-frame math as
-      # collect_components) so the bbox is world-correct + depth correct
-      # BY CONSTRUCTION (consistent with list_components). The old code called
-      # describe_component(entity) with an identity parent_t, which returns
-      # bounds in the entity's PARENT frame — correct only for a top-level
-      # entity (parent == world), but WRONG (local, not world) for a nested
-      # one. Walking from model.entities accumulates the full parent-transform
-      # chain, so the returned bbox matches what list_components reports for the
-      # same id. Shared-definition entities resolve to the FIRST match (entity
-      # IDs are unique per instance, so an exact id match is unambiguous when
-      # present). Falls back to describe_component (parent-frame) only if the
-      # entity is nested deeper than LOOKUP_MAX_DEPTH. That fallback returns
-      # the bbox in the PARENT frame (identity transformation) — bbox precision
-      # degrades for entities nested deeper than LOOKUP_MAX_DEPTH; deliberate,
-      # depth 64 never occurs in real-world models.
+      # M-19 (part): walks up from the entity (Frames.placement) instead of
+      # searching from the model root, so the box is world and the depth is
+      # right however deep the entity sits, and in every edit state (spec §3).
+      # An entity inside a definition placed more than once reports its first
+      # placement with "shared" => true; list_components lists every placement.
 
       def self.get_component_info(params)
         id = V.require_id(params)
         entity = E.find!(id)
         E.require_group_or_component!(entity)
-        m = E.active_model!
-        find_component_by_id(m.entities, entity.entityID, Geom::Transformation.new,
-                             depth: 0, max_depth: LOOKUP_MAX_DEPTH, seen: Set.new) ||
-          describe_component(entity)
+        describe_placed(entity)
       end
 
       # ===== find_components =================================================
@@ -237,17 +189,20 @@ module MCPforSketchUp
         max_depth      = V.optional_int_range(params, "max_depth", min: 1, max: 10, default: DEFAULT_MAX_DEPTH)
         limit, offset, response_format = pagination_params(params)
         m = E.active_model!
-        identity = Geom::Transformation.new
         seen = Set.new
-        all = collect_components(m.entities, identity,
+        all = collect_components(m.entities, F::IDENTITY,
                                  recursive: true,
                                  depth: 0,
                                  max_depth: max_depth,
                                  seen: seen)
-        # T-18: case-insensitive — «table» находит «Table Leg»
+        # T-18: case-insensitive — «table» находит «Table Leg». M-17: у
+        # экземпляра компонента совпадает и имя определения — так Outliner
+        # называет компоненты из 3D Warehouse и импорта; определения групп
+        # («Group#N») в строках нет, они не совпадают.
         needle = name_substring&.downcase
         results = all.select do |c|
-          (needle.nil? || c["name"].downcase.include?(needle)) &&
+          (needle.nil? || c["name"].to_s.downcase.include?(needle) ||
+            c["definition"].to_s.downcase.include?(needle)) &&
             (layer_name.nil? || c["layer"] == layer_name) &&
             (type_filter.nil? || c["type"] == type_filter)
         end
@@ -295,14 +250,16 @@ module MCPforSketchUp
       # ===== get_selection (migrated from monolith) ==========================
       #
       # Returns full {id, name, type, bbox_mm} so Claude can re-locate entities
-      # by bounding-box if their IDs become stale after destructive ops.
+      # by bounding-box if their IDs become stale after destructive ops. A
+      # group or component gets the same row as get_component_info (world box,
+      # depth, shared); the selection lives in the open edit context, so the
+      # walk up its parents is what makes its box world.
 
       def self.get_selection(_params)
         selection = E.active_model!.selection
-        identity = Geom::Transformation.new
         entities = selection.map do |entity|
           if entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
-            describe_component(entity, identity)
+            describe_placed(entity)
           else
             { "id" => entity.entityID, "type" => entity.typename.downcase }
           end

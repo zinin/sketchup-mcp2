@@ -5,24 +5,33 @@ require "minitest/autorun"
 require "set"
 
 module Sketchup
+  # parent stays nil (the walk up the parents stops at once) unless a test
+  # sets it; a group's definition and a definition's instances default to a
+  # fresh definition and an empty list. Identical in test_collect_components,
+  # test_model_empty_bbox and test_model_pagination: under run_all the three
+  # reopen the same classes.
   class Group
-    attr_accessor :entities, :name, :entityID, :transformation, :bounds, :layer
+    attr_accessor :entities, :name, :entityID, :transformation, :bounds, :layer, :parent
+    attr_writer :definition
     def initialize
       @transformation = Geom::Transformation.new
       @entities = []
     end
+    def definition; @definition ||= Sketchup::ComponentDefinition.new; end
     def valid?; true; end
   end
 
   class ComponentDefinition
-    attr_accessor :entities, :entityID
+    attr_accessor :entities, :entityID, :name
+    attr_writer :instances
     def initialize
       @entities = []
     end
+    def instances; @instances ||= []; end
   end
 
   class ComponentInstance
-    attr_accessor :definition, :name, :entityID, :transformation, :bounds, :layer
+    attr_accessor :definition, :name, :entityID, :transformation, :bounds, :layer, :parent
     def initialize
       @transformation = Geom::Transformation.new
     end
@@ -49,6 +58,7 @@ module Geom
   class Transformation
     def initialize; end
     def *(other); other; end
+    def to_a; [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]; end
   end
 end
 
@@ -58,6 +68,7 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/validation"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/geometry"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/operation"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/model"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/handlers/geometry"
 
@@ -91,6 +102,7 @@ class TestModelEmptyBbox < Minitest::Test
     model.define_singleton_method(:bounds) { bb }
     model.define_singleton_method(:entities) { entities }
     model.define_singleton_method(:layers) { layers }
+    model.define_singleton_method(:active_path) { nil }
 
     e = MCPforSketchUp::Helpers::Entities
     original = e.method(:active_model!)

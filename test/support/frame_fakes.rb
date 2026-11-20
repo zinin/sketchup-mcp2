@@ -48,10 +48,13 @@ module FrameFakes
   # A component or group definition. count_used_instances is `used` when a
   # test sets it (placements through the hierarchy), else the number of
   # instances.
+  # entityID is unique, as a real definition's is: list_components' cycle
+  # guard keys on it.
   class Definition < Sketchup::ComponentDefinition
-    attr_accessor :name, :instances, :used, :bounds, :entities
+    attr_accessor :name, :instances, :used, :bounds, :entities, :entityID
 
     def initialize(name, group: false, used: nil, bounds: nil)
+      @entityID = object_id
       @name = name
       @group = group
       @used = used
@@ -84,6 +87,12 @@ module FrameFakes
     def valid?
       true
     end
+
+    # A group's entities, as for a component instance, are its
+    # definition's.
+    def entities
+      definition.entities
+    end
   end
 
   class PlacedGroup < Sketchup::Group
@@ -103,12 +112,14 @@ module FrameFakes
   end
 
   # Places `definition` in `parent` (a Definition or the model) and adds the
-  # placement to definition.instances. A group definition gives a
-  # PlacedGroup, a component definition a PlacedComponent.
+  # placement to definition.instances and, inside a Definition, to the
+  # parent's entities. A group definition gives a PlacedGroup, a component
+  # definition a PlacedComponent.
   def self.place(definition, id:, parent:, matrix: IDENTITY, name: "")
     klass = definition.group? ? PlacedGroup : PlacedComponent
     placed = klass.new(id, definition: definition, parent: parent, matrix: matrix, name: name)
     definition.instances << placed
+    parent.entities << placed if parent.is_a?(Definition)
     placed
   end
 
@@ -124,6 +135,10 @@ module FrameFakes
 
     def valid?
       true
+    end
+
+    def typename
+      "Face"
     end
   end
 end
