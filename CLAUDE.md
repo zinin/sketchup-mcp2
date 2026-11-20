@@ -90,7 +90,8 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   — 32 random bytes, 64 hex — is made on the plugin's first load
   (`Config.load_token!`) and kept in a file of its own, `MCPforSketchUp/auth_token` under
   `%APPDATA%` / `~/Library/Application Support` (`Config.token_path`), written at once
-  through a temporary file and a rename — SketchUp writes its preferences to disk only on
+  through a temporary file of its own and a rename, under a lock (SketchUp processes
+  of one user share the file) — SketchUp writes its preferences to disk only on
   a clean exit, so a token kept there came back after a crash. Shown read-only in Settings
   (Copy, Regenerate — which disconnects every client), and given to the
   client as `SKETCHUP_MCP_TOKEN`; without a well-formed one the client
@@ -122,7 +123,7 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 773 runs / 3289 assertions
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 776 runs / 3297 assertions
 uv run pytest tests/ -q        # Python (pytest) — 261 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)

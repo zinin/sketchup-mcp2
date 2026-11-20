@@ -1,5 +1,6 @@
 # mcp_for_sketchup/mcp_for_sketchup/core/config.rb
 require "fileutils"
+require "securerandom"
 require "tmpdir"
 
 module MCPforSketchUp
@@ -110,6 +111,10 @@ module MCPforSketchUp
       # alone — the token in it may be fine — and this session gets a new one.
       # The token never reaches a log line.
       def self.load_token!(path = token_path)
+        with_token_lock(path) { load_token_locked!(path) }
+      end
+
+      def self.load_token_locked!(path)
         begin
           saved = File.binread(path).force_encoding(Encoding::UTF_8).scrub("?").strip
         rescue Errno::ENOENT, Errno::ENOTDIR
@@ -128,6 +133,7 @@ module MCPforSketchUp
         end
         token
       end
+      private_class_method :load_token_locked!
 
       # Settings → Regenerate. The new token is on disk before it takes effect:
       # an unwritten one would give way to the old token at the next start, and
@@ -135,18 +141,42 @@ module MCPforSketchUp
       # old one.
       def self.regenerate_token!(path = token_path)
         fresh = Auth.generate_token
-        write_token_file(path, fresh)
+        with_token_lock(path) { write_token_file(path, fresh) }
         self.token = fresh
       end
 
+      # SketchUp processes of one user share the token file (2026 and 2027, or
+      # two windows), so each read-decide-write holds an exclusive lock on
+      # auth_token.lock: two first starts at once would otherwise each make a
+      # token, and one would be gone at the next start (Codex review, PR #23).
+      # The lock is best effort: when it cannot be taken (no directory, no
+      # permission), the write that follows fails the same way and says so.
+      def self.with_token_lock(path)
+        lock = begin
+          FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
+          file = File.open("#{path}.lock", File::RDWR | File::CREAT | File::BINARY, 0o600)
+          file.flock(File::LOCK_EX)
+          file
+        rescue SystemCallError, IOError
+          file&.close
+          nil
+        end
+        yield
+      ensure
+        lock&.close
+      end
+      private_class_method :with_token_lock
+
       # Written where a crash cannot undo it: a temporary file next to the
       # target, flushed to disk, then renamed over it, so the file holds the old
-      # token or the new one, never part of one. Private to the user: the
-      # directory 0700 and the file 0600 (on Windows the profile's ACL does it).
+      # token or the new one, never part of one. The temporary file is this
+      # write's own (process id and a random suffix, created exclusively), and
+      # only it is removed. Private to the user: the directory 0700 and the file
+      # 0600 (on Windows the profile's ACL does it).
       def self.write_token_file(path, token)
-        tmp = "#{path}.tmp"
+        tmp = "#{path}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
         FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
-        File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC | File::BINARY, 0o600) do |file|
+        File.open(tmp, File::WRONLY | File::CREAT | File::EXCL | File::BINARY, 0o600) do |file|
           file.write(token)
           file.flush
           file.fsync

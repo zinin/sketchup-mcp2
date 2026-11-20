@@ -49,6 +49,10 @@ class TestConfigToken < Minitest::Test
     @logged.select { |level, _| level == "WARN" }.map(&:last)
   end
 
+  def temporary_files
+    Dir.glob("#{@path}*.tmp")
+  end
+
   def write(text)
     FileUtils.mkdir_p(File.dirname(@path))
     File.binwrite(@path, text)
@@ -110,7 +114,7 @@ class TestConfigToken < Minitest::Test
     refute_equal AuthVectors::TOKEN, token
     assert_equal token, C.token
     assert_equal token, File.binread(@path)
-    refute File.exist?("#{@path}.tmp"), "no temporary file is left"
+    assert_empty temporary_files, "no temporary file is left"
   end
 
   def test_regenerate_token_keeps_the_old_token_when_writing_fails
@@ -120,7 +124,49 @@ class TestConfigToken < Minitest::Test
     assert_raises(Errno::EACCES) { C.regenerate_token!(@path) }
     assert_equal AuthVectors::TOKEN, C.token
     assert_equal AuthVectors::TOKEN, File.binread(@path), "the file still holds the old token"
-    refute File.exist?("#{@path}.tmp"), "no temporary file is left"
+    assert_empty temporary_files, "no temporary file is left"
+  end
+
+  # Codex review (PR #23): SketchUp processes of one user share the file. With
+  # one fixed temporary name, two writers truncated each other's file, and one
+  # renamed the other's token into place. Each write has a file of its own,
+  # and removes only that one.
+  def test_each_write_uses_a_temporary_file_of_its_own
+    sources = []
+    rename = File.method(:rename)
+    stub_singleton(File, :rename) { |from, to| sources << from; rename.call(from, to) }
+    C.regenerate_token!(@path)
+    C.regenerate_token!(@path)
+    assert_equal 2, sources.uniq.length
+    assert_empty temporary_files
+  end
+
+  def test_a_write_leaves_another_writers_temporary_file
+    write(AuthVectors::TOKEN)
+    other = "#{@path}.4242.0a1b2c3d.tmp"
+    File.binwrite(other, "being written by another SketchUp")
+    C.regenerate_token!(@path)
+    assert File.exist?(other)
+  end
+
+  # Two first starts at once must not each make a token: one would be gone at
+  # the next start. The read and the write happen under a lock, so the second
+  # start reads the token the first one wrote.
+  def test_load_token_waits_for_a_writer_holding_the_lock
+    FileUtils.mkdir_p(File.dirname(@path))
+    locked = Queue.new
+    holder = Thread.new do
+      File.open("#{@path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        locked << true
+        sleep 0.2
+        File.binwrite(@path, AuthVectors::TOKEN)
+      end
+    end
+    locked.pop
+    assert_equal AuthVectors::TOKEN, C.load_token!(@path)
+    holder.join
+    assert_equal AuthVectors::TOKEN, File.binread(@path)
   end
 
   def test_the_token_file_is_private
