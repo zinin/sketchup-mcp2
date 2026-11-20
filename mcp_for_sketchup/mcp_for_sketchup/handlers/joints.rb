@@ -6,6 +6,7 @@ module MCPforSketchUp
       E = MCPforSketchUp::Helpers::Entities
       U = MCPforSketchUp::Helpers::Units
       O = MCPforSketchUp::Helpers::Operation
+      F = MCPforSketchUp::Helpers::Frames
 
       TOUCH_TOL   = 0.001 # SketchUp's tolerance, inches
       VOLUME_RTOL = 1e-4
@@ -19,10 +20,13 @@ module MCPforSketchUp
       # invisibly small (1mm) under mm-conversion.
       #
       # The boards touch face to face in one parent, and the joint is centred
-      # on their contact area (contact_area, joint_box). One operation cuts
-      # the mortise and joins the tenon, and commits only when verify_joint!
-      # accepts both results; anything else rolls back, so no half-built
-      # joint reaches the model.
+      # on their contact area (contact_area, joint_box). The boxes are WORLD
+      # boxes (block A, §6.6a), so the joint follows the model's X, Y and Z
+      # and comes out the same whether or not the boards' group is open for
+      # editing, as every tool's bbox_mm does. One operation cuts the mortise
+      # and joins the tenon, and commits only when verify_joint! accepts both
+      # results; anything else rolls back, so no half-built joint reaches the
+      # model.
 
       def self.create_mortise_tenon(params)
         mortise_id = V.require_id(params, "mortise_id")
@@ -49,22 +53,27 @@ module MCPforSketchUp
           tenon_board   = E.find!(tenon_id)
           E.require_group_or_component!(mortise_board, "mortise board")
           E.require_group_or_component!(tenon_board,   "tenon board")
-          require_joinable!(model, mortise_board, tenon_board)
+          parent = require_joinable!(model, mortise_board, tenon_board)
 
-          mortise_box = board_box(mortise_board)
-          contact     = contact_area(mortise_box, board_box(tenon_board))
+          mortise_box = board_box(mortise_board, parent)
+          contact     = contact_area(mortise_box, board_box(tenon_board, parent))
           box         = joint_box(contact, width, height, depth, [ox, oy, oz])
           thickness   = mortise_box[1][contact[:axis]] - mortise_box[0][contact[:axis]]
-          cut         = width * height * [depth, thickness].min
+          # The boxes are world; SketchUp reports the boards' volumes in their
+          # parent's frame, which a scaled parent shrinks or grows by the
+          # determinant of its matrix.
+          scale       = F.determinant(parent).abs
+          cut         = width * height * [depth, thickness].min / scale
+          joint       = width * height * depth / scale
 
           mortise_before   = mortise_board.volume
           tenon_before     = tenon_board.volume
           mortise_identity = E.identity_of(mortise_board)
           tenon_identity   = E.identity_of(tenon_board)
 
-          mortise = cut_mortise(mortise_board, box)
-          tenon   = attach_tenon(tenon_board, box)
-          verify_joint!(mortise, tenon, cut, width * height * depth, mortise_before, tenon_before)
+          mortise = cut_mortise(mortise_board, box, parent)
+          tenon   = attach_tenon(tenon_board, box, parent)
+          verify_joint!(mortise, tenon, cut, joint, mortise_before, tenon_before)
           E.restore_identity!(mortise, mortise_identity)
           E.restore_identity!(tenon,   tenon_identity)
 
@@ -93,9 +102,9 @@ module MCPforSketchUp
 
       # ===== Pure joint geometry (no SketchUp) ===============================
       #
-      # A box is [[min_x, min_y, min_z], [max_x, max_y, max_z]] in the boards'
-      # common parent frame. The functions are unit-agnostic; their messages
-      # treat the numbers as inches and print mm (lengths) / mm³ (volumes).
+      # A box is [[min_x, min_y, min_z], [max_x, max_y, max_z]] in world
+      # coordinates. The functions are unit-agnostic; their messages treat
+      # the numbers as inches and print mm (lengths) / mm³ (volumes).
 
       # The face the tenon board touches the mortise board with: exactly one
       # axis touching (gap within tol of 0), the other two overlapping.
@@ -174,24 +183,31 @@ module MCPforSketchUp
       end
 
       # Post-check of the boolean result: nil when both boards changed by the
-      # expected volumes, otherwise a sentence that starts with the board that
-      # is off ("mortise board …" / "tenon board …"). `cut` is the volume the
-      # mortise board must lose, `joint` the volume the tenon board must gain
-      # (the whole joint's box). The mortise board loses exactly the part of
-      # the joint's box inside it — width × height × min(depth, its thickness
-      # along the joint axis), so a through mortise is fine — and a smaller
-      # loss means the box met an earlier pocket, or a notch, gap or taper of
-      # the board, where the tenon would fill space the cut did not free.
+      # expected volumes, otherwise [sentence, kind]. The sentence starts with
+      # the board that is off ("mortise board …" / "tenon board …"). `cut` is
+      # the volume the mortise board must lose, `joint` the volume the tenon
+      # board must gain (the whole joint's box). The mortise board loses
+      # exactly the part of the joint's box inside it — width × height ×
+      # min(depth, its thickness along the joint axis), so a through mortise
+      # is fine. The kind picks the advice:
+      #   :shortfall  the mortise board lost something, but less than the
+      #               pocket: the box met an earlier pocket, or a notch, gap
+      #               or taper of the board, where the tenon would fill space
+      #               the cut did not free;
+      #   :cut        any other wrong loss: nothing removed, too much, a gain;
+      #   :join       the tenon board is off.
       def self.joint_volume_problem(cut, joint, mortise_before, mortise_after, tenon_before, tenon_after, rtol = VOLUME_RTOL)
         lost   = mortise_before - mortise_after
         gained = tenon_after - tenon_before
-        if (lost - cut).abs > cut * rtol
-          return "mortise board #{format_change(lost, 'lost', 'gained', cut * rtol)} mm³ " \
-                 "(expected a loss of #{format_mm3(cut)} mm³)"
+        tol    = cut * rtol
+        if (lost - cut).abs > tol
+          kind = lost > tol && lost < cut - tol ? :shortfall : :cut
+          return ["mortise board #{format_change(lost, 'lost', 'gained', tol)} mm³ " \
+                  "(expected a loss of #{format_mm3(cut)} mm³)", kind]
         end
         if (gained - joint).abs > joint * rtol
-          return "tenon board #{format_change(gained, 'gained', 'lost', joint * rtol)} mm³ " \
-                 "(expected a gain of #{format_mm3(joint)} mm³)"
+          return ["tenon board #{format_change(gained, 'gained', 'lost', joint * rtol)} mm³ " \
+                  "(expected a gain of #{format_mm3(joint)} mm³)", :join]
         end
         nil
       end
@@ -227,34 +243,45 @@ module MCPforSketchUp
         "union: keep the joint off the edge of the contact area, or build this joint with " \
         "eval_ruby"
 
+      # What to try when the mortise board lost less than the pocket's volume
+      # (§6.6a): the general sentence already says that the pocket must not
+      # meet an earlier one.
+      SHORTFALL_ADVICE =
+        "Make the joint shallower, or move it with the offsets, so that its pocket stays clear of the " \
+        "earlier one"
+
+      # A board whose rotation in the model, its own and that of the groups
+      # holding it, is not a multiple of 90°; raised as "the <label> …".
+      ROTATION_MESSAGE = "is rotated in the model by an angle that is not a multiple of 90°, and the joint " \
+        "is placed along the model's axes from bounding boxes; rotate the board, or the group or component " \
+        "that holds it, to a multiple of 90°, or build this joint with eval_ruby"
+
       # What to try when the cut leaves the mortise board in separate pieces.
       SPLIT_ADVICE =
         "A through mortise as wide as the mortise board splits it: make the joint narrower " \
         "than the mortise board or its depth less than the board's thickness, so that the " \
         "pocket does not cut the board in two"
 
-      # The board's bounding box in its parent's frame, as plain Floats: a
-      # SketchUp Length compares within SketchUp's tolerance, and the pure
-      # functions above apply their own.
-      def self.board_box(board)
-        b = board.bounds
-        [[b.min.x.to_f, b.min.y.to_f, b.min.z.to_f], [b.max.x.to_f, b.max.y.to_f, b.max.z.to_f]]
+      # The board's world box, as plain Floats (Frames.world_box): its
+      # definition's bounds through the matrix of its parents and its own
+      # transformation. The definition's bounds do not change when the
+      # boards' group is opened for editing, and the matrix gives the same
+      # world placement open or closed, so the box does not either. It fits
+      # the board because the board is aligned with the world axes
+      # (require_joinable!).
+      def self.board_box(board, parent)
+        F.world_box(board.definition.bounds, F.multiply(parent, F.matrix_of(board.transformation)))
       end
 
-      # What lets the bounding boxes stand for the boards: one parent (the
-      # boxes share its frame), axes parallel to the parent's (only then does
-      # a box fit its board) and closed solids (the solid operations and the
-      # volume check need them).
-      #
-      # An open group comes first. While a group is open, SketchUp reports
-      # the transformations and bounds of its entities in world coordinates
-      # (model.edit_transform holds the group's own), so in a rotated open
-      # group the boards look rotated, and the board check would tell the
-      # user to rotate boards that are placed correctly: that case is refused
-      # with the advice to close the group. An open group that is only moved
-      # keeps working. A board that is itself open reports an identity
-      # transformation, and the solid operations would erase the group the
-      # user is working in.
+      # What lets the world boxes stand for the boards, in this order: no
+      # board is open for editing (it reports an identity transformation,
+      # and the solid operations would erase the group the user is working
+      # in); one parent (the cutter and the tenon piece are built beside
+      # the boards); neither board inside a shared definition (the joint
+      # would appear in every copy); each board aligned with the world axes,
+      # its own rotation and its groups' together (only then does a box fit
+      # its board); closed solids (the solid operations and the volume check
+      # need them). Returns the matrix of the boards' parents.
       def self.require_joinable!(model, mortise, tenon)
         boards = { "mortise board" => mortise, "tenon board" => tenon }
         open_path = model.active_path || []
@@ -268,18 +295,11 @@ module MCPforSketchUp
             "the mortise and tenon boards are not in the same group; move them into one " \
             "group or component, or both to the top level of the model")
         end
-        if !open_path.empty? && mortise.parent == model.active_entities.parent &&
-           !aligned_transformation?(model.edit_transform)
-          raise MCPforSketchUp::Core::StructuredError.new(-32602,
-            "the group or component that holds the boards is open for editing and rotated " \
-            "by an angle that is not a multiple of 90°; close it and try again")
-        end
+        parent = F.require_unshared!(mortise, "the mortise board").matrix
+        F.require_unshared!(tenon, "the tenon board")
         boards.each do |label, board|
-          next if aligned_transformation?(board.transformation)
-          raise MCPforSketchUp::Core::StructuredError.new(-32602,
-            "the #{label} is rotated by an angle that is not a multiple of 90°, and the joint " \
-            "is placed from bounding boxes; rotate the board to a multiple of 90° or build " \
-            "this joint with eval_ruby")
+          next if world_aligned?(F.multiply(parent, F.matrix_of(board.transformation)))
+          raise MCPforSketchUp::Core::StructuredError.new(-32602, "the #{label} #{ROTATION_MESSAGE}")
         end
         boards.each do |label, board|
           next if board.manifold?
@@ -289,11 +309,13 @@ module MCPforSketchUp
             "or component nested in it (an earlier version of this tool left its tenon nested " \
             "like that), until Entity Info calls it a solid, then try again")
         end
+        parent
       end
 
-      # True when the transformation keeps its axes parallel to its parent's.
-      def self.aligned_transformation?(t)
-        axis_aligned?([t.xaxis.to_a, t.yaxis.to_a, t.zaxis.to_a])
+      # True when the matrix keeps its axes along the world's (rotations by
+      # multiples of 90°, any scale or mirror).
+      def self.world_aligned?(m)
+        axis_aligned?([m[0, 3], m[4, 3], m[8, 3]])
       end
 
       # make_box's x, y, z, w, d, h for the box [[min], [max]].
@@ -305,11 +327,10 @@ module MCPforSketchUp
       # The mortise: a cutter of the joint's box, cut out of the board with
       # the reversed Group#subtract — cutter.subtract(board) returns
       # board − cutter and erases both. The cutter is the board's sibling
-      # (board.parent.entities, not active_entities): Group#subtract needs
-      # siblings, and the box is in the parent's frame. Returns the new
-      # mortise board.
-      def self.cut_mortise(board, box)
-        cutter = MCPforSketchUp::Helpers::Geometry.make_box(board.parent.entities, *make_box_args(box))
+      # (place_box): Group#subtract needs siblings. Returns the new mortise
+      # board.
+      def self.cut_mortise(board, box, parent)
+        cutter = place_box(board, box, parent)
         result = cutter.subtract(board)
         solid_result!(result, "cut the mortise into the mortise board", CUT_ADVICE)
       end
@@ -318,10 +339,21 @@ module MCPforSketchUp
       # cutter, joined to it with union so the board stays one solid (a
       # nested group would not be part of its body). Returns the new tenon
       # board.
-      def self.attach_tenon(board, box)
-        piece = MCPforSketchUp::Helpers::Geometry.make_box(board.parent.entities, *make_box_args(box))
+      def self.attach_tenon(board, box, parent)
+        piece = place_box(board, box, parent)
         result = piece.union(board)
         solid_result!(result, "join the tenon to the tenon board", JOIN_ADVICE)
+      end
+
+      # A group of the joint's box (world inches) in the board's parent
+      # (board.parent.entities, not active_entities), taken from the world
+      # into that parent's frame by the inverse of the parents' matrix. At
+      # the top level, and in a group open for editing, the parents' matrix
+      # is the identity and the box stays where make_box built it.
+      def self.place_box(board, box, parent)
+        piece = MCPforSketchUp::Helpers::Geometry.make_box(board.parent.entities, *make_box_args(box))
+        piece.transform!(F.transformation(F.inverse(parent))) unless F.identity?(parent)
+        piece
       end
 
       # A solid operation's result, or -32603 when it returned nil or a group
@@ -360,7 +392,8 @@ module MCPforSketchUp
           elsif !tenon.manifold?
             ["the tenon board is no longer a solid", JOIN_ADVICE]
           elsif (volume = joint_volume_problem(cut, joint, mortise_before, mortise.volume, tenon_before, tenon.volume))
-            [volume, volume.start_with?("mortise board") ? CUT_ADVICE : JOIN_ADVICE]
+            sentence, kind = volume
+            [sentence, { shortfall: SHORTFALL_ADVICE, cut: CUT_ADVICE, join: JOIN_ADVICE }.fetch(kind)]
           elsif !single_shell?(mortise)
             ["the cut split the mortise board into separate pieces", SPLIT_ADVICE]
           elsif !single_shell?(tenon)
