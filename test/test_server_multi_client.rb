@@ -885,9 +885,12 @@ class TestServerMultiClient < Minitest::Test
 
   def test_reads_per_client_capped_per_tick
     cap = MCPforSketchUp::Core::Server::READ_MAX_ITERATIONS
-    # cap+5 чанков по одному мелкому фрейму: за тик — ровно cap чтений,
-    # остаток дочитывается следующим тиком (кап держит UI отзывчивым).
-    chunks = [handshake_frames] + (1..(cap + 4)).map { |i| gv_frame(i) }
+    # Handshake, then ONE frame in cap+20 ten-byte pieces: за тик — ровно cap
+    # чтений, остаток дочитывается следующим тиком (кап держит UI
+    # отзывчивым). One frame, not cap+4 small ones: those would meet the
+    # per-client queue cap (PER_CLIENT_QUEUE_MAX, M-15) first.
+    big = gv_frame("x" * ((cap + 20) * 10))
+    chunks = [handshake_frames] + big.bytes.each_slice(10).map { |piece| piece.pack("C*") }
     sock = CountingSocket.new(read_chunks: chunks)
     fs = FakeServer.new([sock])
     srv = run_one_tick(fs)

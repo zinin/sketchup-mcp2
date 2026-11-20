@@ -28,6 +28,11 @@ module MCPforSketchUp
       DISPATCH_MAX_PER_TICK     = 50      # фреймов за тик; флуд мелких фреймов не должен морозить UI (T-13.2)
       FRAME_QUEUE_SOFT_MAX      = 256     # очередь насыщена — чтение приостанавливается (T-13.2, P-06)
       PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект без валидного hello закрывается (T-13.5)
+      # M-15: one client cannot fill the shared queue — it is no longer read
+      # while this many of its frames wait (TCP holds the rest); and a burst of
+      # connects is accepted a few per tick, the rest waiting in the backlog.
+      PER_CLIENT_QUEUE_MAX      = 32
+      ACCEPTS_PER_TICK_MAX      = 16
 
       def initialize
         @server         = nil
@@ -127,18 +132,24 @@ module MCPforSketchUp
         end
       end
 
+      # M-15: at most ACCEPTS_PER_TICK_MAX sockets per tick, registered or
+      # refused; the rest wait in the kernel backlog. Refusals past MAX_CLIENTS
+      # make one log line for the tick, not one each.
       def accept_pending_clients
         aborted = 0
-        loop do
+        accepted = 0
+        rejected = 0
+        while accepted < ACCEPTS_PER_TICK_MAX
           begin
             sock = @server.accept_nonblock
           rescue IO::WaitReadable
-            return
+            break
           rescue Errno::ECONNABORTED
             aborted += 1
-            return if aborted >= ACCEPT_ABORTED_MAX
+            break if aborted >= ACCEPT_ABORTED_MAX
             next
           end
+          accepted += 1
           # Refuse connections beyond MAX_CLIENTS to bound FD/memory use when
           # bound to a non-loopback host (review F3). Close without registering
           # — keeps the registered-or-closed invariant.
@@ -149,8 +160,7 @@ module MCPforSketchUp
               Logger.log("DEBUG",
                 "Server.accept: over-cap close raised: #{e.class}: #{e.message}")
             end
-            Logger.log_tool("server", "client_rejected",
-              "reason=max_clients limit=#{MAX_CLIENTS}")
+            rejected += 1
             next
           end
           begin
@@ -172,6 +182,9 @@ module MCPforSketchUp
           @clients[sock] = state
           Logger.log_tool("server", "client_connected", client_label: state.label)
         end
+        return if rejected.zero?
+        Logger.log_tool("server", "client_rejected",
+          "reason=max_clients limit=#{MAX_CLIENTS} count=#{rejected}")
       end
 
       # T-13.5: коннект, не приславший валидный hello за
@@ -250,6 +263,9 @@ module MCPforSketchUp
         # T-13.1: решение о закрытии принято (framing/parse-ошибка) — стрим
         # рассинхронизирован, новые чтения бессмысленны до close-after-drain.
         return if state.close_after_response
+        # M-15: this client already has its share of the queue; TCP keeps the
+        # rest in the kernel buffer until its frames are dispatched.
+        return if state.queued_frames >= PER_CLIENT_QUEUE_MAX
         iterations = 0
         loop do
           if iterations >= READ_MAX_ITERATIONS
@@ -264,6 +280,9 @@ module MCPforSketchUp
           # ограничен фреймами ОДНОГО read_nonblock-куска (≤64 KiB), а не
           # всем бюджетом READ_MAX_ITERATIONS.
           break if @frame_queue.length >= FRAME_QUEUE_SOFT_MAX
+          # M-15: likewise for this client's own cap; the overshoot is bounded
+          # by the frames of one read_nonblock chunk.
+          break if state.queued_frames >= PER_CLIENT_QUEUE_MAX
           iterations += 1
         end
       rescue IO::WaitReadable
@@ -534,14 +553,6 @@ module MCPforSketchUp
         return if state.closed?
         return if state.pending_write_empty?
 
-        if state.pending_write_deadline_at &&
-           monotonic_now > state.pending_write_deadline_at
-          Logger.log_tool("server", "write_timeout",
-            client_label: state.label)
-          close_client(state, "write_timeout")
-          return
-        end
-
         loop do
           n = state.sock.write_nonblock(state.pending_write_bytes)
           state.consume_pending_write(n)
@@ -559,15 +570,16 @@ module MCPforSketchUp
             state.pending_write_deadline_at = monotonic_now + WRITE_DEADLINE_S
           else
             # Defensive: write_nonblock claimed success but wrote zero bytes.
-            # Break out to avoid a tight loop; treat it like WaitWritable —
-            # retry next tick (deadline preserved, so a true stall still fires).
+            # No progress, as with WaitWritable: check the deadline, and retry
+            # next tick if it has not passed.
+            close_if_write_stalled(state)
             return
           end
         end
       rescue IO::WaitWritable
-        # Kernel send-buffer full — preserve buffer + deadline; retry next tick.
-        # No forward progress here, so the deadline is deliberately NOT extended.
-        return
+        # Kernel send-buffer full — no progress, so the deadline is checked
+        # here and NOT extended; buffer and deadline wait for the next tick.
+        close_if_write_stalled(state)
       rescue Errno::EPIPE, Errno::ECONNRESET, IOError
         close_client(state, "write_failed")
       rescue StandardError => e
@@ -578,9 +590,22 @@ module MCPforSketchUp
         close_client(state, "write_error: #{e.class.name}")
       end
 
+      # M-13: the idle deadline is checked only when a write makes no
+      # progress, never before trying. A peer whose socket drained while a long
+      # tool call held the UI thread past WRITE_DEADLINE_S is written to, not
+      # closed; only a socket still full past the deadline is a stall.
+      def close_if_write_stalled(state)
+        deadline = state.pending_write_deadline_at
+        return unless deadline && monotonic_now > deadline
+        Logger.log_tool("server", "write_timeout", client_label: state.label)
+        close_client(state, "write_timeout")
+      end
+
       def encode_response_body(response)
         JSON.generate(response)
-      rescue JSON::GeneratorError, Encoding::UndefinedConversionError => e
+      rescue JSON::JSONError, Encoding::UndefinedConversionError => e
+        # M-14: JSON::JSONError covers GeneratorError and NestingError (a
+        # result nested past JSON's depth limit), which is a ParserError.
         Logger.log_error("server.encode", e)
         rid = response.is_a?(Hash) ? response["id"] : nil
         safe_msg = e.message.encode("utf-8", invalid: :replace, undef: :replace)

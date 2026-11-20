@@ -126,3 +126,15 @@ class TestTruncateParams < Minitest::Test
     assert data["params"].key?("_unserializable")
   end
 end
+
+class TestTruncateParamsNesting < Minitest::Test
+  # M-14: params nested past JSON's depth limit (JSON::NestingError, a
+  # ParserError, not a GeneratorError) must not crash the error path that
+  # reports them.
+  def test_truncate_params_survives_a_nesting_error
+    deep = (1..120).reduce([]) { |acc, _| [acc] }
+    out = MCPforSketchUp::Core::Errors.truncate_params({ "x" => deep })
+    assert out.key?("_unserializable"), out.inspect
+    assert_includes out["_unserializable"], "JSON::NestingError"
+  end
+end
