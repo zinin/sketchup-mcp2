@@ -31,12 +31,16 @@ module MCPforSketchUp
             "mortise_id and tenon_id name the same board (entity #{mortise_id}); " \
             "a joint needs two different boards")
         end
-        width      = U.mm_to_inch(V.optional_positive(params, "width",  50.0))
-        height     = U.mm_to_inch(V.optional_positive(params, "height", 25.0))
-        depth      = U.mm_to_inch(V.optional_positive(params, "depth",  10.0))
+        width_mm   = V.optional_positive(params, "width",  50.0)
+        height_mm  = V.optional_positive(params, "height", 25.0)
+        depth_mm   = V.optional_positive(params, "depth",  10.0)
         ox = U.mm_to_inch(V.optional_number(params, "offset_x"))
         oy = U.mm_to_inch(V.optional_number(params, "offset_y"))
         oz = U.mm_to_inch(V.optional_number(params, "offset_z"))
+        require_box_dimensions!("width" => width_mm, "height" => height_mm, "depth" => depth_mm)
+        width      = U.mm_to_inch(width_mm)
+        height     = U.mm_to_inch(height_mm)
+        depth      = U.mm_to_inch(depth_mm)
 
         model = E.active_model!
         model.start_operation("Mortise and Tenon", true)
@@ -73,6 +77,19 @@ module MCPforSketchUp
         rescue StandardError
           MCPforSketchUp::Handlers::Geometry.safe_abort(model)
           raise
+        end
+      end
+
+      # make_box merges the corners of a box thinner than SketchUp's merge
+      # tolerance (0.001", 0.0254 mm), so the joint refuses what
+      # create_component refuses for a cube. dims_mm: { "width" => mm, ... }.
+      def self.require_box_dimensions!(dims_mm)
+        floor = MCPforSketchUp::Handlers::Geometry::MIN_DIMENSION_MM_BOX
+        dims_mm.each do |key, mm|
+          next if mm >= floor
+          raise MCPforSketchUp::Core::StructuredError.new(-32602,
+            "#{key} must be >= #{floor} mm, got #{mm} — sub-millimeter geometry collapses " \
+            "into SketchUp's merge tolerance")
         end
       end
 
@@ -208,6 +225,12 @@ module MCPforSketchUp
         "union: keep the joint off the edge of the contact area, or build this joint with " \
         "eval_ruby"
 
+      # What to try when the cut leaves the mortise board in separate pieces.
+      SPLIT_ADVICE =
+        "A through mortise as wide as the mortise board splits it: make the joint narrower " \
+        "than the mortise board or its depth less than the board's thickness, so that the " \
+        "pocket does not cut the board in two"
+
       # The board's bounding box in its parent's frame, as plain Floats: a
       # SketchUp Length compares within SketchUp's tolerance, and the pure
       # functions above apply their own.
@@ -323,9 +346,10 @@ module MCPforSketchUp
       # group, or the empty group subtract returns when the cutter shares face
       # planes with the board; the results show all of them. -32603 unless
       # both results are solids, their volumes changed as joint_volume_problem
-      # expects and the tenon is one shell with its board. The advice follows
-      # the board that is off: the cut made the mortise board, the union the
-      # tenon board.
+      # expects, the mortise board is still one piece (a through mortise as
+      # wide as the board cuts it in two) and the tenon is one shell with its
+      # board. The advice follows the board that is off: the cut made the
+      # mortise board, the union the tenon board.
       def self.verify_joint!(mortise, tenon, expected, mortise_before, tenon_before)
         problem, advice =
           if !mortise.manifold?
@@ -334,6 +358,8 @@ module MCPforSketchUp
             ["the tenon board is no longer a solid", JOIN_ADVICE]
           elsif (volume = joint_volume_problem(expected, mortise_before, mortise.volume, tenon_before, tenon.volume))
             [volume, volume.start_with?("mortise board") ? CUT_ADVICE : JOIN_ADVICE]
+          elsif !single_shell?(mortise)
+            ["the cut split the mortise board into separate pieces", SPLIT_ADVICE]
           elsif !single_shell?(tenon)
             ["the tenon did not join the tenon board's body (it is a separate shell)", JOIN_ADVICE]
           end

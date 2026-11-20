@@ -3,9 +3,9 @@
 # of two boards that touch face to face; a cutter subtracted from the mortise
 # board and a piece united with the tenon board build it inside one
 # operation, which commits only when both results are solids, their volumes
-# changed by the joint and the tenon is one shell with its board. Anything
-# else aborts: the log is [[:start, label], :abort] and no half-built joint
-# is committed.
+# changed by the joint, the mortise board is one piece and the tenon is one
+# shell with its board. Anything else aborts: the log is
+# [[:start, label], :abort] and no half-built joint is committed.
 #
 # The boards are the probe of the design's §3: a leg 50 x 50 x 300 mm with a
 # rail 200 x 20 x 80 mm against its +X face, centred on it. The joint is 10
@@ -437,6 +437,16 @@ class TestMortiseTenon < Minitest::Test
     assert_empty @box_calls
   end
 
+  # make_box would merge the corners of a box below SketchUp's merge tolerance.
+  def test_joint_dimension_below_the_box_floor_is_refused
+    err = assert_raises(StructuredError) { joint("width" => 0.05) }
+    assert_equal(-32602, err.code)
+    assert_match(/width must be >= 0\.1 mm, got 0\.05/, err.message)
+    assert_match(/merge tolerance/, err.message)
+    assert_empty @model.log  # refused before start_operation
+    assert_empty @box_calls
+  end
+
   def test_separated_boards_are_refused
     @rail.bounds = bounds_mm([60, 15, 110], [260, 35, 190])  # 10 mm off the leg
     assert_unsuitable(/do not touch/)
@@ -540,6 +550,20 @@ class TestMortiseTenon < Minitest::Test
     @tenoned.entities = [Object.new, *shell(6), *shell(6)]
     err = assert_refused(-32603, /was not committed: the tenon did not join the tenon board's body \(it is a separate shell\)/)
     refute_match(/thickness/, err.message)
+  end
+
+  # A through mortise as wide as the mortise board cuts it in two: both
+  # pieces are closed, and the volume check accepts the loss.
+  def test_mortise_board_cut_in_two_is_refused
+    @pocketed.entities = [Object.new, *shell(6), *shell(6)]
+    err = assert_refused(-32603, /was not committed: the cut split the mortise board into separate pieces/)
+    assert_match(/narrower than the mortise board/, err.message)
+  end
+
+  # single_shell? finds no shell in a result without faces.
+  def test_tenon_without_faces_is_refused
+    @tenoned.entities = [Object.new]
+    assert_refused(-32603, /the tenon did not join the tenon board's body/)
   end
 
   def test_non_solid_result_is_refused

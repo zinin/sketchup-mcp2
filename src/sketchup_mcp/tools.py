@@ -60,8 +60,8 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     strategies for unavailable-server (string-returning tools surface a
     graceful string, Image-returning tools raise). Centralising the
     conversion here would introduce brittle string-based detection in
-    callers and lose the canonical error text shared by the 22 existing
-    text-returning tools.
+    callers and lose the canonical error text shared by the text-returning
+    tools.
 
     See the design's §5.8 for the rationale on error-handling asymmetry
     between text-returning and Image-returning tools.
@@ -94,8 +94,8 @@ def _extract_text(result: object) -> str:
 async def _call(ctx: Context, tool_name: str, /, **kwargs) -> str:
     """Dispatch a tool call to SketchUp and shape the response for Claude.
 
-    Same external contract as before — kept for compatibility with the 22
-    existing string-returning tools. Now delegates to :func:`_raw_call`
+    Same external contract as before — kept for compatibility with the
+    string-returning tools. Now delegates to :func:`_raw_call`
     for connection acquisition and converts the result to a string.
     Connection failures surface as the canonical legacy string so the LLM
     sees a stable, actionable hint.
@@ -312,14 +312,21 @@ async def create_mortise_tenon(
     is along Y and height along Z; along Y, width along X and height along Z;
     along Z, width along X and height along Y. depth is how far the tenon
     reaches into the mortise board; a depth beyond its thickness makes a
-    through mortise. The joint must fit inside the contact area and may reach
-    its edge. Defaults are sized for ~100 mm boards.
+    through mortise, and the tenon then sticks out past the mortise board's
+    far face by depth minus the thickness. The joint must fit inside the
+    contact area and may reach its edge. A depth equal to the mortise
+    board's thickness, or a joint that reaches the edge of the contact area,
+    puts a face of the cut in a face of the board, which SketchUp's solid
+    operations can fail on (-32603): avoid both when possible. Defaults are
+    sized for ~100 mm boards.
 
     The mortise is cut into the mortise board and the tenon is joined to the
     tenon board as one solid. Both boards come back as new groups with new
-    ids and keep their names, tags and materials. A joint that cannot be
-    built is refused: -32602 for boards that do not suit, -32603 when
-    SketchUp's solid operations fail. Nothing is half-built.
+    ids and keep their names, tags and the group's own material; the faces
+    the joint adds (the pocket's walls and the tenon) carry no material of
+    their own. A joint that cannot be built is refused: -32602 for boards
+    that do not suit, -32603 when SketchUp's solid operations fail. Nothing
+    is half-built.
 
     Returns: JSON {mortise: {id, name, type, bbox_mm|null}, tenon: {...}}.
     """

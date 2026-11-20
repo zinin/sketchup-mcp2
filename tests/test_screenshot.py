@@ -215,7 +215,7 @@ async def test_screenshot_connection_error_becomes_sketchuperror():
     """Design §5.8 contract: ConnectionError from the transport layer is
     re-raised as ``SketchUpError(-32000, …)``, NOT silently swallowed and
     NOT converted to the legacy ``"SketchUp not running…"`` string used
-    by the 22 text-returning tools. Locks in the asymmetric error-handling
+    by the text-returning tools. Locks in the asymmetric error-handling
     decision so it cannot regress without a test failure."""
     with patch(
         "sketchup_mcp.tools.get_connection",

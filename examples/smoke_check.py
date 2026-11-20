@@ -134,6 +134,22 @@ face = leg.entities.grep(Sketchup::Face).find do |f|
   f.normal.transform(t).x > 0.99 &&
     f.vertices.all? { |v| ((t * v.position).x * 25.4 - 830.0).abs < 0.01 }
 end
+raise "no face at x = 830 mm looks along +X: the pocket is not where step 21 expects it" unless face
+pts = face.vertices.map { |v| t * v.position }
+[pts.map(&:y).min, pts.map(&:y).max, pts.map(&:z).min, pts.map(&:z).max].map { |v| (v * 25.4).round(1) }.to_json
+"""
+
+
+# Ruby for step 21: the y and z extent (mm) of the rail's face at x = 830 mm that
+# looks along -X — the end of the tenon.
+_TENON_RUBY = """
+rail = Sketchup.active_model.find_entity_by_id(__ID__)
+t = rail.transformation
+face = rail.entities.grep(Sketchup::Face).find do |f|
+  f.normal.transform(t).x < -0.99 &&
+    f.vertices.all? { |v| ((t * v.position).x * 25.4 - 830.0).abs < 0.01 }
+end
+raise "no face at x = 830 mm looks along -X: the tenon is not where step 21 expects it" unless face
 pts = face.vertices.map { |v| t * v.position }
 [pts.map(&:y).min, pts.map(&:y).max, pts.map(&:z).min, pts.map(&:z).max].map { |v| (v * 25.4).round(1) }.to_json
 """
@@ -370,6 +386,20 @@ async def main() -> int:
             assert pocket == [5.0, 15.0, 220.0, 260.0], (
                 f"pocket must be centred on the contact area, "
                 f"[y min, y max, z min, z max] mm: {pocket}")
+        # The tenon fills the pocket: its end, a face of the rail at x=830
+        # looking along -X, spans the same y 5..15 and z 220..260.
+        raw = await _maybe_skip_eval(
+            "eval_ruby step 21 (tenon position)",
+            call(conn, "eval_ruby",
+                 code=_TENON_RUBY.replace("__ID__", str(b_rail))),
+        )
+        if raw is None:
+            eval_skipped[0] += 1
+        else:
+            tenon_end = parse(raw)
+            assert tenon_end == [5.0, 15.0, 220.0, 260.0], (
+                f"the tenon must coincide with the pocket, "
+                f"[y min, y max, z min, z max] mm: {tenon_end}")
 
         step = 22; print(f"[{step}] eval_ruby syntax error — fast diagnostic, not a 60s hang (T-01)")
         t0 = time.monotonic()
