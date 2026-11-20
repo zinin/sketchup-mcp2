@@ -38,6 +38,12 @@ module MCPforSketchUp
           # is erased with delete_originals (its copy is consumed otherwise).
           F.require_unshared!(target, "target (entity #{target_id})")
           F.require_unshared!(tool,   "tool (entity #{tool_id})")
+          # §6.3: a result that replaces its target (delete_originals) takes
+          # the target's name, tag and own material. While the target stays,
+          # the result keeps SketchUp's name ("Union", "Difference",
+          # "Intersection"): copying the target's would leave two entities
+          # with one name for find_components to return.
+          identity = E.identity_of(target) if delete_originals
 
           target_copy = duplicate_group(model, target)
           tool_copy   = duplicate_group(model, tool)
@@ -67,6 +73,7 @@ module MCPforSketchUp
           if delete_originals
             target.erase! if target.valid?
             tool.erase!   if tool.valid?
+            E.restore_identity!(result, identity)
           end
 
           MCPforSketchUp::Handlers::Geometry.describe_entity(result)
@@ -245,6 +252,12 @@ module MCPforSketchUp
           stats["attempted"] = original_specs.length
           total = original_specs.length
 
+          # §6.3: the cut body comes back as a new group with a new id; it
+          # takes the target's name, tag and own material (identity_of names
+          # an unnamed component instance by its definition, as the Outliner
+          # does).
+          identity = E.identity_of(entity)
+
           # Track the most-recent successful subtract result by ID. Group#subtract
           # may return a proxy that becomes silently stale after subsequent
           # destructive ops in the same start_operation; the cached Integer ID
@@ -324,6 +337,7 @@ module MCPforSketchUp
               "#{op_name}: final entity invalid after subtract chain " \
               "(id=#{last_result_id}, edges_done=#{edges_done})")
           end
+          E.restore_identity!(fresh, identity)
           MCPforSketchUp::Handlers::Geometry.describe_entity(fresh)
             .merge(done_key => edges_done, "stats" => stats)
         end
