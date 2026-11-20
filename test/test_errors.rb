@@ -65,6 +65,16 @@ class TestExceptionToData < Minitest::Test
     assert_equal [], data["backtrace"]
   end
 
+  # M-31: a refusal to a client that has not completed the handshake leaves
+  # the backtrace out.
+  def test_exception_to_data_can_leave_out_the_backtrace
+    e = StandardError.new("x")
+    e.set_backtrace(["a.rb:1"])
+    data = MCPforSketchUp::Core::Errors.exception_to_data(e, "hello", {}, backtrace: false)
+    refute data.key?("backtrace")
+    assert_equal "hello", data["tool"]
+  end
+
   def test_timestamp_is_iso8601_utc
     e = StandardError.new("x")
     data = MCPforSketchUp::Core::Errors.exception_to_data(e, "t", {})

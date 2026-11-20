@@ -41,3 +41,32 @@ class TestEncodeFrame < Minitest::Test
     assert_equal MCPforSketchUp::Core::Config::MAX_MESSAGE_SIZE + 4, frame.bytesize
   end
 end
+
+class TestFrameReaderCap < Minitest::Test
+  R = MCPforSketchUp::Core::Framing::FrameReader
+  E = MCPforSketchUp::Core::StructuredError
+  C = MCPforSketchUp::Core::Config
+
+  def header(len)
+    [len].pack("N")
+  end
+
+  # M-15: until the handshake completes a frame may be 4 KiB. The header alone
+  # is refused, before any of the body is buffered; the server lifts the cap
+  # when auth succeeds.
+  def test_max_frame_is_settable
+    reader = R.new(max_frame: C::PRE_HANDSHAKE_MAX_MESSAGE_SIZE)
+    assert_equal 4096, reader.max_frame
+    err = assert_raises(E) { reader.feed(header(4097)) }
+    assert_equal(-32600, err.code)
+    assert_equal "message too large before the handshake: 4097 bytes (cap 4096)", err.message
+
+    lifted = R.new(max_frame: C::PRE_HANDSHAKE_MAX_MESSAGE_SIZE)
+    lifted.max_frame = C::MAX_MESSAGE_SIZE
+    assert_equal [], lifted.feed(header(5000)), "accepted: it waits for the body"
+  end
+
+  def test_default_cap_is_the_message_size
+    assert_equal C::MAX_MESSAGE_SIZE, R.new.max_frame
+  end
+end

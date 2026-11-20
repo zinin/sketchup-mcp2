@@ -74,6 +74,15 @@ module MCPforSketchUp
         "Call `get_version` to inspect handshake state."
       end
 
+      # M-06 (spec §7.2): a hello without client_nonce comes from a client that
+      # predates socket authentication; like an old version, it must upgrade.
+      def self.msg_python_unauthenticated(cv)
+        "sketchup-mcp2 v#{cv} pre-dates socket authentication, which SketchUp plugin " \
+        "v#{SERVER_VERSION} requires. Handshake rejected. " \
+        "#{UPGRADE_CLIENT_HINT} " \
+        "Call `get_version` to inspect handshake state."
+      end
+
       def self.msg_python_missing
         "sketchup-mcp2 client pre-dates version-compat checking. " \
         "Handshake rejected. " \

@@ -25,13 +25,16 @@ module MCPforSketchUp
         }
       end
 
-      def self.exception_to_data(exception, tool, params)
-        {
+      # backtrace: false leaves the backtrace out — for a client that has not
+      # completed the handshake (M-31).
+      def self.exception_to_data(exception, tool, params, backtrace: true)
+        data = {
           "tool"      => tool,
           "params"    => truncate_params(params),
           "timestamp" => Time.now.utc.iso8601,
-          "backtrace" => (exception.backtrace || []).first(3)
         }
+        data["backtrace"] = (exception.backtrace || []).first(3) if backtrace
+        data
       end
 
       def self.truncate_params(params)

@@ -14,11 +14,16 @@ module MCPforSketchUp
         _emit(line)
       end
 
+      # M-21: the statuses a user must see at the default WARN level — a
+      # refused or failed handshake, and a client dropped for being stuck.
+      WARN_STATUSES = %w[handshake_rejected auth_failed write_timeout
+                         pre_handshake_timeout pending_write_overflow].freeze
+
       def self.log_tool(tool, status, extra = nil, client_label: nil)
         body = "tool=#{tool} status=#{status}"
         body << " client=#{client_label}" if client_label
         body << " #{extra}" if extra
-        log("INFO", body)
+        log(WARN_STATUSES.include?(status) ? "WARN" : "INFO", body)
       end
 
       def self.log_error(tool, exception, client_label: nil)

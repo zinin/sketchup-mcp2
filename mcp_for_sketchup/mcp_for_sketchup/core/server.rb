@@ -334,17 +334,30 @@ module MCPforSketchUp
       rescue StandardError => e
         Logger.log_error("server.handler", e, client_label: state.label)
         rid = request.is_a?(Hash) ? request["id"] : nil
+        # M-31: a client that has not completed the handshake gets no
+        # backtrace, and is closed once the answer is written, like every
+        # other refusal before the handshake.
+        state.close_after_response = true unless state.handshaked
         Errors.build_error_response(-32603, e.message,
-          Errors.exception_to_data(e, "?", {}), rid)
+          Errors.exception_to_data(e, "?", {}, backtrace: state.handshaked), rid)
       end
 
+      # M-06 (spec §7.2): two round trips before any tool runs. hello proves
+      # the plugin knows the token, auth proves the client does; neither sends
+      # it. A client is handshaked only after auth.
       def handle_pre_handshake(state, request)
         unless request.is_a?(Hash) && request["jsonrpc"] == "2.0"
           return reject_handshake(state, request,
             StructuredError.new(-32600, "invalid envelope (pre-handshake)"))
         end
-        method = request["method"]
+        return handle_hello(state, request) if state.server_nonce.nil?
+        handle_auth(state, request)
+      end
 
+      # Step 1. The version check comes first, so a client too old to
+      # authenticate hears that it must upgrade, not that its token is wrong.
+      def handle_hello(state, request)
+        method = request["method"]
         unless method == "hello"
           return reject_handshake(state, request,
             StructuredError.new(-32600,
@@ -364,37 +377,91 @@ module MCPforSketchUp
           return reject_handshake(state, request, e)
         end
 
-        state.handshaked     = true
+        client_nonce = params["client_nonce"]
+        if client_nonce.nil?
+          return reject_handshake(state, request,
+            StructuredError.new(-32001,
+              Core::Compat.msg_python_unauthenticated(params["client_version"])))
+        end
+        unless Auth.hex64?(client_nonce)
+          return reject_handshake(state, request,
+            StructuredError.new(-32602,
+              "hello requires params.client_nonce (64 lowercase hex characters)"))
+        end
+        token = Config.token
+        return reject_handshake(state, request, no_token_error) unless Auth.hex64?(token)
+
         state.client_version = params["client_version"]
+        state.client_nonce   = client_nonce
+        state.server_nonce   = Auth.nonce
+        Logger.log_tool("server", "hello_ok",
+          "client_version=#{state.client_version}",
+          client_label: state.label)
+        handshake_result(request,
+          "server_version" => Core::Compat::SERVER_VERSION,
+          "server_nonce"   => state.server_nonce,
+          "server_proof"   => Auth.proof(token, "server", client_nonce, state.server_nonce))
+      end
+
+      # Step 2. A proof of any other value, of any length, is -32003: the
+      # answer says nothing about how close it came.
+      def handle_auth(state, request)
+        method = request["method"]
+        unless method == "auth"
+          return reject_handshake(state, request,
+            StructuredError.new(-32600,
+              "expected 'auth' after 'hello' (got: #{method.inspect})"), tool: "auth")
+        end
+
+        params = request["params"]
+        client_proof = params.is_a?(Hash) ? params["client_proof"] : nil
+        unless client_proof.is_a?(String)
+          return reject_handshake(state, request,
+            StructuredError.new(-32602, "auth requires params.client_proof (string)"), tool: "auth")
+        end
+        token = Config.token
+        return reject_handshake(state, request, no_token_error, tool: "auth") unless Auth.hex64?(token)
+
+        expected = Auth.proof(token, "client", state.client_nonce, state.server_nonce)
+        unless Auth.secure_equal?(client_proof, expected)
+          return reject_handshake(state, request,
+            StructuredError.new(-32003, "authentication failed"),
+            tool: "auth", status: "auth_failed")
+        end
+
+        state.handshaked = true
+        state.reader.max_frame = Config::MAX_MESSAGE_SIZE
         Logger.log_tool("server", "handshake_ok",
           "client_version=#{state.client_version}",
           client_label: state.label)
-
-        # Build a raw JSON-RPC envelope inline — do NOT use
-        # Handlers::Dispatch.build_success_response. That wrapper turns
-        # `result` into the MCP `tools/call` shape
-        # `{content:[{type:text,text:...}], isError:false}`, which would
-        # break the Python client's `result.server_version` / `result.client_id`
-        # reads on the handshake response.
-        {
-          "jsonrpc" => "2.0",
-          "result"  => {
-            "server_version" => Core::Compat::SERVER_VERSION,
-            "client_id"      => state.id,
-          },
-          "id"      => request["id"],
-        }
+        handshake_result(request, "client_id" => state.id)
       end
 
-      def reject_handshake(state, request, structured_error)
+      def no_token_error
+        StructuredError.new(-32603, "the plugin has no token; restart SketchUp to create one")
+      end
+
+      # A raw JSON-RPC envelope — not Handlers::Dispatch.build_success_response,
+      # whose tools/call shape {content:[{type:text,text:...}], isError:false}
+      # would hide result.server_version, result.server_proof and
+      # result.client_id from the Python client.
+      def handshake_result(request, result)
+        { "jsonrpc" => "2.0", "result" => result, "id" => request["id"] }
+      end
+
+      # Every refusal before the handshake completes: logged, answered without
+      # a backtrace (M-31), and the socket closed once the answer is written.
+      # The log line carries the client label, code and message — never the
+      # token or a proof.
+      def reject_handshake(state, request, structured_error, tool: "hello", status: "handshake_rejected")
         rid = request.is_a?(Hash) ? request["id"] : nil
-        Logger.log_tool("server", "handshake_rejected",
+        Logger.log_tool("server", status,
           "code=#{structured_error.code} msg=#{structured_error.message}",
           client_label: state.label)
         state.close_after_response = true
         Errors.build_error_response(structured_error.code,
           structured_error.message,
-          Errors.exception_to_data(structured_error, "hello", {}), rid)
+          Errors.exception_to_data(structured_error, tool, {}, backtrace: false), rid)
       end
 
       def write_response(state, response)

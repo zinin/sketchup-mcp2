@@ -55,6 +55,18 @@ class TestLogger < Minitest::Test
       last_line)
   end
 
+  # M-21: the statuses a user must see log at WARN, so the default WARN level
+  # shows them; the rest stay at INFO.
+  def test_warn_statuses_log_at_warn
+    MCPforSketchUp::Core::Config.log_level = "WARN"
+    MCPforSketchUp::Core::Logger.log_tool("server", "client_connected")
+    assert_empty captured_lines
+    %w[handshake_rejected auth_failed write_timeout pre_handshake_timeout pending_write_overflow].each do |status|
+      MCPforSketchUp::Core::Logger.log_tool("server", status)
+      assert_match(/\[WARN\] tool=server status=#{status}\z/, last_line)
+    end
+  end
+
   def test_log_error_without_client_label_is_unchanged
     err = RuntimeError.new("boom")
     MCPforSketchUp::Core::Logger.log_error("server.timer", err)

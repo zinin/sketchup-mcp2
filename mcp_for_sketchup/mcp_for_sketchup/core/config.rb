@@ -17,6 +17,10 @@ module MCPforSketchUp
 
       LEVELS           = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3 }.freeze
       MAX_MESSAGE_SIZE = 64 * 1024 * 1024  # 64 MiB; matches Python side
+      # M-15: the cap on a frame until the client completes the handshake —
+      # hello and auth are a few hundred bytes, so nothing larger is buffered
+      # for a client that has not proved it knows the token.
+      PRE_HANDSHAKE_MAX_MESSAGE_SIZE = 4 * 1024
 
       # Validation primitives — kept locally so load_from_defaults! has no
       # dependency on ui/settings_validator (which is loaded later). The dialog

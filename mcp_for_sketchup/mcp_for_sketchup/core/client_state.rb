@@ -5,12 +5,18 @@ module MCPforSketchUp
       attr_reader   :id, :sock, :reader, :label, :pending_write_bytes,
                     :head_frame_remaining, :connected_at
       attr_accessor :handshaked, :client_version, :close_after_response,
-                    :pending_write_deadline_at, :close_reason, :queued_frames
+                    :pending_write_deadline_at, :close_reason, :queued_frames,
+                    :client_nonce, :server_nonce
 
       def initialize(id, sock)
         @id                        = id
         @sock                      = sock
-        @reader                    = Framing::FrameReader.new
+        # M-15: small frames only until the handshake completes; the server
+        # lifts the cap when auth succeeds.
+        @reader                    = Framing::FrameReader.new(max_frame: Config::PRE_HANDSHAKE_MAX_MESSAGE_SIZE)
+        # M-06: both nonces of the handshake, set by hello and read by auth.
+        @client_nonce              = nil
+        @server_nonce              = nil
         @label                     = "##{id}[#{peer_label(sock)}]"
         @handshaked                = false
         @client_version            = nil

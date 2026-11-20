@@ -15,7 +15,14 @@ module MCPforSketchUp
       end
 
       class FrameReader
-        def initialize
+        # The largest frame accepted: Config::MAX_MESSAGE_SIZE, or
+        # Config::PRE_HANDSHAKE_MAX_MESSAGE_SIZE until the client completes the
+        # handshake (M-15). A frame over it is refused at its header, before
+        # any of its body is buffered.
+        attr_accessor :max_frame
+
+        def initialize(max_frame: Config::MAX_MESSAGE_SIZE)
+          @max_frame = max_frame
           @buffer = String.new(encoding: Encoding::ASCII_8BIT)
           @state = :reading_header
           @expected_length = nil
@@ -51,10 +58,10 @@ module MCPforSketchUp
 
         def validate_length!(len)
           raise StructuredError.new(-32600, "received zero-length frame") if len == 0
-          if len > Config::MAX_MESSAGE_SIZE
-            raise StructuredError.new(-32600,
-              "message too large: #{len} bytes (cap #{Config::MAX_MESSAGE_SIZE})")
-          end
+          return if len <= @max_frame
+          stage = @max_frame == Config::PRE_HANDSHAKE_MAX_MESSAGE_SIZE ? " before the handshake" : ""
+          raise StructuredError.new(-32600,
+            "message too large#{stage}: #{len} bytes (cap #{@max_frame})")
         end
       end
     end
