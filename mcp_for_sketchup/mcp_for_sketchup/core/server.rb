@@ -27,7 +27,7 @@ module MCPforSketchUp
       # запечатывает стоп полностью.
       DISPATCH_MAX_PER_TICK     = 50      # фреймов за тик; флуд мелких фреймов не должен морозить UI (T-13.2)
       FRAME_QUEUE_SOFT_MAX      = 256     # очередь насыщена — чтение приостанавливается (T-13.2, P-06)
-      PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект без валидного hello закрывается (T-13.5)
+      PRE_HANDSHAKE_DEADLINE_S  = 30.0    # коннект, не прошедший handshake (hello и auth), закрывается (T-13.5)
       # M-15: one client cannot fill the shared queue — it is no longer read
       # while this many of its frames wait (TCP holds the rest); and a burst of
       # connects is accepted a few per tick, the rest waiting in the backlog.
@@ -186,7 +186,7 @@ module MCPforSketchUp
           "reason=max_clients limit=#{MAX_CLIENTS} count=#{rejected}")
       end
 
-      # T-13.5: коннект, не приславший валидный hello за
+      # T-13.5: коннект, не прошедший handshake (hello и auth, блок C) за
       # PRE_HANDSHAKE_DEADLINE_S, закрывается. Без этого 64 молчаливых
       # TCP-коннекта навсегда исчерпывают слоты MAX_CLIENTS (DoS при
       # exposed-bind; до дедлайна слоты, естественно, заняты — 30 с и есть
@@ -474,12 +474,23 @@ module MCPforSketchUp
       def reject_handshake(state, request, structured_error, tool: "hello", status: "handshake_rejected")
         rid = request.is_a?(Hash) ? request["id"] : nil
         Logger.log_tool("server", status,
-          "code=#{structured_error.code} msg=#{structured_error.message}",
+          "code=#{structured_error.code} msg=#{log_excerpt(structured_error.message)}",
           client_label: state.label)
         state.close_after_response = true
         Errors.build_error_response(structured_error.code,
           structured_error.message,
           Errors.exception_to_data(structured_error, tool, {}, backtrace: false), rid)
+      end
+
+      # A refusal before the handshake can carry up to 4 KiB of the peer's text
+      # (a method name, a version); its log line keeps the first
+      # LOG_EXCERPT_MAX characters, enough for every message of our own.
+      LOG_EXCERPT_MAX = 400
+
+      def log_excerpt(text)
+        text = text.to_s
+        return text if text.length <= LOG_EXCERPT_MAX
+        "#{text[0, LOG_EXCERPT_MAX]}... (#{text.length} chars)"
       end
 
       def write_response(state, response)

@@ -76,6 +76,19 @@ class TestLogger < Minitest::Test
     assert last_line.end_with?('a\nb\rc\td\x01e\x7Ff'), last_line
   end
 
+  # Final review minor: C1 controls and the Unicode line separators end a line
+  # in some consoles too.
+  def test_c1_controls_and_unicode_line_separators_are_escaped
+    out = MCPforSketchUp::Core::Logger.sanitize("a\u0085b\u2028c\u2029d\u009Be")
+    assert_equal 'a\u0085b\u2028c\u2029d\u009Be', out
+  end
+
+  # Text read from a socket is binary; a high byte becomes '?' instead of
+  # breaking the escaping.
+  def test_binary_text_with_high_bytes_is_sanitized
+    assert_equal 'ok?\n', MCPforSketchUp::Core::Logger.sanitize("ok\xFF\n".b)
+  end
+
   def test_backtrace_lines_are_escaped
     MCPforSketchUp::Core::Config.log_level = "DEBUG"
     err = RuntimeError.new("boom")

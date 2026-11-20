@@ -18,11 +18,16 @@ module MCPforSketchUp
 
       # M-31: one line is one log record. Control characters — in a model
       # name, an exception message or a peer's input — are written as \n, \r,
-      # \t or \xNN, so nothing a message carries can forge a line of its own.
-      # scrub first: gsub raises on a string with invalid bytes, and logging
-      # must never break the data path.
+      # \t, \xNN or \uNNNN (C1 controls and the Unicode line separators, which
+      # some consoles also break on), so nothing a message carries can forge a
+      # line of its own. The text becomes UTF-8 first, with '?' for invalid or
+      # binary bytes: gsub raises on invalid bytes, and logging must never
+      # break the data path.
       def self.sanitize(text)
-        text.to_s.scrub("?").gsub(/[\x00-\x1F\x7F]/) { |c| CONTROL_ESCAPES.fetch(c) { format("\\x%02X", c.ord) } }
+        utf8 = text.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "?").scrub("?")
+        utf8.gsub(/[\x00-\x1F\x7F\u0080-\u009F\u2028\u2029]/) do |c|
+          CONTROL_ESCAPES.fetch(c) { c.ord < 0x80 ? format("\\x%02X", c.ord) : format("\\u%04X", c.ord) }
+        end
       end
 
       # M-21: the statuses a user must see at the default WARN level — a

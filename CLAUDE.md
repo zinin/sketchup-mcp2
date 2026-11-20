@@ -25,7 +25,13 @@ MCP Server for SketchUp bridges Claude AI and SketchUp via the Model Context Pro
   UI thread. Per-client errors close only that client. **Logical races
   between clients on the model are the user's responsibility** (no
   server-side locking). Half-open sockets detected via `SO_KEEPALIVE`
-  (OS default ~2h).
+  (OS default ~2h). Caps (M-15): a client is not read while 32 of its frames
+  wait (`PER_CLIENT_QUEUE_MAX`), at most 16 connections are accepted per tick
+  (`ACCEPTS_PER_TICK_MAX`), and before the handshake a frame is at most 4 KiB.
+- **Strict tool arguments (M-29)**: `handlers/dispatch.rb::ALLOWED_ARGS` lists
+  every tool's parameters; any other argument is refused with -32602 `unknown
+  argument 'x' for tool`. A new tool parameter goes into that table too, or
+  every call that passes it is refused.
 - **Entity IDs**: SketchUp's `find_entity_by_id` requires Integer; incoming ids are parsed strictly with `Integer(id.to_s, 10)` — never `.to_i`, which silently mis-targets: `"12abc".to_i == 12` and `"12.9".to_i == 12` address entity 12 (`"abc".to_i == 0` at least fails loudly as "entity 0 not found").
 - **Solid tools are unreliable on non-manifold geometry**: `boolean_operation` and edge ops use copy-based + sequential-per-edge workarounds.
 - **`Sketchup::Model#undo` does not exist**: programmatic undo dispatches `Sketchup.send_action("editUndo:")`.
@@ -116,8 +122,8 @@ uvx sketchup-mcp2             # production-style (from PyPI)
 cd mcp_for_sketchup && ruby package.rb && cd ..
 
 # Unit tests
-ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 770 runs / 3283 assertions
-uv run pytest tests/ -q        # Python (pytest) — 260 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
+ruby test/run_all.rb           # Ruby (minitest; stdlib + rubyzip and a git checkout for the package test) — 773 runs / 3289 assertions
+uv run pytest tests/ -q        # Python (pytest) — 261 tests; the wire-contract test runs only with SKETCHUP_MCP_CONTRACT=1 (CI job `contract`)
 
 # Live integration smoke-check (requires SketchUp running + plugin started)
 python examples/smoke_check.py # 28-step end-to-end (covers every tool category; 18 of 20 tools)

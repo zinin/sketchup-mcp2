@@ -54,6 +54,11 @@ class _StaleSocketError(SketchUpError):
 _RETRY_SAFE_TOOLS: frozenset[str] = read_only_wire_names()
 
 
+# A reply to hello or auth, read before the server has proved it knows the
+# token: far above anything the plugin sends there, far below MAX_MESSAGE_SIZE.
+HANDSHAKE_MAX_REPLY = 64 * 1024
+
+
 @dataclass
 class SketchUpConnection:
     host: str
@@ -188,7 +193,9 @@ class SketchUpConnection:
         self._writer.write(struct.pack(">I", len(body)) + body)
         await self._writer.drain()
         try:
-            response_body = await self._recv_frame()
+            # The reply comes from a server that has not proved it knows the
+            # token yet: read no more of it than the plugin could send here.
+            response_body = await self._recv_frame(HANDSHAKE_MAX_REPLY, "handshake reply")
         except asyncio.IncompleteReadError as e:
             # Peer accepted TCP but closed before sending the reply
             # (network blip, Ruby crash, sigkill between accept and write).
@@ -284,18 +291,16 @@ class SketchUpConnection:
         self._writer.write(struct.pack(">I", len(body)) + body)
         await self._writer.drain()
 
-    async def _recv_frame(self) -> bytes:
+    async def _recv_frame(self, max_size: int | None = None, what: str = "message") -> bytes:
         if self._reader is None:
             raise SketchUpError(-32603, "internal: reader is None in _recv_frame")
+        cap = config.MAX_MESSAGE_SIZE if max_size is None else max_size
         header = await self._reader.readexactly(4)
         (length,) = struct.unpack(">I", header)
         if length == 0:
             raise SketchUpError(-32600, "received zero-length frame")
-        if length > config.MAX_MESSAGE_SIZE:
-            raise SketchUpError(
-                -32600,
-                f"message too large: {length} bytes (cap {config.MAX_MESSAGE_SIZE})",
-            )
+        if length > cap:
+            raise SketchUpError(-32600, f"{what} too large: {length} bytes (cap {cap})")
         return await self._reader.readexactly(length)
 
     async def send_command(self, name: str, args: dict[str, Any]) -> Any:

@@ -165,4 +165,16 @@ class TestServerHardening < Minitest::Test
     assert_includes answer["error"]["message"], "JSON::NestingError"
     assert_equal 7, answer["id"]
   end
+
+  # Final review minor: a refusal before the handshake can carry up to 4 KiB of
+  # the peer's text (here a method name); its log line keeps an excerpt.
+  def test_a_refusal_logs_an_excerpt_of_the_peers_text
+    sock = FakeSocket.new(read_chunks: [fr("jsonrpc" => "2.0", "method" => "m" * 3000, "params" => {}, "id" => 0)])
+    srv = server_with(FakeServer.new([sock]))
+    srv.send(:on_timer_tick)
+    line = @logged.map(&:last).find { |l| l.include?("handshake_rejected") }
+    refute_nil line, @logged.inspect
+    assert_operator line.length, :<, 700
+    assert_match(/\.\.\. \(\d+ chars\)/, line)
+  end
 end

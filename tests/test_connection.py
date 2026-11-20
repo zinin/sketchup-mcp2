@@ -2,6 +2,7 @@
 import asyncio
 import json
 import struct
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1158,9 +1159,17 @@ async def test_surrogate_server_proof_is_an_unknown_server(auth_vectors):
     assert [f["method"] for f in frames] == ["hello"]
 
 
-async def test_deeply_nested_hello_reply_is_a_parse_error(auth_vectors):
-    nested = b"[" * 100_000 + b"]" * 100_000
-    async with FakeServer([encode_frame(nested)]) as fs:
+async def test_deeply_nested_hello_reply_is_a_parse_error(auth_vectors, monkeypatch):
+    """A hello reply nested past the parser's depth raises RecursionError, which
+    the client turns into a parse error instead of crashing. HANDSHAKE_MAX_REPLY
+    (64 KiB) keeps such nesting off the wire on this interpreter, so the parser
+    is made to raise it."""
+    def too_deep(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("sketchup_mcp.connection.json",
+                        types.SimpleNamespace(loads=too_deep, dumps=json.dumps))
+    async with FakeServer([encode_frame(b"[[[]]]")]) as fs:
         conn = SketchUpConnection(host=fs.host, port=fs.port, token=auth_vectors.token, timeout=2.0)
         with pytest.raises(SketchUpError) as ei:
             await conn.connect()
@@ -1182,3 +1191,15 @@ async def test_repr_hides_the_token():
     # Final review: a token one %r or traceback away from a log.
     conn = SketchUpConnection(host="h", port=1, timeout=1.0, token="0123456789abcdef" * 4)
     assert "0123456789abcdef" not in repr(conn)
+
+
+async def test_oversized_hello_reply_is_refused_before_it_is_read(auth_vectors):
+    """Final review minor: a reply to hello comes from a server that has not
+    proved it knows the token, so a header that announces 10 MiB is refused at
+    once instead of being read (or waited for)."""
+    async with FakeServer([struct.pack(">I", 10 * 1024 * 1024)]) as fs:
+        conn = SketchUpConnection(host=fs.host, port=fs.port, token=auth_vectors.token, timeout=2.0)
+        with pytest.raises(SketchUpError) as ei:
+            await conn.connect()
+    assert ei.value.code == -32600
+    assert "handshake reply too large" in ei.value.message
