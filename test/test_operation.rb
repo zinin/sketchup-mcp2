@@ -4,11 +4,13 @@
 #
 # The block builds the response, so the response exists before
 # commit_operation (commit has been seen to invalidate the proxies of
-# solid-operation results). Anything that keeps the block from completing —
-# a StandardError, an exception outside StandardError, a throw — and a
-# commit_operation that raises all abort the operation, and the exception
-# goes on to the caller. An abort that raises in turn is logged at DEBUG and
-# never hides the original error.
+# solid-operation results). An exception in the block — a StandardError or
+# one outside StandardError — and a commit_operation that raises abort the
+# operation, and the exception goes on to the caller. A block left by
+# return, break or throw is aborted too, and -32603 is raised in place of
+# the jump: the handler would otherwise answer with a success for edits that
+# were rolled back. `next` finishes the block normally. An abort that raises
+# in turn is logged at DEBUG and never hides the original error.
 #
 # Fakes: a recording model whose log holds [:start, label, disable_ui],
 # :commit and :abort, plus whatever the block appends. Core::Logger.log is
@@ -80,9 +82,43 @@ class TestOperation < Minitest::Test
     assert_equal [[:start, "L", true], :abort], @model.log
   end
 
-  def test_run_aborts_when_the_block_throws
-    catch(:out) { Op.run(@model, "L") { throw :out } }
+  # ---------- a block left by a jump ----------
+
+  def assert_left_early(&jump)
+    err = assert_raises(MCPforSketchUp::Core::StructuredError, &jump)
+    assert_equal(-32603, err.code)
+    assert_equal "internal error: 'L' left its undo step before it finished (a return, break or " \
+                 "throw inside Operation.run), so its changes were rolled back", err.message
     assert_equal [[:start, "L", true], :abort], @model.log
+  end
+
+  # A handler that returns from inside its block.
+  def return_from_the_block
+    Op.run(@model, "L") { return :early }
+    :late
+  end
+
+  def test_a_return_out_of_the_block_aborts_and_raises
+    assert_left_early { return_from_the_block }
+  end
+
+  def test_a_break_out_of_the_block_aborts_and_raises
+    assert_left_early { Op.run(@model, "L") { break :early } }
+  end
+
+  def test_a_throw_out_of_the_block_aborts_and_raises
+    assert_left_early { catch(:out) { Op.run(@model, "L") { throw :out } } }
+  end
+
+  def test_next_finishes_the_block_and_commits
+    early = true
+    value = Op.run(@model, "L") do
+      next :early if early
+
+      :late
+    end
+    assert_equal :early, value
+    assert_equal [[:start, "L", true], :commit], @model.log
   end
 
   def test_run_aborts_when_commit_raises

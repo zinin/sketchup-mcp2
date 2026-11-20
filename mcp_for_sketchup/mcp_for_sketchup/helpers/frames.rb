@@ -180,15 +180,16 @@ module MCPforSketchUp
 
       # The walk: from entity.parent up to the model. A definition with no
       # instances is not placed in the model and ends the walk. When a
-      # definition has several instances the first one is followed (the
-      # first placement), and the entity is shared: the edit would change the
-      # contents of every copy. Its copies are the placements of the
-      # definition that holds the entity, through the whole hierarchy
-      # (count_used_instances, live on SketchUp 2027).
+      # definition has several instances the entity is shared: the edit would
+      # change the contents of every copy. Its copies are the placements of
+      # the definition that holds the entity, through the whole hierarchy
+      # (count_used_instances, live on SketchUp 2027). Which copy the walk
+      # follows: `followed`.
       def self.placement(entity)
         matrix = IDENTITY
         depth = 0
         shared = nil
+        open_path = nil
         holding = entity.parent
         parent = holding
         while parent.is_a?(Sketchup::ComponentDefinition)
@@ -199,15 +200,40 @@ module MCPforSketchUp
               "the entity is nested more than #{MAX_DEPTH} groups or components deep; " \
               "its place in the model cannot be worked out")
           end
-          if shared.nil? && instances.length > 1
-            shared = { label: label_of(parent), copies: holding.count_used_instances }
-          end
           instance = instances.first
+          if instances.length > 1
+            shared ||= { label: label_of(parent), copies: holding.count_used_instances }
+            open_path ||= MCPforSketchUp::Helpers::Entities.active_model!.active_path || []
+            instance = followed(parent, instances, open_path)
+          end
           matrix = multiply(matrix_of(instance.transformation), matrix)
           depth += 1
           parent = instance.parent
         end
         Placement.new(matrix, depth, shared)
+      end
+
+      # Of a definition's several instances, the copy the walk follows:
+      #   * the one open for editing (on `open_path`, the model's active
+      #     path): the user sees the entity there, and SketchUp reports the
+      #     open copy's contents in world coordinates;
+      #   * else the first placed in the model: a definition that is not
+      #     placed (a component whose instances were all deleted, kept until
+      #     Purge Unused) can hold a copy that SketchUp lists first, and
+      #     following it would end the walk in that definition's frame;
+      #   * else the first.
+      def self.followed(definition, instances, open_path)
+        open_path.find { |i| i.definition == definition } ||
+          instances.find { |i| placed?(i) } ||
+          instances.first
+      end
+
+      # In the model itself, or in a definition placed in it:
+      # count_used_instances counts placements through the hierarchy, and is
+      # 0 for a definition that is not placed (live, SketchUp 2027).
+      def self.placed?(instance)
+        parent = instance.parent
+        !parent.is_a?(Sketchup::ComponentDefinition) || parent.count_used_instances.positive?
       end
 
       # How a refusal names a definition: a component by its name; a group
@@ -305,13 +331,20 @@ module MCPforSketchUp
         entity_bbox_mm(entity, placement(entity).matrix)
       end
 
-      # The groups and components open for editing, outermost first.
+      # The groups and components open for editing, outermost first. shared:
+      # the contents of that group are shared — it, or one holding it, is
+      # placed more than once — so the rows of the entities inside it say
+      # shared too, and a new object there would appear in every copy. Each
+      # one on the path lies in the one before it, so a shared one makes
+      # every one after it shared.
       def self.editing(model)
+        shared = false
         (model.active_path || []).map do |instance|
+          shared ||= shared?(instance.definition)
           {
             "id"     => instance.entityID,
             "name"   => MCPforSketchUp::Helpers::Entities.display_name(instance),
-            "shared" => shared?(instance.definition)
+            "shared" => shared
           }
         end
       end

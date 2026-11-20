@@ -2,7 +2,8 @@
 
 Most tools are thin wrappers that delegate to :func:`_call`, which centralises
 connection acquisition, error handling, and response unwrapping; a few
-(`eval_ruby`, `get_viewport_screenshot`) use :func:`_raw_call` directly.
+(`eval_ruby`, `get_viewport_screenshot`, `get_version`) use :func:`_raw_call`
+directly.
 """
 import base64
 import json
@@ -84,16 +85,13 @@ async def _raw_call(ctx: Context, tool_name: str, /, **kwargs) -> dict:
     colliding with this parameter — see ``find_components`` /
     ``create_layer`` callers below for the pattern.
 
-    Does **not** translate :class:`ConnectionError` to anything — that
-    is each caller's responsibility, since callers have divergent
-    strategies for unavailable-server (string-returning tools surface a
-    graceful string, Image-returning tools raise). Centralising the
-    conversion here would introduce brittle string-based detection in
-    callers and lose the canonical error text shared by the text-returning
-    tools.
-
-    See the design's §5.8 for the rationale on error-handling asymmetry
-    between text-returning and Image-returning tools.
+    Raises :class:`ConnectionError` when SketchUp cannot be reached and
+    :class:`SketchUpError` for an error reply, and leaves turning them into
+    what the client sees to each caller, since the callers differ:
+    :func:`_call` and ``get_viewport_screenshot`` return error results
+    (M-12) with the canonical texts, ``eval_ruby`` passes the eval gate's
+    message on verbatim, and ``get_version`` folds any failure into its
+    always-returned payload.
     """
     sketchup = await get_connection()
     # ConnectionError при недоступном SketchUp поднимает send_command
@@ -175,9 +173,9 @@ async def create_component(
 
     When the user has a group or component open for editing in SketchUp, the
     new object goes inside it, as with SketchUp's own tools
-    (get_model_info.editing shows the open path). If that group or component
-    is placed more than once in the model, the call is refused with -32602:
-    the object would appear in every copy.
+    (get_model_info.editing shows the open path). If that group or component,
+    or one holding it, is placed more than once in the model, the call is
+    refused with -32602: the object would appear in every copy.
 
     Returns: JSON {id, name, type, bbox_mm{min,max}|null}. Read bbox_mm to
     verify the result before the next step.
@@ -687,8 +685,12 @@ async def get_model_info(ctx: Context) -> str | CallToolResult:
 
     entity_count counts top-level entities only. editing lists the groups and
     components open for editing in SketchUp, outermost first, as
-    [{id, name, shared}]: create_component puts new objects into the last
-    one, and refuses while any of them is shared (placed more than once).
+    [{id, name, shared}]; create_component puts new objects into the last
+    one. shared is true when the contents of that group or component are
+    shared — it, or one holding it, is placed more than once — so the
+    entities inside it are listed with shared: true as well, and
+    create_component refuses while the last one is shared: the new object
+    would appear in every copy.
 
     Returns: JSON {path, title, units: "mm", bounding_box_mm|null,
     entity_count, layers[], editing[]}.
@@ -751,7 +753,8 @@ async def get_component_info(
     bbox_mm is in world coordinates, worked out through the entity's parents,
     whether or not a group is open for editing. For an entity inside a
     component or group placed more than once, shared is true and bbox_mm is
-    its first placement's.
+    that of the copy open for editing when there is one, else of the first
+    placed copy (list_components lists every copy).
 
     Returns: JSON {id, name, type, layer, depth, shared, definition
     (components only), bbox_mm|null}.

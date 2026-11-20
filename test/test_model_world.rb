@@ -215,6 +215,41 @@ class TestModelWorld < Minitest::Test
     assert_equal [], M.get_model_info({})["editing"]
   end
 
+  # Group "part" open inside copy a of Leg: its contents are placed once per
+  # copy of Leg, so they are shared, as the rows of the entities inside it
+  # say (and create_component refuses there).
+  def test_editing_marks_a_group_open_inside_a_shared_component
+    a, _b, part = leg_scene
+    @model.active_path = [a, part]
+    assert_equal [{ "id" => 1, "name" => "Leg", "shared" => true },
+                  { "id" => 3, "name" => "part", "shared" => true }], M.get_model_info({})["editing"]
+  end
+
+  # leg_scene with copy b (x 20") open: SketchUp reports b with the
+  # identity, a with T(a)·T(b)⁻¹ (x -10"), and part at b's place in world
+  # coordinates (live, SketchUp 2027).
+  def open_leg_scene
+    leg = FrameFakes::Definition.new("Leg")
+    place(leg, id: 1, parent: @model, matrix: F.translation(-10, 0, 0))
+    b = place(leg, id: 2, parent: @model)
+    place(FrameFakes::Definition.new("Group#3", group: true), id: 3, parent: leg,
+          matrix: F.translation(20, 0, 0), name: "part")
+    @model.active_path = [b]
+  end
+
+  # Inside the open copy, the entity is where the user sees it: in b, as the
+  # row listed under b says, not in the first copy.
+  def test_component_info_inside_an_open_copy_reports_that_copy
+    open_leg_scene
+    info = M.get_component_info("id" => "3")
+    assert_equal true, info["shared"]
+    assert_bbox_mm({ "min" => [508.0, 0.0, 0.0], "max" => [533.4, 25.4, 25.4] }, info["bbox_mm"])
+    rows = M.list_components("recursive" => true)["components"]
+    assert_equal [1, 3, 2, 3], rows.map { |r| r["id"] }
+    assert_bbox_mm({ "min" => [254.0, 0.0, 0.0], "max" => [279.4, 25.4, 25.4] }, rows[1]["bbox_mm"])
+    assert_bbox_mm rows[3]["bbox_mm"], info["bbox_mm"]
+  end
+
   # Final review, Important #1, through the handler: a group turned 30°
   # inside a group turned 30° has one box, open or closed (SketchUp boxes
   # an instance as its definition's bounds through its transformation).

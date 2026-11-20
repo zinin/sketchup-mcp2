@@ -10,21 +10,37 @@ module MCPforSketchUp
       # exists before commit_operation: commit has been seen to invalidate
       # the proxies of solid-operation results (operations.rb, run_edge_op).
       #
-      # When the block does not complete — any exception, StandardError or
-      # not, or a throw — and when commit_operation itself raises, the
-      # operation is aborted from the ensure, and the exception goes on to
-      # the caller.
+      # When the block raises — any exception, StandardError or not — and
+      # when commit_operation itself raises, the operation is aborted from the
+      # ensure, and the exception goes on to the caller. A block left by
+      # return, break or throw skips the commit too: the operation is aborted
+      # and -32603 is raised in place of the jump, since the handler would
+      # otherwise answer with a success for edits that were rolled back.
+      # To finish a block early, use `next value`.
       def self.run(model, label)
         model.start_operation(label, true)
         completed = false
+        raised = false
         begin
           result = yield
           model.commit_operation
           completed = true
           result
+        rescue Exception # rubocop:disable Lint/RescueException
+          raised = true # for the ensure; the exception goes on as it is
+          raise
         ensure
-          safe_abort(model) unless completed
+          unless completed
+            safe_abort(model)
+            raise left_early(label) unless raised
+          end
         end
+      end
+
+      def self.left_early(label)
+        MCPforSketchUp::Core::StructuredError.new(-32603,
+          "internal error: '#{label}' left its undo step before it finished (a return, break or " \
+          "throw inside Operation.run), so its changes were rolled back")
       end
 
       # Wrap abort_operation so its own potential exception (NoMethodError on

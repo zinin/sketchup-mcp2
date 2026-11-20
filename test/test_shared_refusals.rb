@@ -93,10 +93,11 @@ class TestSharedRefusals < Minitest::Test
   end
 
   # A group: what find!, the guards, delete, set_material and describe_entity
-  # read; erase! and transform! are recorded.
+  # read; erase! and transform! are recorded. Its definition is nil unless a
+  # test sets it.
   class FakeGroup < Sketchup::Group
     attr_reader :entityID, :name, :entities, :erased
-    attr_accessor :parent, :bounds
+    attr_accessor :parent, :bounds, :definition
 
     def initialize(id, name, parent, bounds = FrameFakes.bounds([0, 0, 0], [1, 1, 1]))
       @entityID = id
@@ -227,9 +228,14 @@ class TestSharedRefusals < Minitest::Test
   end
 
   def test_top_level_copy_can_be_painted_and_deleted
-    # A group whose own definition has two instances, at the top level: its
-    # parent is the model, so the walk meets no definition.
+    # A group whose own definition has two instances (a group copied in
+    # SketchUp: both copies keep one definition until one is edited), at the
+    # top level: its parent is the model, so the walk meets no definition,
+    # and its own does not count.
     copy = @model.register(FakeGroup.new(5, "chair copy", @model))
+    copies = FrameFakes::Definition.new("Group#5", group: true)
+    copies.instances.push(copy, FakeGroup.new(6, "chair copy", @model))
+    copy.definition = copies
     H::Materials.set_material("id" => "5", "material" => "red")
     assert_equal [[:start, "Set Material (Red)"], :commit], @model.log
     @model.log.clear

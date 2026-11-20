@@ -34,7 +34,12 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "find_components": _READ,
     "list_layers": _READ,
     "get_selection": _READ,
-    # restore_view (the default) puts the camera back; the tool writes no file.
+    # Read-only for the model and the files: it writes neither. With
+    # restore_view (the default) the camera and the style are put back after
+    # the snapshot; restore_view=false leaves the view where the call put it,
+    # which is what that argument asks for. A repeat with the same arguments
+    # gives the same view, so the retry set may hold it, and Ruby's
+    # READ_ONLY_TOOLS (dispatch.rb) lists it too.
     "get_viewport_screenshot": _READ,
     "get_version": _READ,
     "create_component": _hints(False),

@@ -184,5 +184,19 @@ async def test_get_model_info_explains_entity_count_and_editing():
         assert fragment in desc, f"get_model_info: no «{fragment}»"
 
 
+async def test_open_path_tools_count_a_shared_group_holding_the_open_one():
+    # A unique group open inside a copy of a shared component is shared too:
+    # create_component refuses there, and editing[] marks it shared.
+    descs = await _descriptions()
+    for name in ("create_component", "get_model_info"):
+        assert "one holding it" in descs[name], f"{name}: says nothing of a shared group holding the open one"
+
+
+async def test_get_component_info_says_which_copy_a_shared_box_is():
+    desc = (await _descriptions())["get_component_info"]
+    for fragment in ("copy open for editing", "first placed copy"):
+        assert fragment in desc, f"get_component_info: no «{fragment}»"
+
+
 async def test_find_components_matches_definition_names():
     assert "definition name" in (await _descriptions())["find_components"]

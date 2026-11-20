@@ -6,10 +6,14 @@
 # Matrices are 16 Floats, column-major like Geom::Transformation#to_a; the
 # layout tests pin the values SketchUp 2027 gave live for a 90° rotation
 # about Z and for scaling([1,2,3], 1,2,3). The walk runs over
-# test/support/frame_fakes.rb: a plain Object is the model, Definitions are
-# the definitions between it and the entity.
+# test/support/frame_fakes.rb: a FakeModel (anything but a definition) is
+# the model, Definitions are the definitions between it and the entity. At a
+# definition with several instances the walk asks the model which copy is
+# open for editing: Entities.active_model! is stubbed per test
+# (SingletonStubs) to return the FakeModel, whose active_path is that.
 require "minitest/autorun"
 
+require_relative "support/singleton_stubs"
 require_relative "support/frame_fakes"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/units"
@@ -18,8 +22,19 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/entities"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/helpers/frames"
 
 class TestFrames < Minitest::Test
+  include SingletonStubs
+
   F  = MCPforSketchUp::Helpers::Frames
+  EH = MCPforSketchUp::Helpers::Entities
   SE = MCPforSketchUp::Core::StructuredError
+
+  # The model: active_path is the groups open for editing, nil for none.
+  FakeModel = Struct.new(:active_path)
+
+  def setup
+    model = self.model
+    stub_singleton(EH, :active_model!) { model }
+  end
 
   SHARED_ADVICE =
     "so changing it would change every copy. To change all copies, edit the definition through " \
@@ -134,7 +149,7 @@ class TestFrames < Minitest::Test
   # ---------- the walk ----------
 
   def model
-    @model ||= Object.new
+    @model ||= FakeModel.new(nil)
   end
 
   def test_top_level_entity_has_identity_and_no_sharing
@@ -166,6 +181,75 @@ class TestFrames < Minitest::Test
     p = F.placement(FrameFakes::Leaf.new(3, parent: leg))
     assert_equal({ label: "component 'Leg'", copies: 2 }, p.shared)
     assert_matrix F.translation(10, 0, 0), p.matrix
+    assert_equal 1, p.depth
+  end
+
+  # Copy b (at x 20) is open: SketchUp reports it with the identity, copy a
+  # with T(a)·T(b)⁻¹ (x -10), and their contents at b's place in world
+  # coordinates (live, SketchUp 2027). The entity is where the user sees it,
+  # in b, so the walk follows b, not the first copy.
+  def test_the_walk_follows_the_copy_open_for_editing
+    leg = FrameFakes::Definition.new("Leg")
+    FrameFakes.place(leg, id: 1, parent: model, matrix: F.translation(-10, 0, 0))
+    open_copy = FrameFakes.place(leg, id: 2, parent: model)
+    model.active_path = [open_copy]
+    p = F.placement(FrameFakes::Leaf.new(3, parent: leg))
+    assert_matrix F::IDENTITY, p.matrix
+    assert_equal 1, p.depth
+    assert_equal({ label: "component 'Leg'", copies: 2 }, p.shared)
+  end
+
+  # The open copy can sit deeper than the definition being walked: a group
+  # open inside copy b of Leg. The walk follows b at Leg.
+  def test_the_walk_follows_the_open_copy_above_an_open_group
+    leg = FrameFakes::Definition.new("Leg")
+    FrameFakes.place(leg, id: 1, parent: model, matrix: F.translation(-10, 0, 0))
+    open_copy = FrameFakes.place(leg, id: 2, parent: model)
+    part = FrameFakes::Definition.new("Group#3", group: true)
+    open_part = FrameFakes.place(part, id: 3, parent: leg, name: "part")
+    model.active_path = [open_copy, open_part]
+    p = F.placement(FrameFakes::Leaf.new(4, parent: part))
+    assert_matrix F::IDENTITY, p.matrix
+    assert_equal 2, p.depth
+  end
+
+  # A definition that is not placed (a component whose instances were all
+  # deleted, kept until Purge Unused) can still hold a copy, and SketchUp
+  # lists that copy first when it was made first (live, SketchUp 2027:
+  # count_used_instances is 0 for that definition). Following it would end
+  # the walk in the unplaced definition's frame; the walk follows the copy
+  # placed in the model.
+  def test_the_walk_skips_a_copy_inside_an_unplaced_definition
+    leg = FrameFakes::Definition.new("Leg")
+    old_table = FrameFakes::Definition.new("Old table")
+    FrameFakes.place(leg, id: 1, parent: old_table, matrix: F.translation(5, 0, 0))
+    FrameFakes.place(leg, id: 2, parent: model, matrix: F.translation(20, 0, 0))
+    p = F.placement(FrameFakes::Leaf.new(3, parent: leg))
+    assert_matrix F.translation(20, 0, 0), p.matrix
+    assert_equal 1, p.depth
+  end
+
+  # A copy is placed through its definition's own placements: a definition
+  # placed inside a placed component counts, though it is not at the top.
+  def test_a_copy_inside_a_placed_component_counts_as_placed
+    leg = FrameFakes::Definition.new("Leg")
+    old_table = FrameFakes::Definition.new("Old table")
+    FrameFakes.place(leg, id: 1, parent: old_table, matrix: F.translation(5, 0, 0))
+    table = FrameFakes::Definition.new("Table")
+    FrameFakes.place(table, id: 2, parent: model, matrix: F.translation(100, 0, 0))
+    FrameFakes.place(leg, id: 3, parent: table, matrix: F.translation(20, 0, 0))
+    p = F.placement(FrameFakes::Leaf.new(4, parent: leg))
+    assert_matrix F.translation(120, 0, 0), p.matrix
+    assert_equal 2, p.depth
+  end
+
+  # With no copy placed, the walk keeps the first copy, as before.
+  def test_with_no_copy_placed_the_walk_follows_the_first
+    leg = FrameFakes::Definition.new("Leg")
+    FrameFakes.place(leg, id: 1, parent: FrameFakes::Definition.new("Old table"), matrix: F.translation(5, 0, 0))
+    FrameFakes.place(leg, id: 2, parent: FrameFakes::Definition.new("Old chair"), matrix: F.translation(7, 0, 0))
+    p = F.placement(FrameFakes::Leaf.new(3, parent: leg))
+    assert_matrix F.translation(5, 0, 0), p.matrix
     assert_equal 1, p.depth
   end
 
