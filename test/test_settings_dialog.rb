@@ -3,10 +3,12 @@ require "minitest/autorun"
 require "json"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/net"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/application"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/ui/settings_dialog"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/ui/settings_validator"
 require_relative "support/config_reset"
+require_relative "support/singleton_stubs"
 
 # --- Minimal SketchUp API stubs for the on_save eval-confirm tests below. ---
 # on_save defers work via UI.start_timer and persists via Config.update!
@@ -23,6 +25,9 @@ unless UI.respond_to?(:start_timer)
   end
 end
 SKETCHUP_CONSOLE = nil unless defined?(SKETCHUP_CONSOLE)
+# SketchUp's messagebox constants (MB_YESNO = 4, IDYES = 6), for the confirms.
+MB_YESNO = 4 unless defined?(MB_YESNO)
+IDYES    = 6 unless defined?(IDYES)
 
 module Sketchup; end unless defined?(Sketchup)
 unless Sketchup.respond_to?(:mcp_test_write_result)
@@ -125,6 +130,121 @@ class TestSettingsDialogLoadStatePayload < Minitest::Test
     assert payload.key?(:log_file_path), "payload must include :log_file_path"
     assert_equal true,           payload[:log_to_file]
     assert_equal "/tmp/mcp.log", payload[:log_file_path]
+  end
+
+  # Spec §7.1, §7.3: the dialog shows the token, and warns about a host that is
+  # not loopback from the first paint (Core::Net, the server's check).
+  def test_payload_carries_the_token_and_the_loopback_flag
+    MCPforSketchUp::Core::Config.token = "0123456789abcdef" * 4
+    MCPforSketchUp::Core::Config.host  = "192.168.1.5"
+    payload = S.load_state_payload
+    assert_equal "0123456789abcdef" * 4, payload[:token]
+    assert_equal false, payload[:host_loopback]
+    MCPforSketchUp::Core::Config.host = "127.0.0.1"
+    assert_equal true, S.load_state_payload[:host_loopback]
+  end
+end
+
+# Spec §7.1: Regenerate asks, saves a new token, closes every client and shows
+# the new token; a failed save keeps the old token, and its clients. Spec §7.3:
+# the host warning comes from the Ruby loopback check, which JavaScript cannot
+# run (names must be resolved).
+class TestSettingsDialogToken < Minitest::Test
+  include SingletonStubs
+
+  S   = MCPforSketchUp::UI::SettingsDialog
+  C   = MCPforSketchUp::Core::Config
+  A   = MCPforSketchUp::Core::Application
+  OLD = ("0123456789abcdef" * 4).freeze
+  NEW = ("f" * 64).freeze
+
+  class FakeDialog
+    attr_reader :scripts
+
+    def initialize
+      @scripts = []
+    end
+
+    def execute_script(script)
+      @scripts << script
+    end
+
+    def script_text
+      @scripts.join("\n")
+    end
+  end
+
+  def setup
+    ConfigReset.reset_all!
+    C.host          = "127.0.0.1"
+    C.port          = 9876
+    C.log_level     = "INFO"
+    C.log_to_file   = false
+    C.log_file_path = ""
+    C.eval_enabled  = false
+    C.token         = OLD
+    @disconnected = []
+    disconnected = @disconnected
+    stub_singleton(A, :disconnect_clients) { |reason| disconnected << reason }
+  end
+
+  def teardown
+    ConfigReset.reset_all!
+  end
+
+  def regenerate(answer:, &save)
+    save ||= -> { C.token = NEW }
+    stub_singleton(S, :confirm_regenerate) { answer }
+    stub_singleton(C, :regenerate_token!, &save)
+    dialog = FakeDialog.new
+    S.on_regenerate_token(dialog)
+    dialog
+  end
+
+  def test_regenerate_yes_saves_disconnects_and_refreshes
+    dialog = regenerate(answer: true)
+    assert_equal NEW, C.token
+    assert_equal ["token_regenerated"], @disconnected
+    assert_includes dialog.script_text, 'window.onTokenResult({"ok":true})'
+    assert_includes dialog.script_text, "window.applyState("
+    assert_includes dialog.script_text, NEW, "the dialog shows the new token"
+  end
+
+  def test_regenerate_no_changes_nothing
+    dialog = regenerate(answer: false)
+    assert_equal OLD, C.token
+    assert_empty @disconnected
+    assert_empty dialog.scripts
+  end
+
+  def test_regenerate_save_failure_reports_and_keeps_the_token
+    dialog = regenerate(answer: true) { raise "Sketchup.write_default failed for auth_token" }
+    assert_equal OLD, C.token
+    assert_empty @disconnected, "the old token still works, so its clients stay"
+    assert_includes dialog.script_text,
+      'window.onTokenResult({"ok":false,"error":"Could not save the new token: Sketchup.write_default failed for auth_token"})'
+  end
+
+  def test_regenerate_confirm_says_who_is_disconnected
+    text = nil
+    stub_singleton(::UI, :messagebox) { |message, *_| text = message; ::IDYES }
+    assert S.confirm_regenerate
+    assert_includes text, "Every connected MCP client is disconnected now"
+    assert_includes text, "SKETCHUP_MCP_TOKEN"
+  end
+
+  def test_check_host_answers_on_host_check
+    dialog = FakeDialog.new
+    S.on_check_host(dialog, "192.168.1.5")
+    assert_equal ['window.onHostCheck({"host":"192.168.1.5","loopback":false})'], dialog.scripts
+  end
+
+  def test_eval_confirm_mentions_the_token
+    text = nil
+    stub_singleton(::UI, :messagebox) { |message, *_| text = message; ::IDYES }
+    assert S.confirm_eval_enable
+    assert_includes text, "any MCP client that has the token"
+    assert_includes text, "the traffic itself is not encrypted"
   end
 end
 
@@ -356,12 +476,25 @@ class TestSettingsHtmlEvalWarning < Minitest::Test
     div.gsub(/<[^>]*>/, "").gsub(/\s+/, " ").strip
   end
 
+  # Block C: a client needs the token, so the gate is open to any MCP client
+  # that has it — not to any process that reaches the port.
   def test_eval_warning_says_who_can_connect_and_what_they_get
     text = eval_warning_text
-    assert_match(/any local process/, text, "the warning must say who can connect, not only MCP clients")
-    assert_match(/other machines/, text, "the warning must say a non-loopback Host reaches other machines")
+    assert_match(/any MCP client that has the token/, text, "the warning must say who can use the gate")
     assert_match(/arbitrary Ruby/, text, "the warning must say what the gate lets run")
-    assert_match(%r{file/shell access}, text, "the warning must say what eval grants")
+    assert_match(/file and shell access/, text, "the warning must say what eval grants")
+  end
+
+  # Spec §7.1: the token row is read-only (the user copies or regenerates it,
+  # never types it), and the host warning asks Ruby (spec §7.3).
+  def test_the_token_row_and_the_host_check
+    html = File.read(S::HTML_PATH, encoding: "UTF-8")
+    assert_match(/<input type="text" id="token" readonly/, html)
+    assert_match(/id="btn-copy-token"/, html)
+    assert_match(/id="btn-regenerate-token"/, html)
+    assert_includes html, "sketchup.regenerate_token()"
+    assert_includes html, "sketchup.check_host("
+    refute_includes html, "isWildcard", "the wildcard-only JavaScript check is gone"
   end
 
   def test_eval_warning_states_the_shipped_default

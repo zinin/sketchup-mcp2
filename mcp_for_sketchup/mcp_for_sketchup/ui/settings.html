@@ -19,6 +19,11 @@
     .buttons { text-align: right; margin-top: 1.1em; }
     button { padding: 0.45em 1em; margin-left: 0.5em; font-size: 1em; }
     button:disabled { color: #888; cursor: default; }
+    #token { font-family: Consolas, Menlo, monospace; font-size: 0.85em; }
+    .token-actions { text-align: right; margin: 0.3em 0 0.2em 0; }
+    .token-actions button { margin-left: 0.4em; }
+    #token-status { float: left; font-size: 0.85em; color: #444; padding-top: 0.45em; }
+    .hint { font-size: 0.85em; color: #555; margin-bottom: 0.6em; }
   </style>
 </head>
 <body>
@@ -39,6 +44,21 @@
     <input type="text" id="port" autocomplete="off" spellcheck="false">
   </div>
   <div class="error" id="port-error"></div>
+
+  <div class="section-title">Token</div>
+  <div class="row">
+    <label for="token">MCP token</label>
+    <input type="text" id="token" readonly autocomplete="off" spellcheck="false">
+  </div>
+  <div class="token-actions">
+    <span id="token-status"></span>
+    <button id="btn-copy-token" type="button">Copy</button>
+    <button id="btn-regenerate-token" type="button">Regenerate</button>
+  </div>
+  <div class="hint">
+    Every MCP client needs this token in SKETCHUP_MCP_TOKEN to connect.
+    Regenerate disconnects every client; each then needs the new token.
+  </div>
 
   <div class="section-title">Logging</div>
 
@@ -72,7 +92,7 @@
   </div>
   <div class="error" id="eval_enabled-error"></div>
   <div class="warning" id="eval-warning" style="margin-left: 0;">
-    Lets anything that can connect to the MCP server's port — any local process, and other machines if Host is not a loopback address — run arbitrary Ruby with full file/shell access. ON by default; uncheck it unless you trust everything that can reach the port.
+    Lets any MCP client that has the token run arbitrary Ruby with full file and shell access. ON by default; uncheck it unless you trust every client you give the token to.
   </div>
 
   <div id="status" class="status">
@@ -117,27 +137,39 @@
       document.getElementById('btn-save').disabled = !isDirty();
     }
 
-    // Returns warning text for the currently-typed host, or '' if none applies.
-    // Called both on initial applyState and on every host input event so users
-    // see the warning the moment they type 0.0.0.0 — not only after Save.
+    // §7.3: the host warning comes from Ruby's loopback check (Core::Net),
+    // the one the server's bind warning uses: JavaScript cannot resolve names
+    // such as localhost. hostCheck is the last answer, {host, loopback}; it is
+    // asked for 300 ms after the host field stops changing (scheduleHostCheck).
+    var hostCheck = null;
+    var hostCheckTimer = null;
+
+    function scheduleHostCheck() {
+      if (hostCheckTimer) clearTimeout(hostCheckTimer);
+      hostCheckTimer = setTimeout(function () {
+        sketchup.check_host(document.getElementById('host').value);
+      }, 300);
+    }
+
+    window.onHostCheck = function (result) {
+      hostCheck = result;
+      refreshStatusHint(lastState);
+    };
+
+    // Returns warning text for the currently-typed host, or '' if none applies
+    // (or the check for this host has not answered yet). It says what the token
+    // protects — who can connect — and what it does not: the traffic.
     function hostSecurityWarning(host) {
-      // Wildcard binds expose the server to the network with no authentication.
-      // Cover IPv4 0.0.0.0 and the IPv6 any-address in both the compressed '::'
-      // and fully-expanded '0:0:0:0:0:0:0:0' forms.
-      var isWildcard = (host === '0.0.0.0' || host === '::' || host === '0:0:0:0:0:0:0:0');
-      if (!isWildcard) return '';
-      // Escalate when Ruby evaluation is ON: a wildcard bind + eval is the single
-      // most dangerous combination — UNAUTHENTICATED arbitrary Ruby (full file/
-      // network/shell access) reachable by anyone on the LAN. Read the live
-      // checkbox so the warning tracks the currently-typed state, not just what
-      // was last saved (review #9).
+      if (!hostCheck || hostCheck.host !== host || hostCheck.loopback) return '';
+      var text = '⚠ ' + host + ' lets other machines reach the server. They need the token '
+               + 'to connect, but the traffic is not encrypted: on a network you do not '
+               + 'trust, use 127.0.0.1 and an SSH tunnel.';
+      // Read the live checkbox, so the warning tracks what is typed, not only
+      // what was last saved (review #9).
       if (document.getElementById('eval_enabled').checked) {
-        return '⚠ DANGER: Ruby evaluation is ENABLED and ' + host + ' binds to the '
-             + 'whole network — this exposes UNAUTHENTICATED arbitrary Ruby (full '
-             + 'file/network/shell access) to anyone on your LAN. Use 127.0.0.1, or '
-             + 'turn off Ruby evaluation, unless this is a trusted isolated network.';
+        text += ' Ruby evaluation is on: a client with the token can run arbitrary Ruby.';
       }
-      return '⚠ ' + host + ' exposes the server (incl. eval_ruby) to the network with no authentication.';
+      return text;
     }
 
     // The status-hint slot is shared between two concerns: restart-needed and
@@ -170,6 +202,8 @@
       document.getElementById('log_to_file').checked  = !!state.log_to_file;
       document.getElementById('log_file_path').value  = state.log_file_path || '';
       document.getElementById('eval_enabled').checked = !!state.eval_enabled;
+      document.getElementById('token').value          = state.token || '';
+      hostCheck = { host: state.host, loopback: !!state.host_loopback };
 
       savedState = {
         host:           state.host,
@@ -234,6 +268,26 @@
       sketchup.cancel();
     });
 
+    // M-06: the token is copied, never typed. Copy selects the field first, so
+    // when the browser refuses execCommand the user can still press Ctrl+C.
+    document.getElementById('btn-copy-token').addEventListener('click', function () {
+      var field = document.getElementById('token');
+      field.focus();
+      field.select();
+      var copied = false;
+      try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+      document.getElementById('token-status').textContent = copied ? 'Copied' : 'Press Ctrl+C to copy';
+    });
+    document.getElementById('btn-regenerate-token').addEventListener('click', function () {
+      document.getElementById('token-status').textContent = '';
+      sketchup.regenerate_token();
+    });
+    window.onTokenResult = function (result) {
+      document.getElementById('token-status').textContent = result.ok
+        ? 'New token saved; every client was disconnected.'
+        : result.error;
+    };
+
     ['host', 'port', 'log_file_path'].forEach(function (id) {
       document.getElementById(id).addEventListener('input', refreshSaveButton);
     });
@@ -244,6 +298,7 @@
     // Live-update the security warning as the user types the host or toggles
     // Ruby evaluation (review #9: the warning escalates when eval is enabled).
     document.getElementById('host').addEventListener('input', function () {
+      scheduleHostCheck();
       refreshStatusHint(lastState);
     });
     document.getElementById('eval_enabled').addEventListener('change', function () {

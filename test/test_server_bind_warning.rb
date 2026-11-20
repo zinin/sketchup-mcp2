@@ -2,20 +2,28 @@
 #
 # Review #6: the server emits a WARN at the bind site when bound to a
 # non-loopback host (e.g. 0.0.0.0) — a server-log echo of the Settings dialog's
-# host-security warning. We drive the private warn_if_exposed_bind / the
-# loopback_host? predicate directly and capture the console output.
+# host-security warning. We drive the private warn_if_exposed_bind directly and
+# capture the console output. Block C (spec §7.3): the host is judged by
+# Core::Net.loopback?, the check the Settings dialog uses too, and the warning
+# says what the token protects (who can connect) and what it does not (the
+# traffic is not encrypted).
 require "minitest/autorun"
 require "stringio"
+
+require_relative "support/singleton_stubs"
 
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/errors"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/config"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
+require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/net"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/framing"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/client_state"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/server"
 require_relative "support/config_reset"
 
 class TestServerBindWarning < Minitest::Test
+  include SingletonStubs
+
   def setup
     ConfigReset.reset_all!
     # WARN must be emitted at the WARN level (default). Set explicitly so the
@@ -44,7 +52,9 @@ class TestServerBindWarning < Minitest::Test
     out = capture_console { @srv.send(:warn_if_exposed_bind, "0.0.0.0") }
     assert_match(/\[WARN\]/, out)
     assert_match(/non-loopback/, out)
-    assert_match(/eval_ruby/, out)
+    assert_match(/needs the token to connect/, out)
+    assert_match(/not encrypted/, out)
+    assert_match(/SSH tunnel/, out)
   end
 
   def test_warns_for_explicit_lan_ip
@@ -64,11 +74,10 @@ class TestServerBindWarning < Minitest::Test
     end
   end
 
-  def test_loopback_predicate
-    assert @srv.send(:loopback_host?, "127.0.0.1")
-    assert @srv.send(:loopback_host?, "::1")
-    assert @srv.send(:loopback_host?, "localhost")
-    refute @srv.send(:loopback_host?, "0.0.0.0")
-    refute @srv.send(:loopback_host?, "192.168.0.10")
+  # One check for the server and the dialog: the server asks Core::Net.
+  def test_the_bind_warning_asks_core_net
+    stub_singleton(MCPforSketchUp::Core::Net, :loopback?) { |_host| true }
+    out = capture_console { @srv.send(:warn_if_exposed_bind, "192.168.1.50") }
+    assert_empty out
   end
 end

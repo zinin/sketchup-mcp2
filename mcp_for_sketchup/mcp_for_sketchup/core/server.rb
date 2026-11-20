@@ -72,17 +72,14 @@ module MCPforSketchUp
         @server = nil
       end
 
-      private
-
-      # Loopback hosts that keep the server reachable only from this machine.
-      # Anything else (0.0.0.0, ::, an explicit LAN IP, …) is reachable by other
-      # hosts on the network and warrants the exposure warning.
-      LOOPBACK_HOSTS = ["127.0.0.1", "::1", "localhost"].freeze
-
-      def loopback_host?(host)
-        h = host.to_s.strip.downcase
-        LOOPBACK_HOSTS.include?(h) || h.start_with?("127.")
+      # Settings → Regenerate (spec §7.1): every client, authenticated with the
+      # old token, is closed. A frame still queued for one is dropped when the
+      # queue reaches it (process_frame_queue skips closed clients).
+      def close_all_clients(reason)
+        @clients.values.each { |state| close_client(state, reason) }
       end
+
+      private
 
       # T-13.4: все дедлайны — на монотонных часах; wall-clock (Time.now)
       # прыгает при NTP-коррекции и переводе времени.
@@ -90,15 +87,17 @@ module MCPforSketchUp
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
-      # Concise server-log echo of the UI's host-security warning. Emitted at
-      # bind for any non-loopback host: such a bind exposes the unauthenticated
-      # MCP server — including eval_ruby (arbitrary Ruby) — to the LAN.
+      # Server-log echo of the Settings dialog's host warning, at bind, for any
+      # host that is not loopback — by the check the dialog uses (Core::Net).
+      # It says what the token protects (who can connect) and what it does not
+      # (the traffic is not encrypted), spec §7.3.
       def warn_if_exposed_bind(host)
-        return if loopback_host?(host)
+        return if Net.loopback?(host)
         Logger.log("WARN",
-          "bound to non-loopback host #{host} — the MCP server (incl. eval_ruby: " \
-          "arbitrary Ruby) is reachable by other machines on the network with NO " \
-          "authentication. Use 127.0.0.1 unless this is a trusted isolated network.")
+          "bound to non-loopback host #{host}: other machines can reach the MCP server. " \
+          "A client needs the token to connect, but the traffic is not encrypted; on a " \
+          "network you do not trust, bind 127.0.0.1 and use an SSH tunnel " \
+          "(README → Security model).")
       end
 
       def on_timer_tick

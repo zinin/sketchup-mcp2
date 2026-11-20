@@ -70,6 +70,13 @@ module MCPforSketchUp
         start
       end
 
+      # Settings → Regenerate (spec §7.1): close every connected client, so a
+      # session opened with the old token ends. Nothing to do when stopped.
+      def self.disconnect_clients(reason)
+        return unless @running && @server
+        @server.close_all_clients(reason)
+      end
+
       def self.show_log
         cfg = MCPforSketchUp::Core::Config
         # Expand once: the validator accepts ~/relative log paths (persisted raw)

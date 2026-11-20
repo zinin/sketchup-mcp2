@@ -13,10 +13,11 @@ require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/logger"
 require_relative "../mcp_for_sketchup/mcp_for_sketchup/core/application"
 
 class StubServer
-  attr_reader :start_called, :stop_called
-  def initialize; @start_called = false; @stop_called = false; end
+  attr_reader :start_called, :stop_called, :closed_with
+  def initialize; @start_called = false; @stop_called = false; @closed_with = []; end
   def start; @start_called = true; end
   def stop;  @stop_called  = true; end
+  def close_all_clients(reason); @closed_with << reason; end
 end
 
 class StubServerThatFails
@@ -48,6 +49,20 @@ class TestApplication < Minitest::Test
     assert_equal "127.0.0.1", rc[:host]
     assert_equal 9876,         rc[:port]
     assert_equal "INFO",       rc[:log_level]
+  end
+
+  # Settings → Regenerate (spec §7.1): every connected client is closed.
+  def test_disconnect_clients_reaches_the_server
+    A.start
+    server = A.instance_variable_get(:@server)
+    A.disconnect_clients("token_regenerated")
+    assert_equal ["token_regenerated"], server.closed_with
+  end
+
+  def test_disconnect_clients_when_stopped_does_nothing
+    refute A.running?
+    A.disconnect_clients("token_regenerated")   # no server: nothing to close, no error
+    refute A.running?
   end
 
   def test_stop_clears_running_config

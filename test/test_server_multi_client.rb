@@ -843,6 +843,28 @@ class TestServerMultiClient < Minitest::Test
     refute flooder.closed?, "flooder (handshaked) не задет свипом"
   end
 
+  # ---------- Settings → Regenerate: close_all_clients ----------
+
+  # Spec §7.1: Regenerate closes every client; a frame still queued for one is
+  # dropped, never answered on a closed socket, and the next tick runs on.
+  def test_close_all_clients_drops_their_queued_frames
+    a = FakeSocket.new(read_chunks: [handshake_frames])
+    b = FakeSocket.new(read_chunks: [handshake_frames])
+    srv = run_one_tick(FakeServer.new([a, b]))
+    a.push_read(gv_frame(5))
+    srv.send(:drain_reads_all_clients)   # a's call is queued, not yet dispatched
+    assert_equal 1, srv.instance_variable_get(:@frame_queue).size
+    written = a.written.dup
+
+    srv.close_all_clients("token_regenerated")
+    assert a.closed?
+    assert b.closed?
+    assert_empty srv.instance_variable_get(:@clients)
+    srv.send(:on_timer_tick)
+    assert_equal written, a.written, "nothing is written for the dropped frame"
+    assert_empty srv.instance_variable_get(:@frame_queue)
+  end
+
   # ---------- T-23.1: глобальный FIFO — прямой spy на Dispatch.handle ----------
 
   def test_global_dispatch_order_is_decode_arrival_fifo

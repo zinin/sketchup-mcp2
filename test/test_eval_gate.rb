@@ -98,7 +98,9 @@ class TestConfirmEvalEnable < Minitest::Test
     text, buttons = @messageboxes.last
     assert_equal ::MB_YESNO, buttons, "the confirm must ask Yes or No"
     assert_includes text, "filesystem", "the confirm must say what eval grants"
-    assert_match(/any local process/, text, "the confirm must say who can connect, not only MCP clients")
-    assert_match(/other machines/, text, "the confirm must say a non-loopback Host reaches other machines")
+    # Block C: a client needs the token to connect, so the confirm says who can
+    # use the gate — and what the token does not protect (spec §7.3).
+    assert_match(/any MCP client that has the token/, text, "the confirm must say who can use the gate")
+    assert_match(/not encrypted/, text, "the confirm must say the traffic is not encrypted")
   end
 end

@@ -33,7 +33,7 @@ $stdout = $stderr
 PLUGIN_DIR = File.expand_path("../../mcp_for_sketchup/mcp_for_sketchup", __dir__)
 
 %w[
-  core/errors core/compat core/auth core/config core/logger core/framing
+  core/errors core/compat core/auth core/net core/config core/logger core/framing
   core/client_state core/server handlers/dispatch
 ].each { |path| require File.join(PLUGIN_DIR, path) }
 

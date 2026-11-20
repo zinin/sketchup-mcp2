@@ -19,6 +19,7 @@ module MCPforSketchUp
     core/errors
     core/compat
     core/auth
+    core/net
     helpers/units
     core/logger
     helpers/validation
