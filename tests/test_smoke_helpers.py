@@ -111,10 +111,10 @@ def test_step_18_asks_export_file_is_local_with_the_host_and_the_environment():
     assert "SKETCHUP_MCP_SMOKE_REMOTE=1" in ast.unparse(local_check.msg)
 
 
-@pytest.mark.checkout  # reads CLAUDE.md, which the sdist does not ship
+@pytest.mark.checkout  # reads CLAUDE.md and CONTRIBUTING.md, which the sdist does not ship
 def test_smoke_steps_are_consecutive_and_every_total_agrees():
     """Вставка шага перенумеровывает следующие за ним и все места, где названо
-    число шагов: итоговая строка скрипта, README, CLAUDE.md. Каждый номер
+    число шагов: итоговая строка скрипта, CONTRIBUTING.md, CLAUDE.md. Каждый номер
     встречается один раз; в документах считаются только упоминания самого
     smoke_check.py (строка с его именем и «N-step»)."""
     numbers = [n for n, _ in _step_assignments() if n > 0]
@@ -123,7 +123,7 @@ def test_smoke_steps_are_consecutive_and_every_total_agrees():
     assert numbers == list(range(1, len(numbers) + 1)), f"steps are not 1..N: {numbers}"
     total = len(numbers)
     assert f"Smoke complete: {total} steps total" in _SMOKE_SOURCE
-    for doc in ("README.md", "CLAUDE.md"):
+    for doc in ("CONTRIBUTING.md", "CLAUDE.md"):
         text = (_SMOKE_PATH.parents[1] / doc).read_text(encoding="utf-8")
         counts = set(re.findall(r"smoke_check\.py[^\n]*?\b(\d+)-step\b", text))
         assert counts == {str(total)}, (
